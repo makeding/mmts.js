@@ -9,8 +9,21 @@ interface MFUFragmentState {
     state: 'init' | 'not-started' | 'in-fragment' | 'skip';
 }
 
+interface MMTSStreamState {
+    lastMpuSequenceNumber?: number;
+    auCount: number;
+    firstDts?: number;
+}
+
+export interface MMTSTimestamp {
+    dts: number;
+    pts: number;
+    timescale: number;
+}
+
 export interface MMTSCompletedMfuUnit {
     fragment: MFUFragment;
+    mpuSequenceNumber: number;
     unit: Uint8Array;
 }
 
@@ -25,11 +38,13 @@ class MMTSProgram {
     private signaling_fragment_states_: {[packetId: number]: SignalingFragmentState} = {};
     private mfu_fragment_states_: {[packetId: number]: MFUFragmentState} = {};
     private assets_by_packet_id_: {[packetId: number]: MMTAsset} = {};
+    private stream_states_by_packet_id_: {[packetId: number]: MMTSStreamState} = {};
 
     public destroy(): void {
         this.signaling_fragment_states_ = null;
         this.mfu_fragment_states_ = null;
         this.assets_by_packet_id_ = null;
+        this.stream_states_by_packet_id_ = null;
     }
 
     public parseSignalingPacket(packet: MMTPPacket): MMTAsset[] {
@@ -61,6 +76,7 @@ class MMTSProgram {
         }
 
         const units: MMTSCompletedMfuUnit[] = [];
+        this.observeMpuSequence(packet.packetId, mpu.mpuSequenceNumber);
         for (const fragment of mpu.mfuFragments) {
             const unit = this.assembleMfuFragment(
                 packet.packetId,
@@ -69,7 +85,11 @@ class MMTSProgram {
                 fragment
             );
             if (unit !== null) {
-                units.push({fragment, unit});
+                units.push({
+                    fragment,
+                    mpuSequenceNumber: mpu.mpuSequenceNumber,
+                    unit
+                });
             }
         }
 
@@ -86,6 +106,73 @@ class MMTSProgram {
 
     public get streamCount(): number {
         return Object.keys(this.assets_by_packet_id_).length;
+    }
+
+    public nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null {
+        const asset = this.assets_by_packet_id_[packetId];
+        if (asset === undefined ||
+            asset.timestampDescriptors === undefined ||
+            asset.extendedTimestampDescriptors === undefined) {
+            return null;
+        }
+
+        const timestampDescriptor = asset.timestampDescriptors.find((descriptor) => {
+            return descriptor.mpuSequenceNumber === mpuSequenceNumber;
+        });
+        const extendedTimestampDescriptor = asset.extendedTimestampDescriptors.find((descriptor) => {
+            return descriptor.mpuSequenceNumber === mpuSequenceNumber;
+        });
+        if (timestampDescriptor === undefined || extendedTimestampDescriptor === undefined) {
+            return null;
+        }
+
+        const state = this.getStreamState(packetId);
+        const auIndex = state.auCount;
+        if (auIndex >= extendedTimestampDescriptor.au.length) {
+            return null;
+        }
+
+        const timescale = extendedTimestampDescriptor.timescale || 90000;
+        let dts = Math.round(timestampDescriptor.presentationTimeUs * timescale / 1000000) -
+            extendedTimestampDescriptor.decodingTimeOffset;
+        for (let i = 0; i < auIndex; i++) {
+            dts += extendedTimestampDescriptor.au[i].ptsOffset;
+        }
+
+        const pts = dts + extendedTimestampDescriptor.au[auIndex].dtsPtsOffset;
+        if (state.firstDts === undefined) {
+            state.firstDts = dts;
+        }
+        dts -= state.firstDts;
+        const normalizedPts = pts - state.firstDts;
+        state.auCount++;
+        return {dts, pts: normalizedPts, timescale};
+    }
+
+    private observeMpuSequence(packetId: number, mpuSequenceNumber: number): void {
+        const state = this.getStreamState(packetId);
+        if (state.lastMpuSequenceNumber === undefined) {
+            state.lastMpuSequenceNumber = mpuSequenceNumber;
+            state.auCount = 0;
+            return;
+        }
+
+        if (mpuSequenceNumber === ((state.lastMpuSequenceNumber + 1) >>> 0)) {
+            state.lastMpuSequenceNumber = mpuSequenceNumber;
+            state.auCount = 0;
+        } else if (mpuSequenceNumber !== state.lastMpuSequenceNumber) {
+            state.lastMpuSequenceNumber = mpuSequenceNumber;
+            state.auCount = 0;
+        }
+    }
+
+    private getStreamState(packetId: number): MMTSStreamState {
+        let state = this.stream_states_by_packet_id_[packetId];
+        if (state === undefined) {
+            state = {auCount: 0};
+            this.stream_states_by_packet_id_[packetId] = state;
+        }
+        return state;
     }
 
     private assembleMfuFragment(packetId: number,

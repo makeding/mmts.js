@@ -17,6 +17,25 @@ export interface MMTAsset {
     language?: string;
     timestampDescriptorCount?: number;
     extendedTimestampDescriptorCount?: number;
+    timestampDescriptors?: MMTMpuTimestampDescriptor[];
+    extendedTimestampDescriptors?: MMTMpuExtendedTimestampDescriptor[];
+}
+
+export interface MMTMpuTimestampDescriptor {
+    mpuSequenceNumber: number;
+    presentationTimeUs: number;
+}
+
+export interface MMTMpuExtendedTimestampDescriptor {
+    mpuSequenceNumber: number;
+    timescale?: number;
+    decodingTimeOffset: number;
+    au: MMTMpuTimestampOffset[];
+}
+
+export interface MMTMpuTimestampOffset {
+    dtsPtsOffset: number;
+    ptsOffset: number;
 }
 
 export interface MMTSIResult {
@@ -423,8 +442,18 @@ export default class MMTSI {
         if (length < 0 || !reader.canRead(length)) {
             return;
         }
-        asset.timestampDescriptorCount = Math.floor(length / 12);
-        reader.skip(length);
+        const descriptor = new ByteReader(reader.readBytes(length));
+        const timestamps: MMTMpuTimestampDescriptor[] = [];
+
+        while (descriptor.bytesLeft() >= 12) {
+            timestamps.push({
+                mpuSequenceNumber: descriptor.readU32(),
+                presentationTimeUs: MMTSI.readNtpTimestampUs(descriptor)
+            });
+        }
+
+        asset.timestampDescriptorCount = timestamps.length;
+        asset.timestampDescriptors = timestamps;
     }
 
     private static parseMpuExtendedTimestampDescriptor(asset: MMTAsset, reader: ByteReader): void {
@@ -432,8 +461,73 @@ export default class MMTSI {
         if (length < 0 || !reader.canRead(length)) {
             return;
         }
-        asset.extendedTimestampDescriptorCount = 1;
-        reader.skip(length);
+
+        const descriptor = new ByteReader(reader.readBytes(length));
+        if (!descriptor.canRead(1)) {
+            return;
+        }
+
+        const flags = descriptor.readU8();
+        const ptsOffsetType = (flags >> 1) & 0x03;
+        const timescaleFlag = (flags & 0x01) !== 0;
+        let timescale: number | undefined;
+        let defaultPtsOffset = 0;
+
+        if (timescaleFlag) {
+            if (!descriptor.canRead(4)) {
+                return;
+            }
+            timescale = descriptor.readU32();
+        }
+
+        if (ptsOffsetType === 1) {
+            if (!descriptor.canRead(2)) {
+                return;
+            }
+            defaultPtsOffset = descriptor.readU16();
+        } else if (ptsOffsetType === 0) {
+            return;
+        }
+
+        const extended: MMTMpuExtendedTimestampDescriptor[] = [];
+        while (descriptor.bytesLeft() > 0) {
+            if (!descriptor.canRead(8)) {
+                return;
+            }
+
+            const mpuSequenceNumber = descriptor.readU32();
+            descriptor.skip(1); // leap_indicator + reserved
+            const decodingTimeOffset = descriptor.readU16();
+            const auCount = descriptor.readU8();
+            const au: MMTMpuTimestampOffset[] = [];
+
+            for (let i = 0; i < auCount; i++) {
+                if (!descriptor.canRead(2)) {
+                    return;
+                }
+                const dtsPtsOffset = descriptor.readU16();
+                let ptsOffset = defaultPtsOffset;
+
+                if (ptsOffsetType === 2) {
+                    if (!descriptor.canRead(2)) {
+                        return;
+                    }
+                    ptsOffset = descriptor.readU16();
+                }
+
+                au.push({dtsPtsOffset, ptsOffset});
+            }
+
+            extended.push({
+                mpuSequenceNumber,
+                timescale,
+                decodingTimeOffset,
+                au
+            });
+        }
+
+        asset.extendedTimestampDescriptorCount = extended.length;
+        asset.extendedTimestampDescriptors = extended;
     }
 
     private static parseVideoComponentDescriptor(asset: MMTAsset, reader: ByteReader): void {
@@ -530,6 +624,12 @@ export default class MMTSI {
         }
         reader.skip(length);
         return true;
+    }
+
+    private static readNtpTimestampUs(reader: ByteReader): number {
+        const seconds = reader.readU32();
+        const fraction = reader.readU32();
+        return (seconds - 2208988800) * 1000000 + Math.round(fraction * 1000000 / 0x100000000);
     }
 
 }

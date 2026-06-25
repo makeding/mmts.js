@@ -15,6 +15,22 @@ export interface MMTAsset {
     language?: string;
     timestampDescriptorCount?: number;
     extendedTimestampDescriptorCount?: number;
+    timestampDescriptors?: MMTMpuTimestampDescriptor[];
+    extendedTimestampDescriptors?: MMTMpuExtendedTimestampDescriptor[];
+}
+export interface MMTMpuTimestampDescriptor {
+    mpuSequenceNumber: number;
+    presentationTimeUs: number;
+}
+export interface MMTMpuExtendedTimestampDescriptor {
+    mpuSequenceNumber: number;
+    timescale?: number;
+    decodingTimeOffset: number;
+    au: MMTMpuTimestampOffset[];
+}
+export interface MMTMpuTimestampOffset {
+    dtsPtsOffset: number;
+    ptsOffset: number;
 }
 export interface MMTSIResult {
     assets: MMTAsset[];
@@ -48,4 +64,5 @@ export default class MMTSI {
     private static parseDataComponentDescriptor;
     private static readShortDescriptorHeader;
     private static skipDescriptor;
+    private static readNtpTimestampUs;
 }

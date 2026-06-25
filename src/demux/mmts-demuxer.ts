@@ -11,6 +11,8 @@ import MediaInfo from '../core/media-info';
 import Log from '../utils/logger.js';
 
 interface VideoAccessUnitState {
+    packetId: number;
+    mpuSequenceNumber: number;
     sampleNumber: number;
     units: H265NaluHVC1[];
     length: number;
@@ -20,6 +22,7 @@ interface VideoAccessUnitState {
 
 interface PendingMFUUnit {
     fragment: MFUFragment;
+    mpuSequenceNumber: number;
     unit: Uint8Array;
 }
 
@@ -199,7 +202,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
         for (const completed of result.units) {
             this.logCompleteMfuUnit(mmtp.packetId, asset, mpu.mpuSequenceNumber, completed.fragment, completed.unit);
-            this.processCompleteMfuUnit(mmtp.packetId, asset, completed.fragment, completed.unit);
+            this.processCompleteMfuUnit(mmtp.packetId, asset, completed.mpuSequenceNumber, completed.fragment, completed.unit);
         }
     }
 
@@ -229,10 +232,11 @@ class MMTSDemuxer extends BaseDemuxer {
 
     private processCompleteMfuUnit(packetId: number,
                                    asset: MMTAsset | undefined,
+                                   mpuSequenceNumber: number,
                                    fragment: MFUFragment,
                                    unit: Uint8Array): void {
         if (asset === undefined) {
-            this.cachePendingMfuUnit(packetId, fragment, unit);
+            this.cachePendingMfuUnit(packetId, mpuSequenceNumber, fragment, unit);
             return;
         }
 
@@ -310,13 +314,13 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (!this.video_init_segment_dispatched_) {
-            this.cachePreInitVideoUnit(fragment, unit);
+            this.cachePreInitVideoUnit(mpuSequenceNumber, fragment, unit);
             return;
         }
 
         if (!this.video_init_segment_dispatched_ || !this.isH265VclNalu(naluType)) {
             if (this.video_init_segment_dispatched_ && fragment.sampleNumber !== undefined) {
-                this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, false, false);
+                this.appendH265NaluToAccessUnit(packetId, mpuSequenceNumber, fragment.sampleNumber, hvc1, false, false);
             }
             return;
         }
@@ -335,14 +339,16 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (fragment.sampleNumber === undefined) {
-            this.appendStandaloneVideoSample([hvc1], hvc1.data.byteLength, keyframe);
+            this.appendStandaloneVideoSample(packetId, mpuSequenceNumber, [hvc1], hvc1.data.byteLength, keyframe);
             return;
         }
 
-        this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, keyframe, true);
+        this.appendH265NaluToAccessUnit(packetId, mpuSequenceNumber, fragment.sampleNumber, hvc1, keyframe, true);
     }
 
-    private appendH265NaluToAccessUnit(sampleNumber: number,
+    private appendH265NaluToAccessUnit(packetId: number,
+                                       mpuSequenceNumber: number,
+                                       sampleNumber: number,
                                        nalu: H265NaluHVC1,
                                        keyframe: boolean,
                                        isVcl: boolean): void {
@@ -358,6 +364,8 @@ class MMTSDemuxer extends BaseDemuxer {
 
         if (this.current_video_access_unit_ === null) {
             this.current_video_access_unit_ = {
+                packetId,
+                mpuSequenceNumber,
                 sampleNumber,
                 units: [],
                 length: 0,
@@ -380,10 +388,20 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        this.appendStandaloneVideoSample(accessUnit.units, accessUnit.length, accessUnit.keyframe);
+        this.appendStandaloneVideoSample(
+            accessUnit.packetId,
+            accessUnit.mpuSequenceNumber,
+            accessUnit.units,
+            accessUnit.length,
+            accessUnit.keyframe
+        );
     }
 
-    private appendStandaloneVideoSample(units: H265NaluHVC1[], length: number, keyframe: boolean): void {
+    private appendStandaloneVideoSample(packetId: number,
+                                        mpuSequenceNumber: number,
+                                        units: H265NaluHVC1[],
+                                        length: number,
+                                        keyframe: boolean): void {
         if (!this.video_started_) {
             if (!keyframe) {
                 this.dropped_video_sample_count_++;
@@ -400,8 +418,16 @@ class MMTSDemuxer extends BaseDemuxer {
             Log.v(this.TAG, `Start MMTS video at keyframe, units=${units.length}, length=${length}`);
         }
 
-        const pts = Math.round(this.video_sample_index_ * 1000 / 60);
-        const dts = pts;
+        const timestamp = this.program_.nextTimestamp(packetId, mpuSequenceNumber);
+        let pts: number;
+        let dts: number;
+        if (timestamp !== null) {
+            pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+            dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
+        } else {
+            pts = Math.round(this.video_sample_index_ * 1000 / 60);
+            dts = pts;
+        }
         this.video_sample_index_++;
 
         this.video_track_.samples.push({
@@ -410,7 +436,7 @@ class MMTSDemuxer extends BaseDemuxer {
             isKeyframe: keyframe,
             dts,
             pts,
-            cts: 0,
+            cts: pts - dts,
             file_position: 0
         });
         this.video_track_.length += length;
@@ -420,7 +446,7 @@ class MMTSDemuxer extends BaseDemuxer {
             Log.v(
                 this.TAG,
                 `Video sample #${this.video_sample_index_}, units=${units.length}, ` +
-                `length=${length}, keyframe=${keyframe ? 1 : 0}, dts=${dts}`
+                `length=${length}, keyframe=${keyframe ? 1 : 0}, dts=${dts}, pts=${pts}`
             );
         }
 
@@ -514,7 +540,10 @@ class MMTSDemuxer extends BaseDemuxer {
         return (unit[4] >> 1) & 0x3f;
     }
 
-    private cachePendingMfuUnit(packetId: number, fragment: MFUFragment, unit: Uint8Array): void {
+    private cachePendingMfuUnit(packetId: number,
+                                mpuSequenceNumber: number,
+                                fragment: MFUFragment,
+                                unit: Uint8Array): void {
         const unitLength = MPU.readLengthPrefixedUnitLength(unit);
         if (unitLength === undefined || unitLength !== unit.byteLength - 4 || unit.byteLength < 6) {
             return;
@@ -552,6 +581,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 offset: fragment.offset,
                 nalUnitLength: fragment.nalUnitLength
             },
+            mpuSequenceNumber,
             unit: unitCopy
         });
     }
@@ -570,11 +600,17 @@ class MMTSDemuxer extends BaseDemuxer {
         );
 
         for (const pendingUnit of pending) {
-            this.processCompleteMfuUnit(asset.packetId, asset, pendingUnit.fragment, pendingUnit.unit);
+            this.processCompleteMfuUnit(
+                asset.packetId,
+                asset,
+                pendingUnit.mpuSequenceNumber,
+                pendingUnit.fragment,
+                pendingUnit.unit
+            );
         }
     }
 
-    private cachePreInitVideoUnit(fragment: MFUFragment, unit: Uint8Array): void {
+    private cachePreInitVideoUnit(mpuSequenceNumber: number, fragment: MFUFragment, unit: Uint8Array): void {
         if (this.pre_init_video_units_.length >= 256) {
             this.pre_init_video_units_.shift();
         }
@@ -590,6 +626,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 offset: fragment.offset,
                 nalUnitLength: fragment.nalUnitLength
             },
+            mpuSequenceNumber,
             unit: unitCopy
         });
     }
@@ -608,7 +645,13 @@ class MMTSDemuxer extends BaseDemuxer {
 
         Log.v(this.TAG, `Replay ${pending.length} pre-init MMTS video NAL units`);
         for (const pendingUnit of pending) {
-            this.processCompleteMfuUnit(asset.packetId, asset, pendingUnit.fragment, pendingUnit.unit);
+            this.processCompleteMfuUnit(
+                asset.packetId,
+                asset,
+                pendingUnit.mpuSequenceNumber,
+                pendingUnit.fragment,
+                pendingUnit.unit
+            );
         }
         this.flushCurrentVideoAccessUnit();
     }
