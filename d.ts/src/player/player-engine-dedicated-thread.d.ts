@@ -17,6 +17,7 @@ declare class PlayerEngineDedicatedThread implements PlayerEngine {
     private _media_info?;
     private _statistics_info?;
     private e?;
+    private _prev_ready_state;
     static isSupported(): boolean;
     constructor(mediaDataSource: any, config: any);
     destroy(): void;
@@ -29,6 +30,8 @@ declare class PlayerEngineDedicatedThread implements PlayerEngine {
     play(): Promise<void>;
     pause(): void;
     seek(seconds: number): void;
+    switchPrimaryAudio(): void;
+    switchSecondaryAudio(): void;
     get mediaInfo(): MediaInfo;
     get statisticsInfo(): any;
     _onLoggingConfigChanged(config: any): void;

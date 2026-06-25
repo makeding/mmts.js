@@ -95,6 +95,14 @@ class MSEPlayer {
         this._player_engine.pause();
     }
 
+    public switchPrimaryAudio(): void {
+        this._player_engine.switchPrimaryAudio();
+    }
+
+    public switchSecondaryAudio(): void {
+        this._player_engine.switchSecondaryAudio();
+    }
+
     public get type(): string {
         return this._type;
     }

@@ -127,6 +127,20 @@ declare namespace Mpegts {
         liveSyncPlaybackRate?: number;
 
         /**
+         * @desc Minimum acceptable buffer latency in HTMLMediaElement, in seconds.
+         *       Effective only if `isLive: true` and `liveSync: true`
+         * @defaultvalue undefined
+         */
+        liveSyncMinLatency?: number;
+
+        /**
+         * @desc PlaybackRate limited between [0.5, 1] will be used for latency chasing.
+         *       Effective only if `isLive: true` and `liveSync: true`
+         * @defaultvalue 0.95
+         */
+        liveSyncMinPlaybackRate?: number;
+
+        /**
          * @desc Abort the http connection if there's enough data for playback.
          * @defaultvalue true
          */
@@ -385,6 +399,8 @@ declare namespace Mpegts {
     }
 
     interface MSEPlayer extends Player {
+        switchPrimaryAudio(): void;
+        switchSecondaryAudio(): void;
         mediaInfo: MSEPlayerMediaInfo;
         statisticsInfo: MSEPlayerStatisticsInfo;
     }
@@ -452,6 +468,7 @@ declare namespace Mpegts {
 declare var Mpegts: {
     createPlayer(mediaDataSource: Mpegts.MediaDataSource, config?: Mpegts.Config): Mpegts.Player;
     isSupported(): boolean;
+    supportWorkerForMSEH265Playback(): Promise<boolean>;
     getFeatureList(): Mpegts.FeatureList;
 
     /**
