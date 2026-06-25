@@ -1,4 +1,9 @@
-import MMTSI, {MMTAsset, SignalingFragmentState} from './mmt-si';
+import MMTSI, {
+    MMTAsset,
+    MMTMpuExtendedTimestampDescriptor,
+    MMTMpuTimestampDescriptor,
+    SignalingFragmentState
+} from './mmt-si';
 import {MMTPPacket} from './mmtp';
 import MPU, {FragmentationIndicator, MFUFragment, MPUInfo} from './mpu';
 
@@ -14,6 +19,8 @@ interface MMTSStreamState {
     auCount: number;
     firstDts?: number;
 }
+
+const MAX_TIMESTAMP_DESCRIPTORS = 100;
 
 export interface MMTSTimestamp {
     dts: number;
@@ -60,13 +67,16 @@ class MMTSProgram {
             state
         );
 
+        const assets: MMTAsset[] = [];
         for (const asset of result.assets) {
             if (asset.packetId >= 0) {
-                this.assets_by_packet_id_[asset.packetId] = asset;
+                assets.push(this.mergeAsset(asset));
+            } else {
+                assets.push(asset);
             }
         }
 
-        return result.assets;
+        return assets;
     }
 
     public parseMpuPacket(packet: MMTPPacket): MMTSParsedMpu | null {
@@ -167,6 +177,97 @@ class MMTSProgram {
             this.stream_states_by_packet_id_[packetId] = state;
         }
         return state;
+    }
+
+    private mergeAsset(asset: MMTAsset): MMTAsset {
+        const existing = this.assets_by_packet_id_[asset.packetId];
+        if (existing === undefined) {
+            this.mergeTimestampDescriptors(asset, undefined, undefined);
+            this.assets_by_packet_id_[asset.packetId] = asset;
+            return asset;
+        }
+
+        const oldTimestampDescriptors = existing.timestampDescriptors;
+        const oldExtendedTimestampDescriptors = existing.extendedTimestampDescriptors;
+        const state = this.stream_states_by_packet_id_[asset.packetId];
+
+        Object.assign(existing, asset);
+        this.mergeTimestampDescriptors(
+            existing,
+            oldTimestampDescriptors,
+            oldExtendedTimestampDescriptors,
+            state ? state.lastMpuSequenceNumber : undefined
+        );
+        return existing;
+    }
+
+    private mergeTimestampDescriptors(asset: MMTAsset,
+                                      oldTimestampDescriptors?: MMTMpuTimestampDescriptor[],
+                                      oldExtendedTimestampDescriptors?: MMTMpuExtendedTimestampDescriptor[],
+                                      lastMpuSequenceNumber?: number): void {
+        asset.timestampDescriptors = this.mergeDescriptorCache(
+            oldTimestampDescriptors,
+            asset.timestampDescriptors,
+            lastMpuSequenceNumber
+        );
+        asset.timestampDescriptorCount = asset.timestampDescriptors ? asset.timestampDescriptors.length : 0;
+
+        asset.extendedTimestampDescriptors = this.mergeDescriptorCache(
+            oldExtendedTimestampDescriptors,
+            asset.extendedTimestampDescriptors,
+            lastMpuSequenceNumber
+        );
+        asset.extendedTimestampDescriptorCount = asset.extendedTimestampDescriptors ?
+            asset.extendedTimestampDescriptors.length : 0;
+    }
+
+    private mergeDescriptorCache<T extends {mpuSequenceNumber: number}>(oldDescriptors: T[] | undefined,
+                                                                        newDescriptors: T[] | undefined,
+                                                                        lastMpuSequenceNumber?: number): T[] | undefined {
+        const cache = oldDescriptors ? oldDescriptors.slice() : [];
+        if (newDescriptors === undefined || newDescriptors.length === 0) {
+            return cache.length > 0 ? cache : undefined;
+        }
+
+        for (const descriptor of newDescriptors) {
+            if (lastMpuSequenceNumber !== undefined && descriptor.mpuSequenceNumber < lastMpuSequenceNumber) {
+                continue;
+            }
+
+            const existingIndex = cache.findIndex((cached) => {
+                return cached.mpuSequenceNumber === descriptor.mpuSequenceNumber;
+            });
+            if (existingIndex >= 0) {
+                cache[existingIndex] = descriptor;
+                continue;
+            }
+
+            const reusableIndex = cache.findIndex((cached) => {
+                return lastMpuSequenceNumber !== undefined && cached.mpuSequenceNumber < lastMpuSequenceNumber;
+            });
+            if (reusableIndex >= 0) {
+                cache[reusableIndex] = descriptor;
+                continue;
+            }
+
+            if (cache.length >= MAX_TIMESTAMP_DESCRIPTORS) {
+                cache[this.findOldestDescriptorIndex(cache)] = descriptor;
+            } else {
+                cache.push(descriptor);
+            }
+        }
+
+        return cache.length > 0 ? cache : undefined;
+    }
+
+    private findOldestDescriptorIndex<T extends {mpuSequenceNumber: number}>(descriptors: T[]): number {
+        let oldestIndex = 0;
+        for (let i = 1; i < descriptors.length; i++) {
+            if (descriptors[i].mpuSequenceNumber < descriptors[oldestIndex].mpuSequenceNumber) {
+                oldestIndex = i;
+            }
+        }
+        return oldestIndex;
     }
 
     private assembleMfuFragment(packetId: number,

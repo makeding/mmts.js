@@ -29,6 +29,10 @@ declare class MMTSProgram {
     resetTimestamp(packetId: number, mpuSequenceNumber: number): void;
     nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null;
     private getStreamState;
+    private mergeAsset;
+    private mergeTimestampDescriptors;
+    private mergeDescriptorCache;
+    private findOldestDescriptorIndex;
     private assembleMfuFragment;
     private appendToState;
 }
