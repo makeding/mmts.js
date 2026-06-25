@@ -540,24 +540,16 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        const currentScore = this.primary_video_packet_id_ >= 0
-            ? this.scorePendingVideoAsset(this.primary_video_packet_id_)
-            : -1;
-        const nextScore = this.scorePendingVideoAsset(asset.packetId);
-
-        if (this.primary_video_packet_id_ >= 0 && nextScore <= currentScore) {
+        if (this.primary_video_packet_id_ >= 0) {
             return;
         }
 
-        const previousPacketId = this.primary_video_packet_id_;
-        if (previousPacketId !== asset.packetId) {
-            this.resetVideoBootstrapState();
-        }
+        const score = this.scorePendingVideoAsset(asset.packetId);
         this.primary_video_packet_id_ = asset.packetId;
         Log.v(
             this.TAG,
-            `${previousPacketId >= 0 ? 'Switch' : 'Select'} primary MMTS video ` +
-            `packet_id=${this.formatHex(asset.packetId, 4)}, score=${nextScore}`
+            `Select primary MMTS video packet_id=${this.formatHex(asset.packetId, 4)}, ` +
+            `score=${score}`
         );
     }
 
