@@ -14,15 +14,23 @@
             <div id="streamURL">
                 <div class="url-input">
                     <label for="sURL">Stream URL:</label>
-                    <input id="sURL" type="text" value="http://127.0.0.1/flv/7182741-1.flv" />
+                    <input id="sURL" type="text" value="BS17_0.mmts" />
                     <button onclick="switch_mds()">Switch to MediaDataSource</button>
                 </div>
                 <div class="options">
-                    <input type="checkbox" id="isLive" onchange="saveSettings()" checked />
+                    <label for="mediaType">type</label>
+                    <select id="mediaType" onchange="saveSettings()">
+                        <option value="m2ts">m2ts</option>
+                        <option value="mmts" selected>mmts</option>
+                        <option value="mpegts">mpegts</option>
+                        <option value="mse">mse</option>
+                        <option value="flv">flv</option>
+                    </select>
+                    <input type="checkbox" id="isLive" onchange="saveSettings()" />
                     <label for="isLive">isLive</label>
                     <input type="checkbox" id="withCredentials" onchange="saveSettings()" />
                     <label for="withCredentials">withCredentials</label>
-                    <input type="checkbox" id="liveBufferLatencyChasing" onchange="saveSettings()" checked />
+                    <input type="checkbox" id="liveBufferLatencyChasing" onchange="saveSettings()" />
                     <label for="liveBufferLatencyChasing">liveBufferLatencyChasing</label>
                 </div>
             </div>
@@ -73,7 +81,7 @@
             } else {
                 var i;
                 var mediaDataSource = {
-                    type: 'mse'
+                    type: document.getElementById('mediaType').value
                 };
                 for (i = 0; i < checkBoxFields.length; i++) {
                     var field = checkBoxFields[i];
@@ -81,7 +89,7 @@
                     var checkbox = document.getElementById(field);
                     mediaDataSource[field] = checkbox.checked;
                 }
-                mediaDataSource['url'] = document.getElementById('sURL').value;
+                mediaDataSource['url'] = new URL(document.getElementById('sURL').value, window.location.href).href;
                 console.log('MediaDataSource', mediaDataSource);
                 player_load_mds(mediaDataSource);
             }
@@ -172,6 +180,8 @@
             }
             var msURL = document.getElementById('msURL');
             var sURL = document.getElementById('sURL');
+            var mediaType = document.getElementById('mediaType');
+            ls_set('mediaType', mediaType.value);
             ls_set('msURL', msURL.value);
             ls_set('sURL', sURL.value);
             console.log('save');
@@ -189,8 +199,13 @@
 
             var msURL = document.getElementById('msURL');
             var sURL = document.getElementById('sURL');
+            var mediaType = document.getElementById('mediaType');
+            mediaType.value = ls_get('mediaType', mediaType.value);
             msURL.value = ls_get('msURL', msURL.value);
             sURL.value = ls_get('sURL', sURL.value);
+            if (sURL.value === '../sample/BS17_0.mmts') {
+                sURL.value = 'BS17_0.mmts';
+            }
             if (ls_get('inputMode', 'StreamURL') === 'StreamURL') {
                 switch_url();
             } else {

@@ -47,6 +47,7 @@ function createPlayer(mediaDataSource, optionalConfig) {
         case 'mse':
         case 'mpegts':
         case 'm2ts':
+        case 'mmts':
         case 'flv':
             return new MSEPlayer(mds, optionalConfig);
         default:
