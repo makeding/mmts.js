@@ -2,19 +2,13 @@ import BaseDemuxer from './base-demuxer';
 import TLV from './tlv';
 import CompressedIP from './compressed-ip';
 import MMTP, {MMTPEncryptionFlag, MMTPPayloadType} from './mmtp';
-import MMTSI, {MMTAsset, SignalingFragmentState} from './mmt-si';
+import {MMTAsset} from './mmt-si';
 import MPU, {FragmentationIndicator, MFUFragment, MPUFragmentType} from './mpu';
+import MMTSProgram from './mmts-program';
 import {H265NaluHVC1, H265NaluPayload, H265NaluType, HEVCDecoderConfigurationRecord} from './h265';
 import H265Parser from './h265-parser';
 import MediaInfo from '../core/media-info';
 import Log from '../utils/logger.js';
-
-interface MFUFragmentState {
-    data: number[];
-    lastSeq: number;
-    mpuSequenceNumber: number;
-    state: 'init' | 'not-started' | 'in-fragment' | 'skip';
-}
 
 interface VideoAccessUnitState {
     sampleNumber: number;
@@ -40,9 +34,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private last_summary_tlv_count_: number = 0;
     private tlv_packet_type_counts_: {[packetType: number]: number} = {};
     private mmtp_packet_id_counts_: {[packetId: number]: number} = {};
-    private signaling_fragment_states_: {[packetId: number]: SignalingFragmentState} = {};
-    private mfu_fragment_states_: {[packetId: number]: MFUFragmentState} = {};
-    private assets_by_packet_id_: {[packetId: number]: MMTAsset} = {};
+    private program_: MMTSProgram = new MMTSProgram();
     private pending_mfu_units_by_packet_id_: {[packetId: number]: PendingMFUUnit[]} = {};
     private logged_asset_keys_: {[key: string]: boolean} = {};
     private logged_mpu_header_count_: number = 0;
@@ -79,9 +71,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.stash_ = null;
         this.tlv_packet_type_counts_ = null;
         this.mmtp_packet_id_counts_ = null;
-        this.signaling_fragment_states_ = null;
-        this.mfu_fragment_states_ = null;
-        this.assets_by_packet_id_ = null;
+        this.program_ && this.program_.destroy();
+        this.program_ = null;
         this.pending_mfu_units_by_packet_id_ = null;
         this.logged_asset_keys_ = null;
         this.media_info_ = null;
@@ -163,24 +154,12 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private parseSignalingMessages(mmtp): void {
-        let state = this.signaling_fragment_states_[mmtp.packetId];
-        if (state === undefined) {
-            state = MMTSI.createFragmentState();
-            this.signaling_fragment_states_[mmtp.packetId] = state;
-        }
-
-        const result = MMTSI.parseSignalingPayload(
-            mmtp.payload,
-            mmtp.packetSequenceNumber,
-            state
-        );
-
-        for (const asset of result.assets) {
+        const assets = this.program_.parseSignalingPacket(mmtp);
+        for (const asset of assets) {
             if (asset.packetId < 0) {
                 continue;
             }
 
-            this.assets_by_packet_id_[asset.packetId] = asset;
             this.maybeSelectPrimaryVideoAsset(asset);
             const key = `${asset.packetId}:${asset.assetType}:${asset.codec || ''}:${asset.language || ''}`;
 
@@ -199,12 +178,13 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private parseMpu(mmtp): void {
-        const asset = this.assets_by_packet_id_[mmtp.packetId];
-        const mpu = MPU.parse(mmtp.payload);
-        if (mpu === null) {
+        const result = this.program_.parseMpuPacket(mmtp);
+        if (result === null) {
             return;
         }
 
+        const asset = result.asset;
+        const mpu = result.mpu;
         if (asset !== undefined && this.logged_mpu_header_count_ < 16) {
             this.logged_mpu_header_count_++;
             Log.v(
@@ -217,87 +197,9 @@ class MMTSDemuxer extends BaseDemuxer {
             );
         }
 
-        for (const fragment of mpu.mfuFragments) {
-            const completeUnit = this.assembleMfuFragment(
-                mmtp.packetId,
-                mmtp.packetSequenceNumber,
-                mpu.mpuSequenceNumber,
-                fragment
-            );
-
-            if (completeUnit !== null) {
-                this.logCompleteMfuUnit(mmtp.packetId, asset, mpu.mpuSequenceNumber, fragment, completeUnit);
-                this.processCompleteMfuUnit(mmtp.packetId, asset, fragment, completeUnit);
-            }
-        }
-    }
-
-    private assembleMfuFragment(packetId: number,
-                                packetSequenceNumber: number,
-                                mpuSequenceNumber: number,
-                                fragment: MFUFragment): Uint8Array | null {
-        let state = this.mfu_fragment_states_[packetId];
-        if (state === undefined) {
-            state = {
-                data: [],
-                lastSeq: 0,
-                mpuSequenceNumber: 0,
-                state: 'init'
-            };
-            this.mfu_fragment_states_[packetId] = state;
-        }
-
-        if (state.state === 'init') {
-            state.state = 'skip';
-        } else if (((state.lastSeq + 1) >>> 0) !== packetSequenceNumber) {
-            state.data = [];
-            state.state = 'skip';
-        }
-        state.lastSeq = packetSequenceNumber;
-
-        if (state.mpuSequenceNumber !== 0 && state.mpuSequenceNumber !== mpuSequenceNumber && state.state === 'in-fragment') {
-            state.data = [];
-            state.state = 'skip';
-        }
-        state.mpuSequenceNumber = mpuSequenceNumber;
-
-        switch (fragment.fragmentationIndicator) {
-            case FragmentationIndicator.NotFragmented:
-                state.data = [];
-                state.state = 'not-started';
-                return fragment.payload;
-            case FragmentationIndicator.FirstFragment:
-                if (state.state === 'in-fragment') {
-                    state.data = [];
-                    state.state = 'skip';
-                    return null;
-                }
-                state.data = Array.prototype.slice.call(fragment.payload);
-                state.state = 'in-fragment';
-                return null;
-            case FragmentationIndicator.MiddleFragment:
-                if (state.state !== 'in-fragment') {
-                    return null;
-                }
-                this.appendToState(state, fragment.payload);
-                return null;
-            case FragmentationIndicator.LastFragment:
-                if (state.state !== 'in-fragment') {
-                    return null;
-                }
-                this.appendToState(state, fragment.payload);
-                const completeUnit = new Uint8Array(state.data);
-                state.data = [];
-                state.state = 'not-started';
-                return completeUnit;
-            default:
-                return null;
-        }
-    }
-
-    private appendToState(state: MFUFragmentState, data: Uint8Array): void {
-        for (let i = 0; i < data.byteLength; i++) {
-            state.data.push(data[i]);
+        for (const completed of result.units) {
+            this.logCompleteMfuUnit(mmtp.packetId, asset, mpu.mpuSequenceNumber, completed.fragment, completed.unit);
+            this.processCompleteMfuUnit(mmtp.packetId, asset, completed.fragment, completed.unit);
         }
     }
 
@@ -699,7 +601,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
         const pending = this.pre_init_video_units_;
         this.pre_init_video_units_ = [];
-        const asset = this.assets_by_packet_id_[this.primary_video_packet_id_];
+        const asset = this.program_.getAsset(this.primary_video_packet_id_);
         if (asset === undefined) {
             return;
         }
@@ -795,7 +697,7 @@ class MMTSDemuxer extends BaseDemuxer {
             this.last_summary_tlv_count_ = this.parsed_packet_count_;
             Log.v(
                 this.TAG,
-                `Parsed TLV total=${this.parsed_packet_count_}, total_mmtp=${this.parsed_mmtp_count_}, streams=${Object.keys(this.assets_by_packet_id_).length}`
+                `Parsed TLV total=${this.parsed_packet_count_}, total_mmtp=${this.parsed_mmtp_count_}, streams=${this.program_.streamCount}`
             );
         }
     }

@@ -8,9 +8,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private last_summary_tlv_count_;
     private tlv_packet_type_counts_;
     private mmtp_packet_id_counts_;
-    private signaling_fragment_states_;
-    private mfu_fragment_states_;
-    private assets_by_packet_id_;
+    private program_;
     private pending_mfu_units_by_packet_id_;
     private logged_asset_keys_;
     private logged_mpu_header_count_;
@@ -36,8 +34,6 @@ declare class MMTSDemuxer extends BaseDemuxer {
     parseChunks(chunk: ArrayBuffer, byteStart: number): number;
     private parseSignalingMessages;
     private parseMpu;
-    private assembleMfuFragment;
-    private appendToState;
     private logCompleteMfuUnit;
     private processCompleteMfuUnit;
     private appendH265NaluToAccessUnit;
