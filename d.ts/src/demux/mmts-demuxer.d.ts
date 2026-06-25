@@ -11,9 +11,14 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private signaling_fragment_states_;
     private mfu_fragment_states_;
     private assets_by_packet_id_;
+    private pending_mfu_units_by_packet_id_;
     private logged_asset_keys_;
     private logged_mpu_header_count_;
     private logged_mfu_unit_count_;
+    private logged_video_nalu_count_;
+    private logged_video_sample_count_;
+    private logged_video_segment_count_;
+    private dropped_video_sample_count_;
     private primary_video_packet_id_;
     private media_info_;
     private video_metadata_;
@@ -22,6 +27,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private video_sample_index_;
     private video_started_;
     private current_video_access_unit_;
+    private pre_init_video_units_;
     constructor(probeData: any, config: any);
     destroy(): void;
     static probe(buffer: ArrayBuffer): import("./tlv").TLVProbeResult;
@@ -37,6 +43,11 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private flushCurrentVideoAccessUnit;
     private appendStandaloneVideoSample;
     private isH265VclNalu;
+    private isH265IrapNalu;
+    private cachePendingMfuUnit;
+    private replayPendingMfuUnits;
+    private cachePreInitVideoUnit;
+    private replayPreInitVideoUnits;
     private dispatchVideoInitSegment;
     private dispatchVideoMediaSegment;
     private logSummary;

@@ -23,6 +23,11 @@ interface VideoAccessUnitState {
     keyframe: boolean;
 }
 
+interface PendingMFUUnit {
+    fragment: MFUFragment;
+    unit: Uint8Array;
+}
+
 class MMTSDemuxer extends BaseDemuxer {
 
     private readonly TAG: string = 'MMTSDemuxer';
@@ -37,9 +42,14 @@ class MMTSDemuxer extends BaseDemuxer {
     private signaling_fragment_states_: {[packetId: number]: SignalingFragmentState} = {};
     private mfu_fragment_states_: {[packetId: number]: MFUFragmentState} = {};
     private assets_by_packet_id_: {[packetId: number]: MMTAsset} = {};
+    private pending_mfu_units_by_packet_id_: {[packetId: number]: PendingMFUUnit[]} = {};
     private logged_asset_keys_: {[key: string]: boolean} = {};
     private logged_mpu_header_count_: number = 0;
     private logged_mfu_unit_count_: number = 0;
+    private logged_video_nalu_count_: number = 0;
+    private logged_video_sample_count_: number = 0;
+    private logged_video_segment_count_: number = 0;
+    private dropped_video_sample_count_: number = 0;
     private primary_video_packet_id_: number = -1;
     private media_info_ = new MediaInfo();
     private video_metadata_ = {
@@ -53,6 +63,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private video_sample_index_: number = 0;
     private video_started_: boolean = false;
     private current_video_access_unit_: VideoAccessUnitState = null;
+    private pre_init_video_units_: PendingMFUUnit[] = [];
 
     public constructor(probeData: any, config: any) {
         super();
@@ -69,11 +80,13 @@ class MMTSDemuxer extends BaseDemuxer {
         this.signaling_fragment_states_ = null;
         this.mfu_fragment_states_ = null;
         this.assets_by_packet_id_ = null;
+        this.pending_mfu_units_by_packet_id_ = null;
         this.logged_asset_keys_ = null;
         this.media_info_ = null;
         this.video_metadata_ = null;
         this.video_track_ = null;
         this.current_video_access_unit_ = null;
+        this.pre_init_video_units_ = null;
         super.destroy();
     }
 
@@ -181,6 +194,8 @@ class MMTSDemuxer extends BaseDemuxer {
                     `codec=${asset.codec || 'unknown'}, lang=${asset.language || 'und'}`
                 );
             }
+
+            this.replayPendingMfuUnits(asset);
         }
     }
 
@@ -213,7 +228,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
             if (completeUnit !== null) {
                 this.logCompleteMfuUnit(mmtp.packetId, asset, mpu.mpuSequenceNumber, fragment, completeUnit);
-                this.processCompleteMfuUnit(asset, fragment, completeUnit);
+                this.processCompleteMfuUnit(mmtp.packetId, asset, fragment, completeUnit);
             }
         }
     }
@@ -311,8 +326,16 @@ class MMTSDemuxer extends BaseDemuxer {
         );
     }
 
-    private processCompleteMfuUnit(asset: MMTAsset | undefined, fragment: MFUFragment, unit: Uint8Array): void {
-        if (asset === undefined || asset.assetType !== 'hev1') {
+    private processCompleteMfuUnit(packetId: number,
+                                   asset: MMTAsset | undefined,
+                                   fragment: MFUFragment,
+                                   unit: Uint8Array): void {
+        if (asset === undefined) {
+            this.cachePendingMfuUnit(packetId, fragment, unit);
+            return;
+        }
+
+        if (asset.assetType !== 'hev1') {
             return;
         }
 
@@ -335,6 +358,16 @@ class MMTSDemuxer extends BaseDemuxer {
         naluPayload.type = naluType;
         naluPayload.data = naluData;
         const hvc1 = new H265NaluHVC1(naluPayload);
+
+        if (this.logged_video_nalu_count_ < 32) {
+            this.logged_video_nalu_count_++;
+            Log.v(
+                this.TAG,
+                `HEVC NAL packet_id=${this.formatHex(packetId, 4)}, type=${naluType}, ` +
+                `sample=${fragment.sampleNumber !== undefined ? fragment.sampleNumber : '-'}, ` +
+                `size=${naluData.byteLength}, init=${this.video_init_segment_dispatched_ ? 1 : 0}`
+            );
+        }
 
         if (naluType === H265NaluType.kSliceVPS) {
             if (!this.video_init_segment_dispatched_) {
@@ -373,6 +406,11 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        if (!this.video_init_segment_dispatched_) {
+            this.cachePreInitVideoUnit(fragment, unit);
+            return;
+        }
+
         if (!this.video_init_segment_dispatched_ || !this.isH265VclNalu(naluType)) {
             if (this.video_init_segment_dispatched_ && fragment.sampleNumber !== undefined) {
                 this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, false);
@@ -380,9 +418,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        const keyframe = naluType === H265NaluType.kSliceIDR_W_RADL ||
-            naluType === H265NaluType.kSliceIDR_N_LP ||
-            naluType === H265NaluType.kSliceCRA_NUT;
+        const keyframe = this.isH265IrapNalu(naluType);
 
         if (fragment.sampleNumber === undefined) {
             this.appendStandaloneVideoSample([hvc1], hvc1.data.byteLength, keyframe);
@@ -425,9 +461,18 @@ class MMTSDemuxer extends BaseDemuxer {
     private appendStandaloneVideoSample(units: H265NaluHVC1[], length: number, keyframe: boolean): void {
         if (!this.video_started_) {
             if (!keyframe) {
+                this.dropped_video_sample_count_++;
+                if (this.dropped_video_sample_count_ <= 8 || this.dropped_video_sample_count_ % 100 === 0) {
+                    Log.v(
+                        this.TAG,
+                        `Drop MMTS video sample before first keyframe, ` +
+                        `dropped=${this.dropped_video_sample_count_}, units=${units.length}, length=${length}`
+                    );
+                }
                 return;
             }
             this.video_started_ = true;
+            Log.v(this.TAG, `Start MMTS video at keyframe, units=${units.length}, length=${length}`);
         }
 
         const pts = Math.round(this.video_sample_index_ * 1000 / 60);
@@ -445,13 +490,125 @@ class MMTSDemuxer extends BaseDemuxer {
         });
         this.video_track_.length += length;
 
-        if (this.video_track_.samples.length >= 30) {
+        if (this.logged_video_sample_count_ < 16) {
+            this.logged_video_sample_count_++;
+            Log.v(
+                this.TAG,
+                `Video sample #${this.video_sample_index_}, units=${units.length}, ` +
+                `length=${length}, keyframe=${keyframe ? 1 : 0}, dts=${dts}`
+            );
+        }
+
+        if (this.video_track_.samples.length >= 1) {
             this.dispatchVideoMediaSegment();
         }
     }
 
     private isH265VclNalu(naluType: number): boolean {
         return naluType >= 0 && naluType <= 31;
+    }
+
+    private isH265IrapNalu(naluType: number): boolean {
+        return naluType >= 16 && naluType <= 23;
+    }
+
+    private cachePendingMfuUnit(packetId: number, fragment: MFUFragment, unit: Uint8Array): void {
+        const unitLength = MPU.readLengthPrefixedUnitLength(unit);
+        if (unitLength === undefined || unitLength !== unit.byteLength - 4 || unit.byteLength < 6) {
+            return;
+        }
+
+        const naluType = (unit[4] >> 1) & 0x3f;
+        if (!this.isH265VclNalu(naluType) &&
+            naluType !== H265NaluType.kSliceVPS &&
+            naluType !== H265NaluType.kSliceSPS &&
+            naluType !== H265NaluType.kSlicePPS &&
+            naluType !== H265NaluType.kSliceAUD &&
+            naluType !== H265NaluType.kSliceSEI &&
+            naluType !== H265NaluType.kSliceSEISuffix) {
+            return;
+        }
+
+        let pending = this.pending_mfu_units_by_packet_id_[packetId];
+        if (pending === undefined) {
+            pending = [];
+            this.pending_mfu_units_by_packet_id_[packetId] = pending;
+        }
+
+        if (pending.length >= 128) {
+            pending.shift();
+        }
+
+        const unitCopy = new Uint8Array(unit.byteLength);
+        unitCopy.set(unit);
+        pending.push({
+            fragment: {
+                timed: fragment.timed,
+                fragmentationIndicator: fragment.fragmentationIndicator,
+                payload: unitCopy,
+                sampleNumber: fragment.sampleNumber,
+                offset: fragment.offset,
+                nalUnitLength: fragment.nalUnitLength
+            },
+            unit: unitCopy
+        });
+    }
+
+    private replayPendingMfuUnits(asset: MMTAsset): void {
+        const pending = this.pending_mfu_units_by_packet_id_[asset.packetId];
+        if (pending === undefined || pending.length === 0) {
+            return;
+        }
+
+        delete this.pending_mfu_units_by_packet_id_[asset.packetId];
+        Log.v(
+            this.TAG,
+            `Replay ${pending.length} pending MFU units for packet_id=${this.formatHex(asset.packetId, 4)}, ` +
+            `asset=${asset.assetType}`
+        );
+
+        for (const pendingUnit of pending) {
+            this.processCompleteMfuUnit(asset.packetId, asset, pendingUnit.fragment, pendingUnit.unit);
+        }
+    }
+
+    private cachePreInitVideoUnit(fragment: MFUFragment, unit: Uint8Array): void {
+        if (this.pre_init_video_units_.length >= 256) {
+            this.pre_init_video_units_.shift();
+        }
+
+        const unitCopy = new Uint8Array(unit.byteLength);
+        unitCopy.set(unit);
+        this.pre_init_video_units_.push({
+            fragment: {
+                timed: fragment.timed,
+                fragmentationIndicator: fragment.fragmentationIndicator,
+                payload: unitCopy,
+                sampleNumber: fragment.sampleNumber,
+                offset: fragment.offset,
+                nalUnitLength: fragment.nalUnitLength
+            },
+            unit: unitCopy
+        });
+    }
+
+    private replayPreInitVideoUnits(): void {
+        if (this.pre_init_video_units_.length === 0 || this.primary_video_packet_id_ < 0) {
+            return;
+        }
+
+        const pending = this.pre_init_video_units_;
+        this.pre_init_video_units_ = [];
+        const asset = this.assets_by_packet_id_[this.primary_video_packet_id_];
+        if (asset === undefined) {
+            return;
+        }
+
+        Log.v(this.TAG, `Replay ${pending.length} pre-init MMTS video NAL units`);
+        for (const pendingUnit of pending) {
+            this.processCompleteMfuUnit(asset.packetId, asset, pendingUnit.fragment, pendingUnit.unit);
+        }
+        this.flushCurrentVideoAccessUnit();
     }
 
     private dispatchVideoInitSegment(): void {
@@ -483,6 +640,7 @@ class MMTSDemuxer extends BaseDemuxer {
         Log.v(this.TAG, `Generated first MMTS HEVCDecoderConfigurationRecord for mimeType: ${meta.codec}`);
         this.onTrackMetadata && this.onTrackMetadata('video', meta);
         this.video_init_segment_dispatched_ = true;
+        this.replayPreInitVideoUnits();
 
         const mi = this.media_info_;
         mi.hasVideo = true;
@@ -509,8 +667,23 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        if (this.logged_video_segment_count_ < 16) {
+            this.logged_video_segment_count_++;
+            Log.v(
+                this.TAG,
+                `Dispatch MMTS video segment #${this.logged_video_segment_count_}, ` +
+                `samples=${this.video_track_.samples.length}, length=${this.video_track_.length}`
+            );
+        }
+
         this.onDataAvailable && this.onDataAvailable(null, this.video_track_);
-        this.video_track_ = {type: 'video', id: 1, sequenceNumber: 0, samples: [], length: 0};
+        this.video_track_ = {
+            type: 'video',
+            id: 1,
+            sequenceNumber: this.video_track_.sequenceNumber,
+            samples: [],
+            length: 0
+        };
     }
 
     private logSummary(parsedPacketCount: number): void {
