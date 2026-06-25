@@ -26,6 +26,7 @@ declare class MMTSProgram {
     parseMpuPacket(packet: MMTPPacket): MMTSParsedMpu | null;
     getAsset(packetId: number): MMTAsset | undefined;
     get streamCount(): number;
+    resetTimestamp(packetId: number, mpuSequenceNumber: number): void;
     nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null;
     private getStreamState;
     private assembleMfuFragment;

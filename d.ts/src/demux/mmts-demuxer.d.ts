@@ -23,6 +23,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private last_video_dts_;
     private last_video_pts_;
     private last_video_duration_;
+    private output_video_dts_base_;
     private primary_video_packet_id_;
     private media_info_;
     private video_metadata_;

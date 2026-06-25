@@ -58,6 +58,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private last_video_dts_: number = -1;
     private last_video_pts_: number = -1;
     private last_video_duration_: number = 17;
+    private output_video_dts_base_: number = -1;
     private primary_video_packet_id_: number = -1;
     private media_info_ = new MediaInfo();
     private video_metadata_ = {
@@ -413,8 +414,6 @@ class MMTSDemuxer extends BaseDemuxer {
                                         units: H265NaluHVC1[],
                                         length: number,
                                         keyframe: boolean): void {
-        const videoTimestamp = this.consumeVideoTimestamp(packetId, mpuSequenceNumber);
-
         if (!this.video_started_) {
             if (!keyframe) {
                 this.dropped_video_sample_count_++;
@@ -422,18 +421,29 @@ class MMTSDemuxer extends BaseDemuxer {
                     Log.v(
                         this.TAG,
                         `Drop MMTS video sample before first keyframe, ` +
-                        `dropped=${this.dropped_video_sample_count_}, units=${units.length}, ` +
-                        `length=${length}, dts=${videoTimestamp.dts}, pts=${videoTimestamp.pts}`
+                        `dropped=${this.dropped_video_sample_count_}, units=${units.length}, length=${length}`
                     );
                 }
                 return;
             }
             this.video_started_ = true;
+            this.program_.resetTimestamp(packetId, mpuSequenceNumber);
+            if (this.output_video_dts_base_ < 0) {
+                this.output_video_dts_base_ = 0;
+            }
             Log.v(this.TAG, `Start MMTS video at keyframe, units=${units.length}, length=${length}`);
         }
 
-        const pts = videoTimestamp.pts;
-        const dts = videoTimestamp.dts;
+        const videoTimestamp = this.consumeVideoTimestamp(packetId, mpuSequenceNumber);
+        if (this.output_video_dts_base_ === 0 && this.video_sample_index_ === 0) {
+            this.output_video_dts_base_ = videoTimestamp.dts;
+        }
+
+        let dts = videoTimestamp.dts - this.output_video_dts_base_;
+        let pts = videoTimestamp.pts - this.output_video_dts_base_;
+        if (pts < dts) {
+            pts = dts;
+        }
         this.video_sample_index_++;
 
         this.video_track_.samples.push({

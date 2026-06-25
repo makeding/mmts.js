@@ -107,6 +107,13 @@ class MMTSProgram {
         return Object.keys(this.assets_by_packet_id_).length;
     }
 
+    public resetTimestamp(packetId: number, mpuSequenceNumber: number): void {
+        const state = this.getStreamState(packetId);
+        state.lastMpuSequenceNumber = mpuSequenceNumber;
+        state.auCount = 0;
+        state.firstDts = undefined;
+    }
+
     public nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null {
         const asset = this.assets_by_packet_id_[packetId];
         if (asset === undefined ||
