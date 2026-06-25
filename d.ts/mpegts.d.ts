@@ -401,6 +401,7 @@ declare namespace Mpegts {
     interface MSEPlayer extends Player {
         switchPrimaryAudio(): void;
         switchSecondaryAudio(): void;
+        selectAudioTrack(packetId: number): void;
         mediaInfo: MSEPlayerMediaInfo;
         statisticsInfo: MSEPlayerStatisticsInfo;
     }
@@ -442,6 +443,9 @@ declare namespace Mpegts {
         SMPTE2038_METADATA_ARRIVED: string;
         PES_PRIVATE_DATA_DESCRIPTOR: string;
         PES_PRIVATE_DATA_ARRIVED: string;
+        MMTS_AUDIO_TRACKS: string;
+        MMTS_SUBTITLE_TRACKS: string;
+        MMTS_SUBTITLE_DATA_ARRIVED: string;
         STATISTICS_INFO: string;
     }
 

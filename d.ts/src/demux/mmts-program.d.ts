@@ -4,6 +4,8 @@ import { MFUFragment, MPUInfo } from './mpu';
 export interface MMTSTimestamp {
     dts: number;
     pts: number;
+    rawDts: number;
+    rawPts: number;
     timescale: number;
 }
 export interface MMTSCompletedMfuUnit {

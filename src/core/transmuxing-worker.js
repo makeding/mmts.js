@@ -22,6 +22,7 @@ import Polyfill from '../utils/polyfill.js';
 import TransmuxingController from './transmuxing-controller.js';
 import TransmuxingEvents from './transmuxing-events';
 import TSDemuxer from '../demux/ts-demuxer.ts';
+import MMTSDemuxer from '../demux/mmts-demuxer.ts';
 
 /* post message to worker:
    data: {
@@ -66,6 +67,9 @@ let TransmuxingWorker = function (self) {
                 controller.on(TransmuxingEvents.SCTE35_METADATA_ARRIVED, onSCTE35MetadataArrived.bind(this));
                 controller.on(TransmuxingEvents.PES_PRIVATE_DATA_DESCRIPTOR, onPESPrivateDataDescriptor.bind(this));
                 controller.on(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, onPESPrivateDataArrived.bind(this));
+                controller.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, onMMTSAudioTracks.bind(this));
+                controller.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, onMMTSSubtitleTracks.bind(this));
+                controller.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, onMMTSSubtitleDataArrived.bind(this));
                 controller.on(TransmuxingEvents.STATISTICS_INFO, onStatisticsInfo.bind(this));
                 controller.on(TransmuxingEvents.RECOMMEND_SEEKPOINT, onRecommendSeekpoint.bind(this));
                 break;
@@ -103,12 +107,24 @@ let TransmuxingWorker = function (self) {
                 break;
             }
             case 'switch_audio':
+                const audioTrack = e.data.audio_track || e.data.param;
                 if (controller._demuxer instanceof TSDemuxer) {
-                    if (e.data.param === 'primary') {
+                    if (audioTrack === 'primary') {
                         controller._demuxer.preferred_secondary_audio = false;
-                    } else if (e.data.param === 'secondary') {
+                    } else if (audioTrack === 'secondary') {
                         controller._demuxer.preferred_secondary_audio = true;
                     }
+                } else if (controller._demuxer instanceof MMTSDemuxer) {
+                    if (audioTrack === 'primary') {
+                        controller._demuxer.selectPrimaryAudioTrack();
+                    } else if (audioTrack === 'secondary') {
+                        controller._demuxer.selectSecondaryAudioTrack();
+                    }
+                }
+                break;
+            case 'select_audio_track':
+                if (controller._demuxer instanceof MMTSDemuxer) {
+                    controller._demuxer.selectAudioTrack(e.data.packet_id);
                 }
                 break;
         }
@@ -241,6 +257,30 @@ let TransmuxingWorker = function (self) {
     function onPESPrivateDataArrived(data) {
         let obj = {
             msg: TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED,
+            data: data
+        };
+        self.postMessage(obj);
+    }
+
+    function onMMTSAudioTracks(data) {
+        let obj = {
+            msg: TransmuxingEvents.MMTS_AUDIO_TRACKS,
+            data: data
+        };
+        self.postMessage(obj);
+    }
+
+    function onMMTSSubtitleTracks(data) {
+        let obj = {
+            msg: TransmuxingEvents.MMTS_SUBTITLE_TRACKS,
+            data: data
+        };
+        self.postMessage(obj);
+    }
+
+    function onMMTSSubtitleDataArrived(data) {
+        let obj = {
+            msg: TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED,
             data: data
         };
         self.postMessage(obj);

@@ -15,6 +15,16 @@ export interface MMTAsset {
     mediaType: 'video' | 'audio' | 'subtitle' | 'data' | 'unknown';
     codec?: string;
     language?: string;
+    componentTag?: number;
+    audioComponentType?: number;
+    audioComponentTag?: number;
+    audioStreamType?: number;
+    audioSimulcastGroupTag?: number;
+    audioMainComponent?: boolean;
+    audioQualityIndicator?: number;
+    audioSamplingRateCode?: number;
+    dataComponentId?: number;
+    dataComponentInfo?: Uint8Array;
     timestampDescriptorCount?: number;
     extendedTimestampDescriptorCount?: number;
     timestampDescriptors?: MMTMpuTimestampDescriptor[];
@@ -57,6 +67,7 @@ const LAST_FRAGMENT = 3;
 
 const MPU_TIMESTAMP_DESCRIPTOR = 0x0001;
 const VIDEO_COMPONENT_DESCRIPTOR = 0x8010;
+const MH_STREAM_IDENTIFICATION_DESCRIPTOR = 0x8011;
 const MH_AUDIO_COMPONENT_DESCRIPTOR = 0x8014;
 const MH_DATA_COMPONENT_DESCRIPTOR = 0x8020;
 const MPU_EXTENDED_TIMESTAMP_DESCRIPTOR = 0x8026;
@@ -415,6 +426,9 @@ export default class MMTSI {
                 case VIDEO_COMPONENT_DESCRIPTOR:
                     MMTSI.parseVideoComponentDescriptor(asset, reader);
                     break;
+                case MH_STREAM_IDENTIFICATION_DESCRIPTOR:
+                    MMTSI.parseStreamIdentificationDescriptor(asset, reader);
+                    break;
                 case MH_AUDIO_COMPONENT_DESCRIPTOR:
                     MMTSI.parseAudioComponentDescriptor(asset, reader);
                     break;
@@ -548,15 +562,22 @@ export default class MMTSI {
             return;
         }
         const descriptor = new ByteReader(reader.readBytes(length));
-        if (!descriptor.canRead(9)) {
+        if (!descriptor.canRead(10)) {
             return;
         }
 
         const streamContent = descriptor.readU8() & 0x0f;
-        descriptor.skip(3);
+        asset.audioComponentType = descriptor.readU8();
+        asset.audioComponentTag = descriptor.readU16();
+        asset.componentTag = asset.audioComponentTag;
         const streamType = descriptor.readU8();
-        descriptor.skip(1);
-        const multiLingual = (descriptor.readU8() >> 7) !== 0;
+        asset.audioStreamType = streamType;
+        asset.audioSimulcastGroupTag = descriptor.readU8();
+        const flags = descriptor.readU8();
+        const multiLingual = (flags >> 7) !== 0;
+        asset.audioMainComponent = ((flags >> 6) & 0x01) !== 0;
+        asset.audioQualityIndicator = (flags >> 4) & 0x03;
+        asset.audioSamplingRateCode = (flags >> 1) & 0x07;
         asset.language = descriptor.readAscii(3);
         if (multiLingual && descriptor.canRead(3)) {
             descriptor.skip(3);
@@ -573,13 +594,30 @@ export default class MMTSI {
         }
     }
 
+    private static parseStreamIdentificationDescriptor(asset: MMTAsset, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, MH_STREAM_IDENTIFICATION_DESCRIPTOR);
+        if (length < 0 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        if (descriptor.canRead(2)) {
+            asset.componentTag = descriptor.readU16();
+        }
+    }
+
     private static parseDataComponentDescriptor(asset: MMTAsset, reader: ByteReader): void {
         const length = MMTSI.readShortDescriptorHeader(reader, MH_DATA_COMPONENT_DESCRIPTOR);
         if (length < 0 || !reader.canRead(length)) {
             return;
         }
         const descriptor = new ByteReader(reader.readBytes(length));
-        if (descriptor.canRead(2) && descriptor.readU16() === 0x0020) {
+        if (!descriptor.canRead(2)) {
+            return;
+        }
+        const dataComponentId = descriptor.readU16();
+        asset.dataComponentId = dataComponentId;
+        asset.dataComponentInfo = descriptor.remainingBytes();
+        if (dataComponentId === 0x0020 || dataComponentId === 0x0008) {
             asset.codec = 'ttml';
         }
     }

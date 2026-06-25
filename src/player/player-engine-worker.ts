@@ -34,6 +34,7 @@ import {
     WorkerCommandPacketTimeUpdate,
     WorkerCommandPacketReadyStateChange,
     WorkerCommandPacketSwitchAudio,
+    WorkerCommandPacketSelectAudioTrack,
 } from './player-engine-worker-cmd-def.js';
 import {
     WorkerMessagePacket,
@@ -137,6 +138,11 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
                 } else if (packet.audio_track === 'secondary') {
                     transmuxer.switchSecondaryAudio();
                 }
+                break;
+            }
+            case 'select_audio_track': {
+                const packet = command_packet as WorkerCommandPacketSelectAudioTrack;
+                transmuxer.selectAudioTrack(packet.packet_id);
                 break;
             }
         }
@@ -285,6 +291,15 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
         });
         transmuxer.on(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, (private_data: any) => {
             emitPlayerEventsExtraData(PlayerEvents.PES_PRIVATE_DATA_ARRIVED, private_data);
+        });
+        transmuxer.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, (audio_tracks: any) => {
+            emitPlayerEventsExtraData(PlayerEvents.MMTS_AUDIO_TRACKS, audio_tracks);
+        });
+        transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, (subtitle_tracks: any) => {
+            emitPlayerEventsExtraData(PlayerEvents.MMTS_SUBTITLE_TRACKS, subtitle_tracks);
+        });
+        transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, (subtitle_data: any) => {
+            emitPlayerEventsExtraData(PlayerEvents.MMTS_SUBTITLE_DATA_ARRIVED, subtitle_data);
         });
 
         transmuxer.open();

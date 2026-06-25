@@ -32,6 +32,7 @@ declare class PlayerEngineDedicatedThread implements PlayerEngine {
     seek(seconds: number): void;
     switchPrimaryAudio(): void;
     switchSecondaryAudio(): void;
+    selectAudioTrack(packetId: number): void;
     get mediaInfo(): MediaInfo;
     get statisticsInfo(): any;
     _onLoggingConfigChanged(config: any): void;

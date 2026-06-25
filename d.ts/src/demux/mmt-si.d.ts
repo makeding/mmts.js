@@ -13,6 +13,16 @@ export interface MMTAsset {
     mediaType: 'video' | 'audio' | 'subtitle' | 'data' | 'unknown';
     codec?: string;
     language?: string;
+    componentTag?: number;
+    audioComponentType?: number;
+    audioComponentTag?: number;
+    audioStreamType?: number;
+    audioSimulcastGroupTag?: number;
+    audioMainComponent?: boolean;
+    audioQualityIndicator?: number;
+    audioSamplingRateCode?: number;
+    dataComponentId?: number;
+    dataComponentInfo?: Uint8Array;
     timestampDescriptorCount?: number;
     extendedTimestampDescriptorCount?: number;
     timestampDescriptors?: MMTMpuTimestampDescriptor[];
@@ -61,6 +71,7 @@ export default class MMTSI {
     private static parseMpuExtendedTimestampDescriptor;
     private static parseVideoComponentDescriptor;
     private static parseAudioComponentDescriptor;
+    private static parseStreamIdentificationDescriptor;
     private static parseDataComponentDescriptor;
     private static readShortDescriptorHeader;
     private static skipDescriptor;

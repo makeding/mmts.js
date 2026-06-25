@@ -103,6 +103,10 @@ class MSEPlayer {
         this._player_engine.switchSecondaryAudio();
     }
 
+    public selectAudioTrack(packetId: number): void {
+        this._player_engine.selectAudioTrack(packetId);
+    }
+
     public get type(): string {
         return this._type;
     }

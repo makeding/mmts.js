@@ -10,6 +10,11 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_;
     private logged_video_timestamp_correction_count_;
     private logged_audio_timestamp_fallback_count_;
+    private audio_track_infos_by_packet_id_;
+    private subtitle_track_infos_by_packet_id_;
+    private audio_parse_states_by_packet_id_;
+    private audio_tracks_signature_;
+    private subtitle_tracks_signature_;
     private dropped_video_sample_count_;
     private last_video_dts_;
     private last_video_pts_;
@@ -43,6 +48,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private processAudioMfuUnit;
     private wrapLatmPayloadWithLoasHeader;
     private parseMMTSLOASAACPayload;
+    private processSubtitleMfuUnit;
+    private extractSubtitlePayload;
     private flushCurrentVideoAccessUnit;
     private appendStandaloneVideoSample;
     private consumeVideoTimestamp;
@@ -50,9 +57,26 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private isH265VclNalu;
     private isH265IrapNalu;
     private maybeSelectPrimaryAudioAsset;
+    selectAudioTrack(packetId: number): boolean;
+    selectPrimaryAudioTrack(): void;
+    selectSecondaryAudioTrack(): void;
     private maybeSelectPrimaryVideoAsset;
     private scorePendingVideoAsset;
     private resetVideoBootstrapState;
+    private updateTrackInfo;
+    private updateAudioTrackInfoFromFrame;
+    private getAudioParseState;
+    private dispatchAudioTracksIfChanged;
+    private dispatchSubtitleTracksIfChanged;
+    private getSortedAudioTrackInfos;
+    private getSortedSubtitleTrackInfos;
+    private audioSampleRateFromCode;
+    private audioLayoutFromComponentType;
+    private audioChannelCountFromComponentType;
+    private audioLayoutFromAacConfig;
+    private audioChannelCountFromAacConfig;
+    private logSubtitleData;
+    private toHex;
     private detectAudioMetadataChange;
     private readH265NaluType;
     private cachePendingMfuUnit;
@@ -64,6 +88,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private dispatchVideoInitSegment;
     private dispatchVideoMediaSegment;
     private formatHex;
+    private readU16;
+    private readU32;
     private payloadTypeName;
     private scramblingName;
 }

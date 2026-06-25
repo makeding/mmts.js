@@ -25,6 +25,8 @@ const MAX_TIMESTAMP_DESCRIPTORS = 100;
 export interface MMTSTimestamp {
     dts: number;
     pts: number;
+    rawDts: number;
+    rawPts: number;
     timescale: number;
 }
 
@@ -161,13 +163,15 @@ class MMTSProgram {
         }
 
         const pts = dts + extendedTimestampDescriptor.au[auIndex].dtsPtsOffset;
+        const rawDts = dts;
+        const rawPts = pts;
         if (state.firstDts === undefined) {
             state.firstDts = dts;
         }
         dts -= state.firstDts;
         const normalizedPts = pts - state.firstDts;
         state.auCount++;
-        return {dts, pts: normalizedPts, timescale};
+        return {dts, pts: normalizedPts, rawDts, rawPts, timescale};
     }
 
     private getStreamState(packetId: number): MMTSStreamState {

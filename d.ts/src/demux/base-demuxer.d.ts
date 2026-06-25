@@ -5,6 +5,7 @@ import { SCTE35Data } from './scte35';
 import { KLVData } from './klv';
 import { PGSData } from './pgs-data';
 import { SEIData } from './sei';
+import { MMTSAudioTrackList, MMTSSubtitleData, MMTSSubtitleTrackList } from './mmts-track-data';
 type OnErrorCallback = (type: string, info: string) => void;
 type OnMediaInfoCallback = (mediaInfo: MediaInfo) => void;
 type OnMetaDataArrivedCallback = (metadata: any) => void;
@@ -19,6 +20,9 @@ type OnSEICallback = (sei_data: SEIData) => void;
 type OnSCTE35MetadataCallback = (scte35_data: SCTE35Data) => void;
 type OnPESPrivateDataCallback = (private_data: PESPrivateData) => void;
 type OnPESPrivateDataDescriptorCallback = (private_data_descriptor: PESPrivateDataDescriptor) => void;
+type OnMMTSAudioTracksCallback = (audio_tracks: MMTSAudioTrackList) => void;
+type OnMMTSSubtitleTracksCallback = (subtitle_tracks: MMTSSubtitleTrackList) => void;
+type OnMMTSSubtitleDataCallback = (subtitle_data: MMTSSubtitleData) => void;
 export default abstract class BaseDemuxer {
     onError: OnErrorCallback;
     onMediaInfo: OnMediaInfoCallback;
@@ -34,6 +38,9 @@ export default abstract class BaseDemuxer {
     onSCTE35Metadata: OnSCTE35MetadataCallback;
     onPESPrivateData: OnPESPrivateDataCallback;
     onPESPrivateDataDescriptor: OnPESPrivateDataDescriptorCallback;
+    onMMTSAudioTracks: OnMMTSAudioTracksCallback;
+    onMMTSSubtitleTracks: OnMMTSSubtitleTracksCallback;
+    onMMTSSubtitleData: OnMMTSSubtitleDataCallback;
     constructor();
     destroy(): void;
     abstract parseChunks(chunk: ArrayBuffer, byteStart: number): number;

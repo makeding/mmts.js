@@ -66,6 +66,35 @@
     margin-bottom: 10px;
 }
 
+.track-panel {
+    display: block;
+    width: 100%;
+    margin: 0 auto 10px auto;
+    font-size: 12px;
+}
+
+.track-title {
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.track-list {
+    border: 1px solid #CCCCCC;
+    min-height: 20px;
+    padding: 4px 6px;
+    font-family: Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+}
+
+.track-item {
+    line-height: 18px;
+    cursor: pointer;
+}
+
+.track-item.selected {
+    font-weight: bold;
+}
+
 .logcatBox {
     border-color: #CCCCCC;
     font-size: 11px;

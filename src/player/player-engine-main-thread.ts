@@ -255,6 +255,15 @@ class PlayerEngineMainThread implements PlayerEngine {
         this._transmuxer.on(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, (private_data: any) => {
             this._emitter.emit(PlayerEvents.PES_PRIVATE_DATA_ARRIVED, private_data);
         });
+        this._transmuxer.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, (audio_tracks: any) => {
+            this._emitter.emit(PlayerEvents.MMTS_AUDIO_TRACKS, audio_tracks);
+        });
+        this._transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, (subtitle_tracks: any) => {
+            this._emitter.emit(PlayerEvents.MMTS_SUBTITLE_TRACKS, subtitle_tracks);
+        });
+        this._transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, (subtitle_data: any) => {
+            this._emitter.emit(PlayerEvents.MMTS_SUBTITLE_DATA_ARRIVED, subtitle_data);
+        });
 
         this._seeking_handler = new SeekingHandler(
             this._config,
@@ -345,6 +354,10 @@ class PlayerEngineMainThread implements PlayerEngine {
 
     public switchSecondaryAudio(): void {
         this._transmuxer.switchSecondaryAudio();
+    }
+
+    public selectAudioTrack(packetId: number): void {
+        this._transmuxer.selectAudioTrack(packetId);
     }
 
     public get mediaInfo(): MediaInfo {

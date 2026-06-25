@@ -360,6 +360,9 @@ class TransmuxingController {
 
         demuxer.onError = this._onDemuxException.bind(this);
         demuxer.onMediaInfo = this._onMediaInfo.bind(this);
+        demuxer.onMMTSAudioTracks = this._onMMTSAudioTracks.bind(this);
+        demuxer.onMMTSSubtitleTracks = this._onMMTSSubtitleTracks.bind(this);
+        demuxer.onMMTSSubtitleData = this._onMMTSSubtitleData.bind(this);
 
         this._remuxer.bindDataSource(this._demuxer);
         this._demuxer.bindDataSource(this._ioctl);
@@ -517,6 +520,18 @@ class TransmuxingController {
         }
 
         this._emitter.emit(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, private_data);
+    }
+
+    _onMMTSAudioTracks(audio_tracks) {
+        this._emitter.emit(TransmuxingEvents.MMTS_AUDIO_TRACKS, audio_tracks);
+    }
+
+    _onMMTSSubtitleTracks(subtitle_tracks) {
+        this._emitter.emit(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, subtitle_tracks);
+    }
+
+    _onMMTSSubtitleData(subtitle_data) {
+        this._emitter.emit(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, subtitle_data);
     }
 
     _onIOSeeked() {

@@ -33,6 +33,7 @@ declare class PlayerEngineMainThread implements PlayerEngine {
     seek(seconds: number): void;
     switchPrimaryAudio(): void;
     switchSecondaryAudio(): void;
+    selectAudioTrack(packetId: number): void;
     get mediaInfo(): MediaInfo;
     get statisticsInfo(): any;
     private _onMSESourceOpen;

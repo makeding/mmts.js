@@ -16,6 +16,7 @@ declare class MSEPlayer {
     pause(): void;
     switchPrimaryAudio(): void;
     switchSecondaryAudio(): void;
+    selectAudioTrack(packetId: number): void;
     get type(): string;
     get buffered(): TimeRanges;
     get duration(): number;

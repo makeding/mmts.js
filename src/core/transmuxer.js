@@ -25,6 +25,7 @@ import TransmuxingEvents from './transmuxing-events';
 import TransmuxingWorker from './transmuxing-worker.js';
 import MediaInfo from './media-info.js';
 import TSDemuxer from '../demux/ts-demuxer.ts';
+import MMTSDemuxer from '../demux/mmts-demuxer.ts';
 
 class Transmuxer {
 
@@ -71,6 +72,9 @@ class Transmuxer {
             ctl.on(TransmuxingEvents.SCTE35_METADATA_ARRIVED, this._onSCTE35MetadataArrived.bind(this));
             ctl.on(TransmuxingEvents.PES_PRIVATE_DATA_DESCRIPTOR, this._onPESPrivateDataDescriptor.bind(this));
             ctl.on(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, this._onPESPrivateDataArrived.bind(this));
+            ctl.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, this._onMMTSAudioTracks.bind(this));
+            ctl.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, this._onMMTSSubtitleTracks.bind(this));
+            ctl.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, this._onMMTSSubtitleDataArrived.bind(this));
             ctl.on(TransmuxingEvents.STATISTICS_INFO, this._onStatisticsInfo.bind(this));
             ctl.on(TransmuxingEvents.RECOMMEND_SEEKPOINT, this._onRecommendSeekpoint.bind(this));
         }
@@ -150,6 +154,8 @@ class Transmuxer {
         } else {
             if (this._controller._demuxer instanceof TSDemuxer) {
                 this._controller._demuxer.preferred_secondary_audio = false;
+            } else if (this._controller._demuxer instanceof MMTSDemuxer) {
+                this._controller._demuxer.selectPrimaryAudioTrack();
             }
         }
     }
@@ -160,7 +166,17 @@ class Transmuxer {
         } else {
             if (this._controller._demuxer instanceof TSDemuxer) {
                 this._controller._demuxer.preferred_secondary_audio = true;
+            } else if (this._controller._demuxer instanceof MMTSDemuxer) {
+                this._controller._demuxer.selectSecondaryAudioTrack();
             }
+        }
+    }
+
+    selectAudioTrack(packetId) {
+        if (this._worker) {
+            this._worker.postMessage({cmd: 'select_audio_track', packet_id: packetId});
+        } else if (this._controller._demuxer instanceof MMTSDemuxer) {
+            this._controller._demuxer.selectAudioTrack(packetId);
         }
     }
 
@@ -261,6 +277,24 @@ class Transmuxer {
         });
     }
 
+    _onMMTSAudioTracks(data) {
+        Promise.resolve().then(() => {
+            this._emitter.emit(TransmuxingEvents.MMTS_AUDIO_TRACKS, data);
+        });
+    }
+
+    _onMMTSSubtitleTracks(data) {
+        Promise.resolve().then(() => {
+            this._emitter.emit(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, data);
+        });
+    }
+
+    _onMMTSSubtitleDataArrived(data) {
+        Promise.resolve().then(() => {
+            this._emitter.emit(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, data);
+        });
+    }
+
     _onStatisticsInfo(statisticsInfo) {
         Promise.resolve().then(() => {
             this._emitter.emit(TransmuxingEvents.STATISTICS_INFO, statisticsInfo);
@@ -326,6 +360,9 @@ class Transmuxer {
             case TransmuxingEvents.SEI_ARRIVED:
             case TransmuxingEvents.PES_PRIVATE_DATA_DESCRIPTOR:
             case TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED:
+            case TransmuxingEvents.MMTS_AUDIO_TRACKS:
+            case TransmuxingEvents.MMTS_SUBTITLE_TRACKS:
+            case TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED:
             case TransmuxingEvents.STATISTICS_INFO:
                 this._emitter.emit(message.msg, data);
                 break;

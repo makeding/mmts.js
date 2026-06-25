@@ -39,6 +39,7 @@ import {
     WorkerCommandPacketReadyStateChange,
     WorkerCommandPacketUnbufferedSeek,
     WorkerCommandPacketSwitchAudio,
+    WorkerCommandPacketSelectAudioTrack,
 } from './player-engine-worker-cmd-def.js';
 import {
     WorkerMessagePacket,
@@ -321,6 +322,13 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
             cmd: 'switch_audio',
             audio_track: 'secondary',
         } as WorkerCommandPacketSwitchAudio);
+    }
+
+    public selectAudioTrack(packetId: number): void {
+        this._worker.postMessage({
+            cmd: 'select_audio_track',
+            packet_id: packetId,
+        } as WorkerCommandPacketSelectAudioTrack);
     }
 
     public get mediaInfo(): MediaInfo {
