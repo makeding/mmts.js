@@ -76,7 +76,6 @@ class MMTSProgram {
         }
 
         const units: MMTSCompletedMfuUnit[] = [];
-        this.observeMpuSequence(packet.packetId, mpu.mpuSequenceNumber);
         for (const fragment of mpu.mfuFragments) {
             const unit = this.assembleMfuFragment(
                 packet.packetId,
@@ -127,6 +126,11 @@ class MMTSProgram {
         }
 
         const state = this.getStreamState(packetId);
+        if (state.lastMpuSequenceNumber !== mpuSequenceNumber) {
+            state.lastMpuSequenceNumber = mpuSequenceNumber;
+            state.auCount = 0;
+        }
+
         const auIndex = state.auCount;
         if (auIndex >= extendedTimestampDescriptor.au.length) {
             return null;
@@ -147,23 +151,6 @@ class MMTSProgram {
         const normalizedPts = pts - state.firstDts;
         state.auCount++;
         return {dts, pts: normalizedPts, timescale};
-    }
-
-    private observeMpuSequence(packetId: number, mpuSequenceNumber: number): void {
-        const state = this.getStreamState(packetId);
-        if (state.lastMpuSequenceNumber === undefined) {
-            state.lastMpuSequenceNumber = mpuSequenceNumber;
-            state.auCount = 0;
-            return;
-        }
-
-        if (mpuSequenceNumber === ((state.lastMpuSequenceNumber + 1) >>> 0)) {
-            state.lastMpuSequenceNumber = mpuSequenceNumber;
-            state.auCount = 0;
-        } else if (mpuSequenceNumber !== state.lastMpuSequenceNumber) {
-            state.lastMpuSequenceNumber = mpuSequenceNumber;
-            state.auCount = 0;
-        }
     }
 
     private getStreamState(packetId: number): MMTSStreamState {

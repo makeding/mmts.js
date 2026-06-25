@@ -17,7 +17,12 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_video_sample_count_;
     private logged_video_segment_count_;
     private logged_video_irap_count_;
+    private logged_video_timestamp_fallback_count_;
+    private logged_video_timestamp_correction_count_;
     private dropped_video_sample_count_;
+    private last_video_dts_;
+    private last_video_pts_;
+    private last_video_duration_;
     private primary_video_packet_id_;
     private media_info_;
     private video_metadata_;
@@ -39,6 +44,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private appendH265NaluToAccessUnit;
     private flushCurrentVideoAccessUnit;
     private appendStandaloneVideoSample;
+    private consumeVideoTimestamp;
     private isH265VclNalu;
     private isH265IrapNalu;
     private maybeSelectPrimaryVideoAsset;
