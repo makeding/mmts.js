@@ -21,6 +21,7 @@ interface VideoAccessUnitState {
     units: H265NaluHVC1[];
     length: number;
     keyframe: boolean;
+    hasVcl: boolean;
 }
 
 interface PendingMFUUnit {
@@ -49,6 +50,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private logged_video_nalu_count_: number = 0;
     private logged_video_sample_count_: number = 0;
     private logged_video_segment_count_: number = 0;
+    private logged_video_irap_count_: number = 0;
     private dropped_video_sample_count_: number = 0;
     private primary_video_packet_id_: number = -1;
     private media_info_ = new MediaInfo();
@@ -179,10 +181,7 @@ class MMTSDemuxer extends BaseDemuxer {
             }
 
             this.assets_by_packet_id_[asset.packetId] = asset;
-            if (asset.assetType === 'hev1' && this.primary_video_packet_id_ < 0) {
-                this.primary_video_packet_id_ = asset.packetId;
-                Log.v(this.TAG, `Selected primary MMTS video packet_id=${this.formatHex(asset.packetId, 4)}`);
-            }
+            this.maybeSelectPrimaryVideoAsset(asset);
             const key = `${asset.packetId}:${asset.assetType}:${asset.codec || ''}:${asset.language || ''}`;
 
             if (!this.logged_asset_keys_[key]) {
@@ -339,6 +338,8 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        this.maybeSelectPrimaryVideoAsset(asset);
+
         if (asset.packetId !== this.primary_video_packet_id_) {
             return;
         }
@@ -413,22 +414,42 @@ class MMTSDemuxer extends BaseDemuxer {
 
         if (!this.video_init_segment_dispatched_ || !this.isH265VclNalu(naluType)) {
             if (this.video_init_segment_dispatched_ && fragment.sampleNumber !== undefined) {
-                this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, false);
+                this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, false, false);
             }
             return;
         }
 
         const keyframe = this.isH265IrapNalu(naluType);
+        if (keyframe) {
+            this.logged_video_irap_count_++;
+            if (this.logged_video_irap_count_ <= 8 || this.logged_video_irap_count_ % 100 === 0) {
+                Log.v(
+                    this.TAG,
+                    `Found MMTS HEVC IRAP #${this.logged_video_irap_count_}, ` +
+                    `packet_id=${this.formatHex(packetId, 4)}, ` +
+                    `type=${naluType}, sample=${fragment.sampleNumber !== undefined ? fragment.sampleNumber : '-'}`
+                );
+            }
+        }
 
         if (fragment.sampleNumber === undefined) {
             this.appendStandaloneVideoSample([hvc1], hvc1.data.byteLength, keyframe);
             return;
         }
 
-        this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, keyframe);
+        this.appendH265NaluToAccessUnit(fragment.sampleNumber, hvc1, keyframe, true);
     }
 
-    private appendH265NaluToAccessUnit(sampleNumber: number, nalu: H265NaluHVC1, keyframe: boolean): void {
+    private appendH265NaluToAccessUnit(sampleNumber: number,
+                                       nalu: H265NaluHVC1,
+                                       keyframe: boolean,
+                                       isVcl: boolean): void {
+        if (nalu.type === H265NaluType.kSliceAUD &&
+            this.current_video_access_unit_ !== null &&
+            this.current_video_access_unit_.hasVcl) {
+            this.flushCurrentVideoAccessUnit();
+        }
+
         if (this.current_video_access_unit_ !== null && this.current_video_access_unit_.sampleNumber !== sampleNumber) {
             this.flushCurrentVideoAccessUnit();
         }
@@ -438,13 +459,15 @@ class MMTSDemuxer extends BaseDemuxer {
                 sampleNumber,
                 units: [],
                 length: 0,
-                keyframe: false
+                keyframe: false,
+                hasVcl: false
             };
         }
 
         this.current_video_access_unit_.units.push(nalu);
         this.current_video_access_unit_.length += nalu.data.byteLength;
         this.current_video_access_unit_.keyframe = this.current_video_access_unit_.keyframe || keyframe;
+        this.current_video_access_unit_.hasVcl = this.current_video_access_unit_.hasVcl || isVcl;
     }
 
     private flushCurrentVideoAccessUnit(): void {
@@ -499,7 +522,7 @@ class MMTSDemuxer extends BaseDemuxer {
             );
         }
 
-        if (this.video_track_.samples.length >= 1) {
+        if (this.video_track_.samples.length >= 8) {
             this.dispatchVideoMediaSegment();
         }
     }
@@ -510,6 +533,91 @@ class MMTSDemuxer extends BaseDemuxer {
 
     private isH265IrapNalu(naluType: number): boolean {
         return naluType >= 16 && naluType <= 23;
+    }
+
+    private maybeSelectPrimaryVideoAsset(asset: MMTAsset): void {
+        if (asset.assetType !== 'hev1' || this.video_started_) {
+            return;
+        }
+
+        const currentScore = this.primary_video_packet_id_ >= 0
+            ? this.scorePendingVideoAsset(this.primary_video_packet_id_)
+            : -1;
+        const nextScore = this.scorePendingVideoAsset(asset.packetId);
+
+        if (this.primary_video_packet_id_ >= 0 && nextScore <= currentScore) {
+            return;
+        }
+
+        const previousPacketId = this.primary_video_packet_id_;
+        if (previousPacketId !== asset.packetId) {
+            this.resetVideoBootstrapState();
+        }
+        this.primary_video_packet_id_ = asset.packetId;
+        Log.v(
+            this.TAG,
+            `${previousPacketId >= 0 ? 'Switch' : 'Select'} primary MMTS video ` +
+            `packet_id=${this.formatHex(asset.packetId, 4)}, score=${nextScore}`
+        );
+    }
+
+    private scorePendingVideoAsset(packetId: number): number {
+        const pending = this.pending_mfu_units_by_packet_id_[packetId];
+        if (pending === undefined || pending.length === 0) {
+            return 0;
+        }
+
+        let score = 0;
+        for (const pendingUnit of pending) {
+            const naluType = this.readH265NaluType(pendingUnit.unit);
+            switch (naluType) {
+                case H265NaluType.kSliceVPS:
+                    score += 100;
+                    break;
+                case H265NaluType.kSliceSPS:
+                    score += 80;
+                    break;
+                case H265NaluType.kSlicePPS:
+                    score += 40;
+                    break;
+                case H265NaluType.kSliceAUD:
+                case H265NaluType.kSliceSEI:
+                case H265NaluType.kSliceSEISuffix:
+                    score += 1;
+                    break;
+                default:
+                    if (this.isH265IrapNalu(naluType)) {
+                        score += 1000;
+                    } else if (this.isH265VclNalu(naluType)) {
+                        score += 2;
+                    }
+                    break;
+            }
+        }
+        return score;
+    }
+
+    private resetVideoBootstrapState(): void {
+        this.video_metadata_ = {
+            vps: undefined,
+            sps: undefined,
+            pps: undefined,
+            details: undefined
+        };
+        this.video_track_ = {type: 'video', id: 1, sequenceNumber: this.video_track_.sequenceNumber, samples: [], length: 0};
+        this.video_init_segment_dispatched_ = false;
+        this.video_sample_index_ = 0;
+        this.video_started_ = false;
+        this.current_video_access_unit_ = null;
+        this.pre_init_video_units_ = [];
+    }
+
+    private readH265NaluType(unit: Uint8Array): number {
+        const unitLength = MPU.readLengthPrefixedUnitLength(unit);
+        if (unitLength === undefined || unitLength !== unit.byteLength - 4 || unit.byteLength < 6) {
+            return -1;
+        }
+        return (unit[4] >> 1) & 0x3f;
     }
 
     private cachePendingMfuUnit(packetId: number, fragment: MFUFragment, unit: Uint8Array): void {
