@@ -3,26 +3,13 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private readonly TAG;
     private config_;
     private stash_;
-    private parsed_packet_count_;
     private parsed_mmtp_count_;
-    private last_summary_tlv_count_;
-    private tlv_packet_type_counts_;
-    private mmtp_packet_id_counts_;
     private program_;
     private pending_mfu_units_by_packet_id_;
     private logged_asset_keys_;
-    private logged_mpu_header_count_;
-    private logged_mfu_unit_count_;
-    private logged_video_nalu_count_;
-    private logged_video_sample_count_;
-    private logged_video_segment_count_;
-    private logged_video_irap_count_;
     private logged_video_timestamp_fallback_count_;
     private logged_video_timestamp_correction_count_;
-    private logged_audio_sample_count_;
-    private logged_audio_segment_count_;
-    private logged_audio_timestamp_miss_count_;
-    private logged_audio_parse_miss_count_;
+    private logged_audio_timestamp_fallback_count_;
     private dropped_video_sample_count_;
     private last_video_dts_;
     private last_video_pts_;
@@ -51,7 +38,6 @@ declare class MMTSDemuxer extends BaseDemuxer {
     parseChunks(chunk: ArrayBuffer, byteStart: number): number;
     private parseSignalingMessages;
     private parseMpu;
-    private logCompleteMfuUnit;
     private processCompleteMfuUnit;
     private appendH265NaluToAccessUnit;
     private processAudioMfuUnit;
@@ -60,6 +46,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private flushCurrentVideoAccessUnit;
     private appendStandaloneVideoSample;
     private consumeVideoTimestamp;
+    private consumeAudioTimestamp;
     private isH265VclNalu;
     private isH265IrapNalu;
     private maybeSelectPrimaryAudioAsset;
@@ -76,11 +63,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private dispatchAudioMediaSegment;
     private dispatchVideoInitSegment;
     private dispatchVideoMediaSegment;
-    private logSummary;
     private formatHex;
     private payloadTypeName;
     private scramblingName;
-    private fragmentTypeName;
-    private fragmentationName;
 }
 export default MMTSDemuxer;
