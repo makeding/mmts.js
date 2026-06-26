@@ -98,7 +98,9 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private dispatchVideoTracksIfChanged;
     private dispatchSubtitleTracksIfChanged;
     private isMMTSVideoFallback;
-    private getMMTSBroadcastMode;
+    private getMMTSSelectedVideoRole;
+    private findMMTSPrimaryVideoTrack;
+    private findMMTSSecondaryVideoTrack;
     private getSortedAudioTrackInfos;
     private getSortedVideoTrackInfos;
     private getSortedSubtitleTrackInfos;

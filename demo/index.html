@@ -270,10 +270,10 @@
 
             var lines = [];
             lines.push(
-                'mode=' + (mmtsVideoTracks.broadcastMode || 'unknown') +
+                'selected=' + (mmtsVideoTracks.selectedRole || 'unknown') +
                 ' fallback=' + (mmtsVideoTracks.fallback ? 'yes' : 'no') +
-                ' main=' + (mmtsVideoTracks.hasMain ? (mmtsVideoTracks.mainActive ? 'active' : 'inactive') : 'missing') +
-                ' rain=' + (mmtsVideoTracks.hasRain ? (mmtsVideoTracks.rainActive ? 'active' : 'inactive') : 'missing')
+                ' primary=' + (mmtsVideoTracks.hasPrimary ? (mmtsVideoTracks.primaryActive ? 'active' : 'inactive') : 'missing') +
+                ' secondary=' + (mmtsVideoTracks.hasSecondary ? (mmtsVideoTracks.secondaryActive ? 'active' : 'inactive') : 'missing')
             );
             mmtsVideoTracks.tracks.forEach(function(track) {
                 lines.push(formatMMTSVideoTrack(track));
@@ -288,6 +288,9 @@
             parts.push('packet_id=0x' + Number(track.packetId).toString(16));
             if (track.resolutionLabel) {
                 parts.push(track.resolutionLabel);
+            }
+            if (track.role) {
+                parts.push(track.role);
             }
             if (track.language) {
                 parts.push(track.language);

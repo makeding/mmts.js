@@ -99,7 +99,7 @@ declare namespace Mpegts {
         liveBufferLatencyMinRemain?: number;
 
         /**
-         * @desc Force the primary MMTS HEVC video packet_id. Useful for choosing an alternate video asset.
+         * @desc Force the MMTS HEVC video packet_id. Useful for choosing an alternate video asset.
          */
         mmtsVideoPacketId?: number;
 

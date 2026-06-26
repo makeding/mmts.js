@@ -930,11 +930,6 @@ class MMTSDemuxer extends BaseDemuxer {
             return false;
         }
 
-        if (!this.isMMTSAudioTrackSelectable(info)) {
-            this.logUnsupportedMMTSAudioTrack(packetId, info);
-            return false;
-        }
-
         if (this.primary_audio_packet_id_ === packetId) {
             return true;
         }
@@ -1393,24 +1388,31 @@ class MMTSDemuxer extends BaseDemuxer {
         });
         const fallback = this.isMMTSVideoFallback(tracks);
         const fallbackReason = fallback ? 'higher-inactive' : undefined;
-        const broadcastMode = this.getMMTSBroadcastMode(tracks, fallback);
-        const mainTrack = tracks.find((track) => track.resolutionLabel === '4320p');
-        const rainTrack = tracks.find((track) => track.resolutionLabel !== undefined && track.resolutionLabel !== '4320p');
+        const selectedRole = this.getMMTSSelectedVideoRole(tracks, fallback);
+        const primaryTrack = this.findMMTSPrimaryVideoTrack(tracks);
+        const secondaryTrack = this.findMMTSSecondaryVideoTrack(tracks, primaryTrack);
+        tracks.forEach((track) => {
+            if (primaryTrack !== undefined && track.packetId === primaryTrack.packetId) {
+                track.role = 'primary';
+            } else if (secondaryTrack !== undefined && track.packetId === secondaryTrack.packetId) {
+                track.role = 'secondary';
+            }
+        });
         const selectedPacketId = this.primary_video_packet_id_ >= 0 ? this.primary_video_packet_id_ : undefined;
-        const hasMain = mainTrack !== undefined;
-        const mainActive = mainTrack !== undefined && mainTrack.active === true;
-        const hasRain = rainTrack !== undefined;
-        const rainActive = rainTrack !== undefined && rainTrack.active === true;
+        const hasPrimary = primaryTrack !== undefined;
+        const primaryActive = primaryTrack !== undefined && primaryTrack.active === true;
+        const hasSecondary = secondaryTrack !== undefined;
+        const secondaryActive = secondaryTrack !== undefined && secondaryTrack.active === true;
         const signature = JSON.stringify({
             tracks,
             selectedPacketId,
             fallback,
             fallbackReason,
-            broadcastMode,
-            hasMain,
-            mainActive,
-            hasRain,
-            rainActive
+            selectedRole,
+            hasPrimary,
+            primaryActive,
+            hasSecondary,
+            secondaryActive
         });
         if (!force && signature === this.video_tracks_signature_) {
             return;
@@ -1422,11 +1424,11 @@ class MMTSDemuxer extends BaseDemuxer {
         list.selectedPacketId = selectedPacketId;
         list.fallback = fallback;
         list.fallbackReason = fallbackReason;
-        list.broadcastMode = broadcastMode;
-        list.hasMain = hasMain;
-        list.mainActive = mainActive;
-        list.hasRain = hasRain;
-        list.rainActive = rainActive;
+        list.selectedRole = selectedRole;
+        list.hasPrimary = hasPrimary;
+        list.primaryActive = primaryActive;
+        list.hasSecondary = hasSecondary;
+        list.secondaryActive = secondaryActive;
         if (this.onMMTSVideoTracks) {
             this.onMMTSVideoTracks(list);
         }
@@ -1470,12 +1472,12 @@ class MMTSDemuxer extends BaseDemuxer {
         });
     }
 
-    private getMMTSBroadcastMode(tracks: MMTSVideoTrackInfo[], fallback: boolean): string | undefined {
+    private getMMTSSelectedVideoRole(tracks: MMTSVideoTrackInfo[], fallback: boolean): 'primary' | 'secondary' | undefined {
         if (this.primary_video_packet_id_ < 0) {
             return undefined;
         }
         if (fallback) {
-            return 'rain';
+            return 'secondary';
         }
 
         const selected = tracks.find((track) => track.packetId === this.primary_video_packet_id_);
@@ -1483,7 +1485,40 @@ class MMTSDemuxer extends BaseDemuxer {
             return undefined;
         }
 
-        return selected.resolutionLabel === '4320p' ? 'main' : 'rain';
+        const primaryTrack = this.findMMTSPrimaryVideoTrack(tracks);
+        if (primaryTrack === undefined || selected.resolution === undefined) {
+            return undefined;
+        }
+
+        return selected.resolution >= (primaryTrack.resolution || 0) ? 'primary' : 'secondary';
+    }
+
+    private findMMTSPrimaryVideoTrack(tracks: MMTSVideoTrackInfo[]): MMTSVideoTrackInfo | undefined {
+        const tracksWithResolution = tracks.filter((track) => (track.resolution || 0) > 0);
+        if (tracksWithResolution.length === 0) {
+            return undefined;
+        }
+
+        return tracksWithResolution.reduce((best, track) => {
+            return (track.resolution || 0) > (best.resolution || 0) ? track : best;
+        }, tracksWithResolution[0]);
+    }
+
+    private findMMTSSecondaryVideoTrack(tracks: MMTSVideoTrackInfo[], primaryTrack: MMTSVideoTrackInfo | undefined): MMTSVideoTrackInfo | undefined {
+        if (primaryTrack === undefined || primaryTrack.resolution === undefined) {
+            return undefined;
+        }
+
+        const secondaryTracks = tracks.filter((track) => {
+            return (track.resolution || 0) > 0 && (track.resolution || 0) < primaryTrack.resolution!;
+        });
+        if (secondaryTracks.length === 0) {
+            return undefined;
+        }
+
+        return secondaryTracks.reduce((best, track) => {
+            return (track.resolution || 0) > (best.resolution || 0) ? track : best;
+        }, secondaryTracks[0]);
     }
 
     private getSortedAudioTrackInfos(): MMTSAudioTrackInfo[] {

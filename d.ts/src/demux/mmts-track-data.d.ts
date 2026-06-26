@@ -25,6 +25,7 @@ export interface MMTSVideoTrackInfo {
     resolution?: number;
     resolutionLabel?: string;
     frameRateCode?: number;
+    role?: 'primary' | 'secondary';
     active: boolean;
     selected: boolean;
 }
@@ -46,11 +47,11 @@ export declare class MMTSVideoTrackList {
     selectedPacketId?: number;
     fallback: boolean;
     fallbackReason?: string;
-    broadcastMode?: string;
-    hasMain: boolean;
-    mainActive: boolean;
-    hasRain: boolean;
-    rainActive: boolean;
+    selectedRole?: 'primary' | 'secondary';
+    hasPrimary: boolean;
+    primaryActive: boolean;
+    hasSecondary: boolean;
+    secondaryActive: boolean;
 }
 export declare class MMTSSubtitleTrackList {
     tracks: MMTSSubtitleTrackInfo[];
