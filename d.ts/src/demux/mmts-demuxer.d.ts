@@ -10,6 +10,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_;
     private logged_video_timestamp_correction_count_;
     private logged_audio_timestamp_fallback_count_;
+    private logged_unsupported_audio_packet_ids_;
     private audio_track_infos_by_packet_id_;
     private subtitle_track_infos_by_packet_id_;
     private audio_parse_states_by_packet_id_;
@@ -61,10 +62,16 @@ declare class MMTSDemuxer extends BaseDemuxer {
     selectPrimaryAudioTrack(): void;
     selectSecondaryAudioTrack(): void;
     private maybeSelectPrimaryVideoAsset;
+    private getForcedMMTSVideoPacketId;
     private scorePendingVideoAsset;
     private resetVideoBootstrapState;
     private updateTrackInfo;
     private updateAudioTrackInfoFromFrame;
+    private maybePromotePrimaryAudioTrack;
+    private hasKnownMMTSAudioSupport;
+    private isMMTSAudioTrackSelectable;
+    private isSupportedAACChannelConfig;
+    private logUnsupportedMMTSAudioTrack;
     private getAudioParseState;
     private dispatchAudioTracksIfChanged;
     private dispatchSubtitleTracksIfChanged;

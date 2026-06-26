@@ -14,7 +14,7 @@
             <div id="streamURL">
                 <div class="url-input">
                     <label for="sURL">Stream URL:</label>
-                    <input id="sURL" type="text" value="BS17_0.mmts" />
+                    <input id="sURL" type="text" value="BS17_0.mmts" onchange="saveSettings()" />
                     <button onclick="switch_mds()">Switch to MediaDataSource</button>
                 </div>
                 <div class="options">
@@ -26,18 +26,20 @@
                         <option value="mse">mse</option>
                         <option value="flv">flv</option>
                     </select>
-                    <input type="checkbox" id="isLive" onchange="saveSettings()" />
+                    <input type="checkbox" id="isLive" onchange="saveSettings()" checked />
                     <label for="isLive">isLive</label>
                     <input type="checkbox" id="withCredentials" onchange="saveSettings()" />
                     <label for="withCredentials">withCredentials</label>
                     <input type="checkbox" id="liveBufferLatencyChasing" onchange="saveSettings()" />
                     <label for="liveBufferLatencyChasing">liveBufferLatencyChasing</label>
+                    <label for="mmtsVideoPid">MMTS video PID</label>
+                    <input id="mmtsVideoPid" type="text" value="" placeholder="auto / 0xf101" onchange="saveSettings()" style="width:120px" />
                 </div>
             </div>
             <div id="mediaSourceURL" class="hidden">
                 <div class="url-input">
                     <label for="msURL">MediaDataSource JsonURL:</label>
-                    <input id="msURL" type="text" value="http://127.0.0.1/flv/7182741.json" />
+                    <input id="msURL" type="text" value="http://127.0.0.1/flv/7182741.json" onchange="saveSettings()" />
                     <button onclick="switch_url()">Switch to URL</button>
                 </div>
             </div>
@@ -58,12 +60,13 @@
             <button onclick="player_seekto()">SeekTo</button>
             <button onclick="player_switch_primary_audio()">Primary Audio</button>
             <button onclick="player_switch_secondary_audio()">Next Audio</button>
+            <button onclick="probe_video_capability()">Probe Codec</button>
         </div>
         <div class="track-panel">
             <div class="track-title">MMTS audio tracks</div>
             <div id="mmtsAudioTracks" class="track-list">No MMTS audio tracks</div>
         </div>
-        <textarea name="logcatbox" class="logcatBox" rows="10" readonly></textarea>
+        <textarea name="logcatbox" class="logcatBox" rows="10"></textarea>
     </div>
 
     <script src="../dist/mpegts.js"></script>
@@ -72,9 +75,20 @@
         var checkBoxFields = ['isLive', 'withCredentials', 'liveBufferLatencyChasing'];
         var streamURL, mediaSourceURL;
         var mmtsAudioTracks = null;
+        var lastVideoContentType = 'video/mp4; codecs="hvc1.2.1.L183.B0"';
+
+        function logDemo(message) {
+            var box = document.getElementsByName('logcatbox')[0];
+            if (box) {
+                box.value = box.value + '[demo] ' + message + '\n';
+                box.scrollTop = box.scrollHeight;
+            }
+            console.log('[demo] ' + message);
+        }
 
         function player_load() {
             console.log('isSupported: ' + mpegts.isSupported());
+            saveSettings();
             if (mediaSourceURL.className === '') {
                 var url = document.getElementById('msURL').value;
     
@@ -112,19 +126,39 @@
                     player = null;
                 }
             }
-            player = mpegts.createPlayer(mediaDataSource, {
+            var config = {
                 enableWorker: true,
                 lazyLoadMaxDuration: 3 * 60,
                 seekType: 'range',
                 liveBufferLatencyChasing: document.getElementById('liveBufferLatencyChasing').checked,
-            });
+            };
+            var mmtsVideoPacketId = parseOptionalInteger(document.getElementById('mmtsVideoPid').value);
+            if (mmtsVideoPacketId != null && mediaDataSource.type === 'mmts') {
+                config.mmtsVideoPacketId = mmtsVideoPacketId;
+                logDemo('force MMTS video packet_id=0x' + mmtsVideoPacketId.toString(16));
+            } else if (mmtsVideoPacketId != null) {
+                logDemo('ignore MMTS video packet_id for type=' + mediaDataSource.type);
+            }
+            player = mpegts.createPlayer(mediaDataSource, config);
+            setupMediaElementDebug(element);
             player.attachMediaElement(element);
-            player.load();
             resetMMTSAudioTracks();
+            player.on(mpegts.Events.ERROR, function(type, detail, info) {
+                logDemo('mpegts error: type=' + type + ', detail=' + detail + ', info=' + JSON.stringify(info || null));
+            });
+            player.on(mpegts.Events.MEDIA_INFO, function(info) {
+                logDemo('media info: ' + JSON.stringify(info));
+                if (info && info.mimeType && info.videoCodec) {
+                    lastVideoContentType = 'video/mp4; codecs="' + info.videoCodec + '"';
+                    probe_video_capability();
+                }
+            });
             player.on(mpegts.Events.MMTS_AUDIO_TRACKS, function(data) {
                 mmtsAudioTracks = data;
+                logDemo('mmts audio tracks: ' + JSON.stringify(data));
                 renderMMTSAudioTracks();
             });
+            player.load();
         }
 
         function player_start() {
@@ -214,6 +248,60 @@
             }
         }
 
+        function parseOptionalInteger(value) {
+            var text = String(value || '').trim();
+            if (text === '') {
+                return null;
+            }
+
+            var radix = /^0x/i.test(text) ? 16 : 10;
+            var parsed = parseInt(text, radix);
+            return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+        }
+
+        function setupMediaElementDebug(element) {
+            element.onerror = function() {
+                var error = element.error;
+                logDemo('video error: code=' + (error && error.code) + ', message=' + (error && error.message));
+            };
+            element.onloadedmetadata = function() {
+                logDemo('loadedmetadata: duration=' + element.duration + ', video=' + element.videoWidth + 'x' + element.videoHeight);
+            };
+            element.onplaying = function() {
+                logDemo('playing: currentTime=' + element.currentTime);
+            };
+            element.onstalled = function() {
+                logDemo('stalled: currentTime=' + element.currentTime);
+            };
+            element.onwaiting = function() {
+                logDemo('waiting: currentTime=' + element.currentTime);
+            };
+        }
+
+        function probe_video_capability() {
+            var contentType = lastVideoContentType;
+            var element = document.getElementsByName('videoElement')[0];
+            logDemo('canPlayType(' + contentType + ')=' + element.canPlayType(contentType));
+            if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.decodingInfo) {
+                logDemo('mediaCapabilities.decodingInfo unavailable');
+                return;
+            }
+            navigator.mediaCapabilities.decodingInfo({
+                type: 'media-source',
+                video: {
+                    contentType: contentType,
+                    width: 7680,
+                    height: 4320,
+                    bitrate: 80000000,
+                    framerate: 60
+                }
+            }).then(function(info) {
+                logDemo('mediaCapabilities: ' + JSON.stringify(info));
+            }).catch(function(error) {
+                logDemo('mediaCapabilities error: ' + error.message);
+            });
+        }
+
         function switch_url() {
             streamURL.className = '';
             mediaSourceURL.className = 'hidden';
@@ -259,9 +347,11 @@
             var msURL = document.getElementById('msURL');
             var sURL = document.getElementById('sURL');
             var mediaType = document.getElementById('mediaType');
+            var mmtsVideoPid = document.getElementById('mmtsVideoPid');
             ls_set('mediaType', mediaType.value);
             ls_set('msURL', msURL.value);
             ls_set('sURL', sURL.value);
+            ls_set('mmtsVideoPid', mmtsVideoPid.value);
             console.log('save');
         }
 
@@ -278,9 +368,11 @@
             var msURL = document.getElementById('msURL');
             var sURL = document.getElementById('sURL');
             var mediaType = document.getElementById('mediaType');
+            var mmtsVideoPid = document.getElementById('mmtsVideoPid');
             mediaType.value = ls_get('mediaType', mediaType.value);
             msURL.value = ls_get('msURL', msURL.value);
             sURL.value = ls_get('sURL', sURL.value);
+            mmtsVideoPid.value = ls_get('mmtsVideoPid', mmtsVideoPid.value);
             if (sURL.value === '../sample/BS17_0.mmts') {
                 sURL.value = 'BS17_0.mmts';
             }

@@ -75,6 +75,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_: number = 0;
     private logged_video_timestamp_correction_count_: number = 0;
     private logged_audio_timestamp_fallback_count_: number = 0;
+    private logged_unsupported_audio_packet_ids_: {[packetId: number]: boolean} = {};
     private audio_track_infos_by_packet_id_: {[packetId: number]: MMTSAudioTrackInfo} = {};
     private subtitle_track_infos_by_packet_id_: {[packetId: number]: MMTSSubtitleTrackInfo} = {};
     private audio_parse_states_by_packet_id_: {[packetId: number]: AudioParseState} = {};
@@ -127,6 +128,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.program_ = null;
         this.pending_mfu_units_by_packet_id_ = null;
         this.logged_asset_keys_ = null;
+        this.logged_unsupported_audio_packet_ids_ = null;
         this.audio_track_infos_by_packet_id_ = null;
         this.subtitle_track_infos_by_packet_id_ = null;
         this.audio_parse_states_by_packet_id_ = null;
@@ -361,7 +363,10 @@ class MMTSDemuxer extends BaseDemuxer {
             this.flushCurrentVideoAccessUnit();
         }
 
-        if (this.current_video_access_unit_ !== null && this.current_video_access_unit_.sampleNumber !== sampleNumber) {
+        if (this.current_video_access_unit_ !== null &&
+            (this.current_video_access_unit_.packetId !== packetId ||
+             this.current_video_access_unit_.mpuSequenceNumber !== mpuSequenceNumber ||
+             this.current_video_access_unit_.sampleNumber !== sampleNumber)) {
             this.flushCurrentVideoAccessUnit();
         }
 
@@ -450,17 +455,20 @@ class MMTSDemuxer extends BaseDemuxer {
                 channel_config: aacFrame.channel_config
             };
             this.updateAudioTrackInfoFromFrame(packetId, aacFrame);
+            const appendCurrentFrame = appendSamples &&
+                packetId === this.primary_audio_packet_id_ &&
+                this.isSupportedAACChannelConfig(aacFrame.channel_config);
 
-            if (appendSamples && !this.audio_init_segment_dispatched_) {
+            if (appendCurrentFrame && !this.audio_init_segment_dispatched_) {
                 this.audio_metadata_ = state.metadata;
                 this.dispatchAudioInitSegment(audioSample);
-            } else if (appendSamples && this.detectAudioMetadataChange(audioSample)) {
+            } else if (appendCurrentFrame && this.detectAudioMetadataChange(audioSample)) {
                 this.audio_metadata_ = state.metadata;
                 this.dispatchAudioMediaSegment();
                 this.dispatchAudioInitSegment(audioSample);
             }
 
-            if (!appendSamples) {
+            if (!appendCurrentFrame) {
                 continue;
             }
 
@@ -737,6 +745,20 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        const info = this.audio_track_infos_by_packet_id_[asset.packetId];
+        if (info === undefined) {
+            return;
+        }
+
+        if (!this.isMMTSAudioTrackSelectable(info)) {
+            this.logUnsupportedMMTSAudioTrack(asset.packetId, info);
+            return;
+        }
+
+        if (!this.hasKnownMMTSAudioSupport(info)) {
+            return;
+        }
+
         this.primary_audio_packet_id_ = asset.packetId;
         Log.v(this.TAG, `Select primary MMTS audio packet_id=${this.formatHex(asset.packetId, 4)}`);
         this.dispatchAudioTracksIfChanged();
@@ -745,6 +767,11 @@ class MMTSDemuxer extends BaseDemuxer {
     public selectAudioTrack(packetId: number): boolean {
         const info = this.audio_track_infos_by_packet_id_[packetId];
         if (info === undefined) {
+            return false;
+        }
+
+        if (!this.isMMTSAudioTrackSelectable(info)) {
+            this.logUnsupportedMMTSAudioTrack(packetId, info);
             return false;
         }
 
@@ -770,7 +797,8 @@ class MMTSDemuxer extends BaseDemuxer {
 
     public selectPrimaryAudioTrack(): void {
         const tracks = this.getSortedAudioTrackInfos();
-        const primary = tracks.find((track) => track.mainComponent === true) || tracks[0];
+        const primary = tracks.find((track) => track.mainComponent === true && this.isMMTSAudioTrackSelectable(track)) ||
+            tracks.find((track) => this.isMMTSAudioTrackSelectable(track));
         if (primary !== undefined) {
             this.selectAudioTrack(primary.packetId);
         }
@@ -782,9 +810,14 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        const currentIndex = tracks.findIndex((track) => track.packetId === this.primary_audio_packet_id_);
-        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % tracks.length : 0;
-        this.selectAudioTrack(tracks[nextIndex].packetId);
+        const selectableTracks = tracks.filter((track) => this.isMMTSAudioTrackSelectable(track));
+        if (selectableTracks.length === 0) {
+            return;
+        }
+
+        const currentIndex = selectableTracks.findIndex((track) => track.packetId === this.primary_audio_packet_id_);
+        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % selectableTracks.length : 0;
+        this.selectAudioTrack(selectableTracks[nextIndex].packetId);
     }
 
     private maybeSelectPrimaryVideoAsset(asset: MMTAsset): void {
@@ -796,13 +829,31 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        const forcedPacketId = this.getForcedMMTSVideoPacketId();
+        if (forcedPacketId !== undefined && asset.packetId !== forcedPacketId) {
+            return;
+        }
+
         const score = this.scorePendingVideoAsset(asset.packetId);
         this.primary_video_packet_id_ = asset.packetId;
         Log.v(
             this.TAG,
             `Select primary MMTS video packet_id=${this.formatHex(asset.packetId, 4)}, ` +
-            `score=${score}`
+            `score=${score}${forcedPacketId !== undefined ? ', forced=1' : ''}`
         );
+    }
+
+    private getForcedMMTSVideoPacketId(): number | undefined {
+        if (!this.config_) {
+            return undefined;
+        }
+
+        const value = this.config_.mmtsVideoPacketId;
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+            return value;
+        }
+
+        return undefined;
     }
 
     private scorePendingVideoAsset(packetId: number): number {
@@ -902,14 +953,93 @@ class MMTSDemuxer extends BaseDemuxer {
             assetType: prev ? prev.assetType : 'mp4a',
             codec: prev && prev.codec ? prev.codec : 'aac-latm',
             channelConfig: frame.channel_config,
-            channelCount: this.audioChannelCountFromAacConfig(frame.channel_config),
+            channelCount: this.audioChannelCountFromAacConfig(frame.channel_config) ||
+                (prev && prev.channelCount) ||
+                this.audioChannelCountFromComponentType(prev && prev.componentType),
             channelLayout: this.audioLayoutFromAacConfig(frame.channel_config) ||
                 (prev && prev.channelLayout) ||
                 this.audioLayoutFromComponentType(prev && prev.componentType),
             audioSampleRate: frame.sampling_frequency,
             selected: packetId === this.primary_audio_packet_id_
         };
+        this.maybePromotePrimaryAudioTrack(packetId);
         this.dispatchAudioTracksIfChanged();
+    }
+
+    private maybePromotePrimaryAudioTrack(packetId: number): void {
+        const info = this.audio_track_infos_by_packet_id_[packetId];
+        if (!this.isMMTSAudioTrackSelectable(info)) {
+            if (this.primary_audio_packet_id_ === packetId && !this.audio_init_segment_dispatched_) {
+                this.primary_audio_packet_id_ = -1;
+                this.dispatchAudioTracksIfChanged(true);
+            }
+            this.logUnsupportedMMTSAudioTrack(packetId, info);
+            return;
+        }
+
+        if (!this.hasKnownMMTSAudioSupport(info)) {
+            return;
+        }
+
+        if (this.primary_audio_packet_id_ >= 0) {
+            const current = this.audio_track_infos_by_packet_id_[this.primary_audio_packet_id_];
+            if (this.isMMTSAudioTrackSelectable(current)) {
+                return;
+            }
+        }
+
+        if (this.audio_init_segment_dispatched_) {
+            return;
+        }
+
+        this.primary_audio_packet_id_ = packetId;
+        Log.v(this.TAG, `Select primary MMTS audio packet_id=${this.formatHex(packetId, 4)}`);
+        this.dispatchAudioTracksIfChanged(true);
+    }
+
+    private hasKnownMMTSAudioSupport(info: MMTSAudioTrackInfo | undefined): boolean {
+        return info !== undefined &&
+            info.channelConfig !== undefined &&
+            this.isSupportedAACChannelConfig(info.channelConfig);
+    }
+
+    private isMMTSAudioTrackSelectable(info: MMTSAudioTrackInfo | undefined): boolean {
+        if (info === undefined) {
+            return false;
+        }
+
+        if (info.channelConfig !== undefined) {
+            return this.isSupportedAACChannelConfig(info.channelConfig);
+        }
+
+        if (info.channelCount !== undefined && info.channelCount > 8) {
+            return false;
+        }
+
+        return info.channelLayout !== '10.2ch' && info.channelLayout !== '22.2ch';
+    }
+
+    private isSupportedAACChannelConfig(channelConfig: number): boolean {
+        return channelConfig >= 1 && channelConfig <= 7;
+    }
+
+    private logUnsupportedMMTSAudioTrack(packetId: number, info: MMTSAudioTrackInfo | undefined): void {
+        if (this.logged_unsupported_audio_packet_ids_[packetId]) {
+            return;
+        }
+        this.logged_unsupported_audio_packet_ids_[packetId] = true;
+
+        const parts: string[] = [`packet_id=${this.formatHex(packetId, 4)}`];
+        if (info && info.channelConfig !== undefined) {
+            parts.push(`channel_config=${info.channelConfig}`);
+        }
+        if (info && info.channelLayout) {
+            parts.push(`layout=${info.channelLayout}`);
+        }
+        if (info && info.channelCount !== undefined) {
+            parts.push(`channels=${info.channelCount}`);
+        }
+        Log.w(this.TAG, `Skip unsupported MMTS audio track (${parts.join(', ')})`);
     }
 
     private getAudioParseState(packetId: number): AudioParseState {

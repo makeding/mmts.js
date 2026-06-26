@@ -99,6 +99,11 @@ declare namespace Mpegts {
         liveBufferLatencyMinRemain?: number;
 
         /**
+         * @desc Force the primary MMTS HEVC video packet_id. Useful for choosing an alternate video asset.
+         */
+        mmtsVideoPacketId?: number;
+
+        /**
          * @desc Chasing the live stream latency caused by the internal buffer in HTMLMediaElement
          *       by changing the playbackRate. `isLive` should also be set to `true`
          * @defaultvalue false

@@ -64,6 +64,7 @@ declare class TSDemuxer extends BaseDemuxer {
     private parsePES;
     private parsePAT;
     private parsePMT;
+    private clearCommonAudioPids;
     private parseSCTE35;
     private parseAV1Payload;
     private parseH264Payload;
@@ -80,6 +81,8 @@ declare class TSDemuxer extends BaseDemuxer {
     private parseEAC3Payload;
     private parseOpusPayload;
     private parseMP3Payload;
+    private isSupportedAACChannelConfig;
+    private disableUnsupportedAACAudio;
     private detectAudioMetadataChange;
     private dispatchAudioInitSegment;
     private dispatchPESPrivateDataDescriptor;

@@ -789,16 +789,22 @@ class TSDemuxer extends BaseDemuxer {
                 pmt.common_pids.h264 = elementary_PID;
             } else if (stream_type === StreamType.kH265 && !already_has_video) {
                 pmt.common_pids.h265 = elementary_PID;
-            } else if (stream_type === StreamType.kADTSAAC && (!already_has_audio || this.preferred_secondary_audio)) {
+            } else if (stream_type === StreamType.kADTSAAC &&
+                       (!already_has_audio || this.preferred_secondary_audio || pmt.common_pids.loas_aac !== undefined)) {
+                this.clearCommonAudioPids(pmt);
                 pmt.common_pids.adts_aac = elementary_PID;
             } else if (stream_type === StreamType.kLOASAAC && (!already_has_audio || this.preferred_secondary_audio)) {
+                this.clearCommonAudioPids(pmt);
                 pmt.common_pids.loas_aac = elementary_PID;
             } else if (stream_type === StreamType.kAC3 && (!already_has_audio || this.preferred_secondary_audio)) {
+                this.clearCommonAudioPids(pmt);
                 pmt.common_pids.ac3 = elementary_PID; // ATSC AC-3
             } else if (stream_type === StreamType.kEAC3 && (!already_has_audio || this.preferred_secondary_audio)) {
+                this.clearCommonAudioPids(pmt);
                 pmt.common_pids.eac3 = elementary_PID; // ATSC EAC-3
             } else if ((stream_type === StreamType.kMPEG1Audio || stream_type === StreamType.kMPEG2Audio) &&
                        (!already_has_audio || this.preferred_secondary_audio)) {
+                this.clearCommonAudioPids(pmt);
                 pmt.common_pids.mp3 = elementary_PID;
             } else if (stream_type === StreamType.kPESPrivateData) {
                 pmt.pes_private_data_pids[elementary_PID] = true;
@@ -928,10 +934,20 @@ class TSDemuxer extends BaseDemuxer {
             if (pmt.common_pids.h264 || pmt.common_pids.h265 || pmt.common_pids.av1) {
                 this.has_video_ = true;
             }
-            if (pmt.common_pids.adts_aac || pmt.common_pids.loas_aac || pmt.common_pids.ac3 || pmt.common_pids.opus || pmt.common_pids.mp3) {
+            if (pmt.common_pids.adts_aac || pmt.common_pids.loas_aac || pmt.common_pids.ac3 ||
+                pmt.common_pids.eac3 || pmt.common_pids.opus || pmt.common_pids.mp3) {
                 this.has_audio_ = true;
             }
         }
+    }
+
+    private clearCommonAudioPids(pmt: PMT): void {
+        pmt.common_pids.adts_aac = undefined;
+        pmt.common_pids.loas_aac = undefined;
+        pmt.common_pids.ac3 = undefined;
+        pmt.common_pids.eac3 = undefined;
+        pmt.common_pids.opus = undefined;
+        pmt.common_pids.mp3 = undefined;
     }
 
     private parseSCTE35(data: Uint8Array): void {
@@ -1351,6 +1367,10 @@ class TSDemuxer extends BaseDemuxer {
 
         while ((aac_frame = adts_parser.readNextAACFrame()) != null) {
             ref_sample_duration = 1024 / aac_frame.sampling_frequency * 1000;
+            if (!this.isSupportedAACChannelConfig(aac_frame.channel_config)) {
+                this.disableUnsupportedAACAudio('ADTS AAC', aac_frame.channel_config);
+                return;
+            }
             const audio_sample = {
                 codec: 'aac',
                 data: aac_frame
@@ -1443,6 +1463,10 @@ class TSDemuxer extends BaseDemuxer {
         while ((aac_frame = loas_parser.readNextAACFrame(this.loas_previous_frame ?? undefined)) != null) {
             this.loas_previous_frame = aac_frame;
             ref_sample_duration = 1024 / aac_frame.sampling_frequency * 1000;
+            if (!this.isSupportedAACChannelConfig(aac_frame.channel_config)) {
+                this.disableUnsupportedAACAudio('LOAS AAC', aac_frame.channel_config);
+                return;
+            }
             const audio_sample = {
                 codec: 'aac',
                 data: aac_frame
@@ -1786,6 +1810,27 @@ class TSDemuxer extends BaseDemuxer {
         };
         this.audio_track_.samples.push(mp3_sample);
         this.audio_track_.length += data.byteLength;
+    }
+
+    private isSupportedAACChannelConfig(channelConfig: number): boolean {
+        return channelConfig >= 1 && channelConfig <= 7;
+    }
+
+    private disableUnsupportedAACAudio(kind: string, channelConfig: number): void {
+        Log.w(
+            this.TAG,
+            `${kind}: Channel configuration ${channelConfig} is not supported by MSE, disable selected audio track`
+        );
+        this.has_audio_ = false;
+        this.audio_init_segment_dispatched_ = false;
+        this.audio_track_ = {type: 'audio', id: 2, sequenceNumber: this.audio_track_.sequenceNumber, samples: [], length: 0};
+        this.aac_last_incomplete_data_ = null;
+        this.audio_last_sample_pts_ = undefined;
+        this.loas_previous_frame = null;
+        if (this.pmt_) {
+            this.clearCommonAudioPids(this.pmt_);
+        }
+        this.dispatchVideoMediaSegment(true);
     }
 
     private detectAudioMetadataChange(sample: AudioData): boolean {
