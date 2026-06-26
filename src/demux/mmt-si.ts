@@ -16,11 +16,20 @@ export interface MMTAsset {
     codec?: string;
     language?: string;
     componentTag?: number;
+    assetGroupId?: number;
+    assetSelectionLevel?: number;
     videoResolution?: number;
     videoAspectRatio?: number;
     videoScanFlag?: boolean;
     videoFrameRate?: number;
     videoTransferCharacteristics?: number;
+    hierarchyType?: number;
+    hierarchyLayerIndex?: number;
+    hierarchyEmbeddedLayerIndex?: number;
+    hierarchyChannel?: number;
+    hierarchyTemporalScalability?: boolean;
+    hierarchySpatialScalability?: boolean;
+    hierarchyQualityScalability?: boolean;
     audioComponentType?: number;
     audioComponentTag?: number;
     audioStreamType?: number;
@@ -71,11 +80,13 @@ const MIDDLE_FRAGMENT = 2;
 const LAST_FRAGMENT = 3;
 
 const MPU_TIMESTAMP_DESCRIPTOR = 0x0001;
+const ASSET_GROUP_DESCRIPTOR = 0x8000;
 const VIDEO_COMPONENT_DESCRIPTOR = 0x8010;
 const MH_STREAM_IDENTIFICATION_DESCRIPTOR = 0x8011;
 const MH_AUDIO_COMPONENT_DESCRIPTOR = 0x8014;
 const MH_DATA_COMPONENT_DESCRIPTOR = 0x8020;
 const MPU_EXTENDED_TIMESTAMP_DESCRIPTOR = 0x8026;
+const MH_HIERARCHY_DESCRIPTOR = 0x8037;
 
 export default class MMTSI {
 
@@ -425,6 +436,9 @@ export default class MMTSI {
             const tag = reader.peekU16();
 
             switch (tag) {
+                case ASSET_GROUP_DESCRIPTOR:
+                    MMTSI.parseAssetGroupDescriptor(asset, reader);
+                    break;
                 case MPU_TIMESTAMP_DESCRIPTOR:
                     MMTSI.parseMpuTimestampDescriptor(asset, reader);
                     break;
@@ -443,6 +457,9 @@ export default class MMTSI {
                 case MPU_EXTENDED_TIMESTAMP_DESCRIPTOR:
                     MMTSI.parseMpuExtendedTimestampDescriptor(asset, reader);
                     break;
+                case MH_HIERARCHY_DESCRIPTOR:
+                    MMTSI.parseHierarchyDescriptor(asset, reader);
+                    break;
                 default:
                     if (!MMTSI.skipDescriptor(reader)) {
                         return;
@@ -454,6 +471,20 @@ export default class MMTSI {
                 return;
             }
         }
+    }
+
+    private static parseAssetGroupDescriptor(asset: MMTAsset, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, ASSET_GROUP_DESCRIPTOR);
+        if (length < 0 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        if (!descriptor.canRead(2)) {
+            return;
+        }
+
+        asset.assetGroupId = descriptor.readU8();
+        asset.assetSelectionLevel = descriptor.readU8();
     }
 
     private static parseMpuTimestampDescriptor(asset: MMTAsset, reader: ByteReader): void {
@@ -631,6 +662,32 @@ export default class MMTSI {
         if (dataComponentId === 0x0020 || dataComponentId === 0x0008) {
             asset.codec = 'ttml';
         }
+    }
+
+    private static parseHierarchyDescriptor(asset: MMTAsset, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, MH_HIERARCHY_DESCRIPTOR);
+        if (length < 0 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        if (!descriptor.canRead(4)) {
+            return;
+        }
+
+        let byte = descriptor.readU8();
+        asset.hierarchyTemporalScalability = ((byte >> 6) & 0x01) === 0;
+        asset.hierarchySpatialScalability = ((byte >> 5) & 0x01) === 0;
+        asset.hierarchyQualityScalability = ((byte >> 4) & 0x01) === 0;
+        asset.hierarchyType = byte & 0x0f;
+
+        byte = descriptor.readU8();
+        asset.hierarchyLayerIndex = byte & 0x3f;
+
+        byte = descriptor.readU8();
+        asset.hierarchyEmbeddedLayerIndex = byte & 0x3f;
+
+        byte = descriptor.readU8();
+        asset.hierarchyChannel = byte & 0x3f;
     }
 
     private static readShortDescriptorHeader(reader: ByteReader, expectedTag: number): number {

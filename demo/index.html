@@ -301,6 +301,21 @@
             if (track.language) {
                 parts.push(track.language);
             }
+            if (track.assetGroupId !== undefined) {
+                parts.push('group=' + track.assetGroupId);
+            }
+            if (track.assetSelectionLevel !== undefined) {
+                parts.push('sel=' + track.assetSelectionLevel);
+            }
+            if (track.hierarchyChannel !== undefined) {
+                parts.push('hchan=' + track.hierarchyChannel);
+            }
+            if (track.hierarchyLayerIndex !== undefined) {
+                parts.push('hlayer=' + track.hierarchyLayerIndex);
+            }
+            if (track.hierarchyEmbeddedLayerIndex !== undefined) {
+                parts.push('base=' + track.hierarchyEmbeddedLayerIndex);
+            }
             if (track.assetType) {
                 parts.push(track.assetType);
             }

@@ -22,9 +22,18 @@ export interface MMTSVideoTrackInfo {
     codec?: string;
     language?: string;
     componentTag?: number;
+    assetGroupId?: number;
+    assetSelectionLevel?: number;
     resolution?: number;
     resolutionLabel?: string;
     frameRateCode?: number;
+    hierarchyType?: number;
+    hierarchyLayerIndex?: number;
+    hierarchyEmbeddedLayerIndex?: number;
+    hierarchyChannel?: number;
+    hierarchyTemporalScalability?: boolean;
+    hierarchySpatialScalability?: boolean;
+    hierarchyQualityScalability?: boolean;
     role?: 'primary' | 'secondary';
     active: boolean;
     selected: boolean;

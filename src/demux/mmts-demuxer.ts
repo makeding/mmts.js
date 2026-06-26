@@ -237,7 +237,9 @@ class MMTSDemuxer extends BaseDemuxer {
             this.maybeSelectPrimaryVideoAsset(asset, false);
             this.maybeSelectPrimaryAudioAsset(asset);
             this.updateTrackInfo(asset);
-            const key = `${asset.packetId}:${asset.assetType}:${asset.codec || ''}:${asset.language || ''}`;
+            const key = `${asset.packetId}:${asset.assetType}:${asset.codec || ''}:${asset.language || ''}:` +
+                `${asset.assetGroupId !== undefined ? asset.assetGroupId : ''}:` +
+                `${asset.assetSelectionLevel !== undefined ? asset.assetSelectionLevel : ''}`;
 
             if (!this.logged_asset_keys_[key]) {
                 this.logged_asset_keys_[key] = true;
@@ -246,6 +248,8 @@ class MMTSDemuxer extends BaseDemuxer {
                     `MPT asset packet_id=${this.formatHex(asset.packetId, 4)}, ` +
                     `asset_type=${asset.assetType}, media=${asset.mediaType}, ` +
                     `codec=${asset.codec || 'unknown'}, lang=${asset.language || 'und'}` +
+                    (asset.assetGroupId !== undefined ? `, asset_group=${asset.assetGroupId}` : '') +
+                    (asset.assetSelectionLevel !== undefined ? `, selection_level=${asset.assetSelectionLevel}` : '') +
                     (asset.mediaType === 'video' ? `, resolution=${this.videoResolutionLabel(asset)}` : '')
                 );
             }
@@ -1073,9 +1077,6 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (this.primary_video_packet_id_ >= 0) {
-            if (this.video_init_segment_dispatched_) {
-                return;
-            }
             if (this.scoreVideoAsset(asset) <= this.scoreVideoAsset(this.program_.getAsset(this.primary_video_packet_id_))) {
                 return;
             }
@@ -1087,6 +1088,11 @@ class MMTSDemuxer extends BaseDemuxer {
             this.TAG,
             `Select primary MMTS video packet_id=${this.formatHex(asset.packetId, 4)}, ` +
             `score=${score}, resolution=${this.videoResolutionLabel(asset)}` +
+            `${asset.assetGroupId !== undefined ? `, asset_group=${asset.assetGroupId}` : ''}` +
+            `${asset.assetSelectionLevel !== undefined ? `, selection_level=${asset.assetSelectionLevel}` : ''}` +
+            `${asset.hierarchyChannel !== undefined ? `, hierarchy_channel=${asset.hierarchyChannel}` : ''}` +
+            `${asset.hierarchyLayerIndex !== undefined ? `, hierarchy_layer=${asset.hierarchyLayerIndex}` : ''}` +
+            `${asset.hierarchyEmbeddedLayerIndex !== undefined ? `, hierarchy_base=${asset.hierarchyEmbeddedLayerIndex}` : ''}` +
             `${forcedPacketId !== undefined ? ', forced=1' : ''}` +
             `${!hasActivity ? ', inactive=1' : ''}`
         );
@@ -1200,7 +1206,10 @@ class MMTSDemuxer extends BaseDemuxer {
             return -1;
         }
 
-        return (asset.videoResolution !== undefined ? asset.videoResolution * 10000 : 0) +
+        const selectionScore = asset.assetSelectionLevel !== undefined ?
+            (255 - asset.assetSelectionLevel) * 100000000 : 0;
+        return selectionScore +
+            (asset.videoResolution !== undefined ? asset.videoResolution * 10000 : 0) +
             this.scorePendingVideoAsset(asset.packetId);
     }
 
@@ -1273,9 +1282,18 @@ class MMTSDemuxer extends BaseDemuxer {
                 codec: asset.codec || 'hevc',
                 language: asset.language,
                 componentTag: asset.componentTag,
+                assetGroupId: asset.assetGroupId,
+                assetSelectionLevel: asset.assetSelectionLevel,
                 resolution: asset.videoResolution,
                 resolutionLabel: this.videoResolutionLabel(asset),
                 frameRateCode: asset.videoFrameRate,
+                hierarchyType: asset.hierarchyType,
+                hierarchyLayerIndex: asset.hierarchyLayerIndex,
+                hierarchyEmbeddedLayerIndex: asset.hierarchyEmbeddedLayerIndex,
+                hierarchyChannel: asset.hierarchyChannel,
+                hierarchyTemporalScalability: asset.hierarchyTemporalScalability,
+                hierarchySpatialScalability: asset.hierarchySpatialScalability,
+                hierarchyQualityScalability: asset.hierarchyQualityScalability,
                 active: (this.mmtp_mpu_counts_by_packet_id_[asset.packetId] || 0) > 0 ||
                     this.scorePendingVideoAsset(asset.packetId) > 0,
                 selected: asset.packetId === this.primary_video_packet_id_
@@ -1566,9 +1584,20 @@ class MMTSDemuxer extends BaseDemuxer {
             return false;
         }
 
+        const primaryTrack = this.findMMTSPrimaryVideoTrack(tracks);
+        if (primaryTrack !== undefined &&
+            primaryTrack.packetId !== selected.packetId &&
+            primaryTrack.active !== true &&
+            this.compareMMTSVideoTrackPriority(primaryTrack, selected) < 0) {
+            return true;
+        }
+
         const selectedResolution = selected.resolution || 0;
         return tracks.some((track) => {
-            return (track.resolution || 0) > selectedResolution && track.active !== true;
+            return track.assetSelectionLevel === undefined &&
+                selected.assetSelectionLevel === undefined &&
+                (track.resolution || 0) > selectedResolution &&
+                track.active !== true;
         });
     }
 
@@ -1586,39 +1615,84 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         const primaryTrack = this.findMMTSPrimaryVideoTrack(tracks);
-        if (primaryTrack === undefined || selected.resolution === undefined) {
+        if (primaryTrack === undefined) {
             return undefined;
         }
 
-        return selected.resolution >= (primaryTrack.resolution || 0) ? 'primary' : 'secondary';
+        if (selected.packetId === primaryTrack.packetId) {
+            return 'primary';
+        }
+
+        const secondaryTrack = this.findMMTSSecondaryVideoTrack(tracks, primaryTrack);
+        if (secondaryTrack !== undefined && selected.packetId === secondaryTrack.packetId) {
+            return 'secondary';
+        }
+
+        return this.compareMMTSVideoTrackPriority(selected, primaryTrack) <= 0 ? 'primary' : 'secondary';
     }
 
     private findMMTSPrimaryVideoTrack(tracks: MMTSVideoTrackInfo[]): MMTSVideoTrackInfo | undefined {
-        const tracksWithResolution = tracks.filter((track) => (track.resolution || 0) > 0);
-        if (tracksWithResolution.length === 0) {
+        const selectableTracks = tracks.filter((track) => {
+            return track.assetSelectionLevel !== undefined || (track.resolution || 0) > 0;
+        });
+        if (selectableTracks.length === 0) {
             return undefined;
         }
 
-        return tracksWithResolution.reduce((best, track) => {
-            return (track.resolution || 0) > (best.resolution || 0) ? track : best;
-        }, tracksWithResolution[0]);
+        return selectableTracks.reduce((best, track) => {
+            return this.compareMMTSVideoTrackPriority(track, best) < 0 ? track : best;
+        }, selectableTracks[0]);
     }
 
     private findMMTSSecondaryVideoTrack(tracks: MMTSVideoTrackInfo[], primaryTrack: MMTSVideoTrackInfo | undefined): MMTSVideoTrackInfo | undefined {
-        if (primaryTrack === undefined || primaryTrack.resolution === undefined) {
+        if (primaryTrack === undefined) {
             return undefined;
         }
 
-        const secondaryTracks = tracks.filter((track) => {
-            return (track.resolution || 0) > 0 && (track.resolution || 0) < primaryTrack.resolution!;
-        });
+        let secondaryTracks: MMTSVideoTrackInfo[] = [];
+        if (primaryTrack.assetGroupId !== undefined && primaryTrack.assetSelectionLevel !== undefined) {
+            secondaryTracks = tracks.filter((track) => {
+                return track.assetGroupId === primaryTrack.assetGroupId &&
+                    track.assetSelectionLevel !== undefined &&
+                    track.assetSelectionLevel > primaryTrack.assetSelectionLevel!;
+            });
+        }
+
         if (secondaryTracks.length === 0) {
-            return undefined;
+            if (primaryTrack.resolution === undefined) {
+                return undefined;
+            }
+            secondaryTracks = tracks.filter((track) => {
+                return track.assetSelectionLevel === undefined &&
+                    (track.resolution || 0) > 0 &&
+                    (track.resolution || 0) < primaryTrack.resolution!;
+            });
+            if (secondaryTracks.length === 0) {
+                return undefined;
+            }
         }
 
         return secondaryTracks.reduce((best, track) => {
-            return (track.resolution || 0) > (best.resolution || 0) ? track : best;
+            return this.compareMMTSVideoTrackPriority(track, best) < 0 ? track : best;
         }, secondaryTracks[0]);
+    }
+
+    private compareMMTSVideoTrackPriority(a: MMTSVideoTrackInfo, b: MMTSVideoTrackInfo): number {
+        if (a.assetGroupId !== undefined &&
+            b.assetGroupId !== undefined &&
+            a.assetGroupId === b.assetGroupId &&
+            a.assetSelectionLevel !== undefined &&
+            b.assetSelectionLevel !== undefined &&
+            a.assetSelectionLevel !== b.assetSelectionLevel) {
+            return a.assetSelectionLevel - b.assetSelectionLevel;
+        }
+
+        const resolutionDiff = (b.resolution || 0) - (a.resolution || 0);
+        if (resolutionDiff !== 0) {
+            return resolutionDiff;
+        }
+
+        return a.packetId - b.packetId;
     }
 
     private getSortedAudioTrackInfos(): MMTSAudioTrackInfo[] {
@@ -1630,10 +1704,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private getSortedVideoTrackInfos(): MMTSVideoTrackInfo[] {
         return Object.keys(this.video_track_infos_by_packet_id_)
             .map((key) => this.video_track_infos_by_packet_id_[Number(key)])
-            .sort((a, b) => {
-                const resolutionDiff = (b.resolution || 0) - (a.resolution || 0);
-                return resolutionDiff !== 0 ? resolutionDiff : a.packetId - b.packetId;
-            });
+            .sort((a, b) => this.compareMMTSVideoTrackPriority(a, b));
     }
 
     private getSortedSubtitleTrackInfos(): MMTSSubtitleTrackInfo[] {
