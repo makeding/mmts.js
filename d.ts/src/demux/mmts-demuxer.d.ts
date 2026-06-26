@@ -17,6 +17,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private audio_track_infos_by_packet_id_;
     private video_track_infos_by_packet_id_;
     private subtitle_track_infos_by_packet_id_;
+    private subtitle_mpu_states_;
     private audio_parse_states_by_packet_id_;
     private audio_tracks_signature_;
     private video_tracks_signature_;
@@ -62,7 +63,12 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private wrapLatmPayloadWithLoasHeader;
     private parseMMTSLOASAACPayload;
     private processSubtitleMfuUnit;
-    private extractSubtitlePayload;
+    private extractSubtitleMfuPayload;
+    private getSubtitleMpuState;
+    private dispatchSubtitleMpu;
+    private isSubtitleMpuComplete;
+    private pruneSubtitleMpuStates;
+    private subtitleMpuStateKey;
     private flushCurrentVideoAccessUnit;
     private appendStandaloneVideoSample;
     private logVideoNalu;

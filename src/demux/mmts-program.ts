@@ -10,6 +10,7 @@ import MPU, {FragmentationIndicator, MFUFragment, MPUInfo} from './mpu';
 
 interface MFUFragmentState {
     data: number[];
+    firstFragment?: MFUFragment;
     lastSeq: number;
     mpuSequenceNumber: number;
     randomAccess: boolean;
@@ -27,6 +28,7 @@ interface MMTSPacketContinuityState {
 }
 
 interface AssembledMFU {
+    fragment: MFUFragment;
     unit: Uint8Array;
     randomAccess: boolean;
 }
@@ -129,7 +131,7 @@ class MMTSProgram {
             const assembled = this.assembleMfuFragment(packet, mpu.mpuSequenceNumber, fragment);
             if (assembled !== null) {
                 units.push({
-                    fragment,
+                    fragment: assembled.fragment,
                     mpuSequenceNumber: mpu.mpuSequenceNumber,
                     randomAccess: assembled.randomAccess,
                     unit: assembled.unit
@@ -411,6 +413,7 @@ class MMTSProgram {
         if (state === undefined) {
             state = {
                 data: [],
+                firstFragment: undefined,
                 lastSeq: 0,
                 mpuSequenceNumber: 0,
                 randomAccess: false,
@@ -423,6 +426,7 @@ class MMTSProgram {
             state.state = 'skip';
         } else if (((state.lastSeq + 1) >>> 0) !== packetSequenceNumber) {
             state.data = [];
+            state.firstFragment = undefined;
             state.randomAccess = false;
             state.state = 'skip';
         }
@@ -430,6 +434,7 @@ class MMTSProgram {
 
         if (state.mpuSequenceNumber !== 0 && state.mpuSequenceNumber !== mpuSequenceNumber && state.state === 'in-fragment') {
             state.data = [];
+            state.firstFragment = undefined;
             state.randomAccess = false;
             state.state = 'skip';
         }
@@ -438,20 +443,24 @@ class MMTSProgram {
         switch (fragment.fragmentationIndicator) {
             case FragmentationIndicator.NotFragmented:
                 state.data = [];
+                state.firstFragment = undefined;
                 state.randomAccess = false;
                 state.state = 'not-started';
                 return {
+                    fragment,
                     unit: fragment.payload,
                     randomAccess: packet.rapFlag
                 };
             case FragmentationIndicator.FirstFragment:
                 if (state.state === 'in-fragment') {
                     state.data = [];
+                    state.firstFragment = undefined;
                     state.randomAccess = false;
                     state.state = 'skip';
                     return null;
                 }
                 state.data = Array.prototype.slice.call(fragment.payload);
+                state.firstFragment = fragment;
                 state.randomAccess = packet.rapFlag;
                 state.state = 'in-fragment';
                 return null;
@@ -469,11 +478,24 @@ class MMTSProgram {
                 state.randomAccess = state.randomAccess || packet.rapFlag;
                 this.appendToState(state, fragment.payload);
                 const completeUnit = new Uint8Array(state.data);
+                const firstFragment = state.firstFragment;
+                const completeFragment: MFUFragment = {
+                    ...fragment,
+                    payload: completeUnit,
+                    sampleNumber: firstFragment && firstFragment.sampleNumber !== undefined ?
+                        firstFragment.sampleNumber : fragment.sampleNumber,
+                    offset: firstFragment && firstFragment.offset !== undefined ?
+                        firstFragment.offset : fragment.offset,
+                    nalUnitLength: firstFragment && firstFragment.nalUnitLength !== undefined ?
+                        firstFragment.nalUnitLength : fragment.nalUnitLength
+                };
                 const randomAccess = state.randomAccess;
                 state.data = [];
+                state.firstFragment = undefined;
                 state.randomAccess = false;
                 state.state = 'not-started';
                 return {
+                    fragment: completeFragment,
                     unit: completeUnit,
                     randomAccess
                 };

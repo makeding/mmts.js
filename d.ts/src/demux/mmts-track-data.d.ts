@@ -103,5 +103,14 @@ export declare class MMTSSubtitleData {
     rawDts?: number;
     text?: string;
     data: Uint8Array;
+    resources?: MMTSSubtitleResource[];
+    resourcesComplete?: boolean;
+    len: number;
+}
+export interface MMTSSubtitleResource {
+    index: number;
+    subsampleNumber: number;
+    dataType: number;
+    data: Uint8Array;
     len: number;
 }

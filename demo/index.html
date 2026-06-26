@@ -49,6 +49,7 @@
                 <video name="videoElement" class="centeredVideo" controls autoplay playsinline>
                     Your browser is too old which doesn't support HTML5 video.
                 </video>
+                <div id="ttmlSubtitleOverlay" class="ttml-subtitle-overlay"></div>
             </div>
         </div>
         <div class="controls">
@@ -61,6 +62,7 @@
             <button onclick="player_switch_primary_audio()">Primary Audio</button>
             <button onclick="player_switch_secondary_audio()">Next Audio</button>
             <button onclick="probe_video_capability()">Probe Codec</button>
+            <button onclick="inject_test_ttml_subtitle()">Test TTML</button>
         </div>
         <div class="track-panel">
             <div class="track-title">Video info</div>
@@ -74,18 +76,29 @@
             <div class="track-title">MMTS audio tracks</div>
             <div id="mmtsAudioTracks" class="track-list">No MMTS audio tracks</div>
         </div>
+        <div class="track-panel">
+            <div class="track-title">MMTS subtitle tracks</div>
+            <div id="mmtsSubtitleTracks" class="track-list">No MMTS subtitle tracks</div>
+            <div id="ttmlSubtitleStatus" class="track-list ttml-subtitle-status">TTML payload events=0</div>
+        </div>
         <textarea name="logcatbox" class="logcatBox" rows="10"></textarea>
     </div>
 
     <script src="../dist/mpegts.js"></script>
+    <script type="module" src="../../aribb62.js/src/index.js"></script>
     
     <script>
         var checkBoxFields = ['isLive', 'withCredentials', 'liveBufferLatencyChasing'];
         var streamURL, mediaSourceURL;
         var mmtsAudioTracks = null;
         var mmtsVideoTracks = null;
+        var mmtsSubtitleTracks = null;
         var lastMediaInfo = null;
         var lastVideoContentType = 'video/mp4; codecs="hvc1.2.1.L183.B0"';
+        var ttmlSubtitleRenderer = null;
+        var ttmlSubtitleEventCount = 0;
+        var ttmlSubtitleLastStatus = null;
+        var selectedMMTSSubtitlePacketId = null;
 
         function logDemo(message) {
             var box = document.getElementsByName('logcatbox')[0];
@@ -152,9 +165,11 @@
             player = mpegts.createPlayer(mediaDataSource, config);
             setupMediaElementDebug(element);
             player.attachMediaElement(element);
+            setupTTMLSubtitleOverlay(element);
             resetVideoInfo();
             resetMMTSVideoTracks();
             resetMMTSAudioTracks();
+            resetMMTSSubtitleTracks();
             player.on(mpegts.Events.ERROR, function(type, detail, info) {
                 logDemo('mpegts error: type=' + type + ', detail=' + detail + ', info=' + JSON.stringify(info || null));
             });
@@ -177,6 +192,18 @@
                 logDemo('mmts video tracks: ' + JSON.stringify(data));
                 renderMMTSVideoTracks();
             });
+            if (mpegts.Events.MMTS_SUBTITLE_TRACKS) {
+                player.on(mpegts.Events.MMTS_SUBTITLE_TRACKS, function(data) {
+                    mmtsSubtitleTracks = data;
+                    logDemo('mmts subtitle tracks: ' + JSON.stringify(data));
+                    renderMMTSSubtitleTracks();
+                });
+            }
+            if (mpegts.Events.MMTS_SUBTITLE_DATA_ARRIVED) {
+                player.on(mpegts.Events.MMTS_SUBTITLE_DATA_ARRIVED, function(data) {
+                    pushMMTSTTMLSubtitleData(element, data);
+                });
+            }
             player.load();
         }
 
@@ -194,6 +221,7 @@
             player.detachMediaElement();
             player.destroy();
             player = null;
+            clearTTMLSubtitleOverlay();
         }
 
         function player_seekto() {
@@ -411,6 +439,76 @@
             return parts.join(' ');
         }
 
+        function resetMMTSSubtitleTracks() {
+            mmtsSubtitleTracks = null;
+            selectedMMTSSubtitlePacketId = null;
+            renderMMTSSubtitleTracks();
+        }
+
+        function renderMMTSSubtitleTracks() {
+            var container = document.getElementById('mmtsSubtitleTracks');
+            if (!container) {
+                return;
+            }
+            if (!mmtsSubtitleTracks || !mmtsSubtitleTracks.tracks || mmtsSubtitleTracks.tracks.length === 0) {
+                container.textContent = 'No MMTS subtitle tracks';
+                return;
+            }
+
+            container.innerHTML = '';
+            var summary = document.createElement('div');
+            summary.className = 'track-item' + (selectedMMTSSubtitlePacketId === null ? ' selected' : '');
+            summary.textContent = (selectedMMTSSubtitlePacketId === null ? '* ' : '') + 'selected=all';
+            summary.onclick = function() {
+                player_select_subtitle_track(null);
+            };
+            container.appendChild(summary);
+            mmtsSubtitleTracks.tracks.forEach(function(track) {
+                var item = document.createElement('div');
+                item.className = 'track-item' + (track.packetId === selectedMMTSSubtitlePacketId ? ' selected' : '');
+                item.textContent = (track.packetId === selectedMMTSSubtitlePacketId ? '* ' : '  ') + formatMMTSSubtitleTrack(track);
+                item.onclick = function() {
+                    player_select_subtitle_track(track.packetId);
+                };
+                container.appendChild(item);
+            });
+        }
+
+        function formatMMTSSubtitleTrack(track) {
+            var parts = [];
+            parts.push('packet_id=0x' + Number(track.packetId).toString(16));
+            if (track.language) {
+                parts.push(track.language);
+            }
+            if (track.codec) {
+                parts.push(track.codec);
+            }
+            if (track.assetType) {
+                parts.push(track.assetType);
+            }
+            if (track.assetGroupId !== undefined) {
+                parts.push('group=' + track.assetGroupId);
+            }
+            if (track.componentTag !== undefined) {
+                parts.push('component=0x' + Number(track.componentTag).toString(16));
+            }
+            appendMMTSAssetControlInfo(parts, track);
+            return parts.join(' ');
+        }
+
+        function player_select_subtitle_track(packetId) {
+            if (packetId === selectedMMTSSubtitlePacketId) {
+                selectedMMTSSubtitlePacketId = null;
+                logDemo('select MMTS subtitle packet_id=all');
+            } else {
+                selectedMMTSSubtitlePacketId = packetId;
+                logDemo('select MMTS subtitle packet_id=' + formatPacketId(packetId));
+            }
+            clearActiveTTMLSubtitleCues();
+            renderMMTSSubtitleTracks();
+            renderTTMLSubtitleStatus();
+        }
+
         function player_select_audio_track(packetId) {
             if (player != null && player.selectAudioTrack) {
                 player.selectAudioTrack(packetId);
@@ -454,6 +552,116 @@
             element.onwaiting = function() {
                 logDemo('waiting: currentTime=' + element.currentTime);
             };
+        }
+
+        function setupTTMLSubtitleOverlay(element) {
+            clearTTMLSubtitleOverlay();
+            var overlay = document.getElementById('ttmlSubtitleOverlay');
+            if (!window.aribb62js || !window.aribb62js.B62TTMLRenderer) {
+                logDemo('aribb62.js is not loaded');
+                return;
+            }
+            ttmlSubtitleRenderer = new aribb62js.B62TTMLRenderer({
+                mediaElement: element,
+                overlayElement: overlay,
+                isLive: document.getElementById('isLive').checked
+            });
+        }
+
+        function clearTTMLSubtitleOverlay() {
+            if (ttmlSubtitleRenderer) {
+                ttmlSubtitleRenderer.destroy();
+                ttmlSubtitleRenderer = null;
+            }
+            ttmlSubtitleEventCount = 0;
+            ttmlSubtitleLastStatus = null;
+            renderTTMLSubtitleStatus();
+        }
+
+        function pushMMTSTTMLSubtitleData(video, data) {
+            if (selectedMMTSSubtitlePacketId !== null && (!data || data.packetId !== selectedMMTSSubtitlePacketId)) {
+                return;
+            }
+            if (!ttmlSubtitleRenderer) {
+                setupTTMLSubtitleOverlay(video);
+                if (!ttmlSubtitleRenderer) {
+                    return;
+                }
+            }
+            ttmlSubtitleRenderer.setLive(video.duration === Infinity || document.getElementById('isLive').checked);
+
+            var result = ttmlSubtitleRenderer.push(data);
+            result.resourcesComplete = data && data.resourcesComplete;
+            ttmlSubtitleEventCount = result.eventCount;
+            updateTTMLSubtitleStatus(result);
+            logDemo('mmts subtitle data #' + result.eventCount + ': packet_id=' + formatPacketId(result.packetId) + ', cues=' + result.cueCount + ', resources=' + (result.resourceCount || 0) + ', resources_complete=' + (data && data.resourcesComplete ? 1 : 0) + ', pts=' + (result.pts !== undefined ? result.pts : 'n/a') + ', base=' + (result.basePts !== null ? formatNumber(result.basePts, 3) : 'n/a') + ', effective=' + (result.effectiveBasePts !== null ? formatNumber(result.effectiveBasePts, 3) : 'n/a') + (result.arrivalAligned ? ', arrival-aligned' : '') + ', len=' + result.len);
+        }
+
+        function inject_test_ttml_subtitle() {
+            var video = document.getElementsByName('videoElement')[0];
+            var now = video ? video.currentTime : 0;
+            var text =
+                '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling" tts:extent="3840px 2160px" xml:lang="ja">' +
+                '<head>' +
+                '<styling>' +
+                '<style xml:id="s1" tts:fontSize="160px 160px" tts:lineHeight="200px" tts:color="#FFFFFFFF" tts:backgroundColor="#000000CC"/>' +
+                '</styling>' +
+                '<layout>' +
+                '<region xml:id="r1" tts:origin="480px 1240px" tts:extent="2880px 420px" tts:displayAlign="center"/>' +
+                '</layout>' +
+                '</head>' +
+                '<body><div><p region="r1" begin="00:00:00.000" end="00:00:05.000" style="s1"><span>ARIB-TTML demo 字幕テスト</span></p></div></body>' +
+                '</tt>';
+            pushMMTSTTMLSubtitleData(video, {
+                packetId: selectedMMTSSubtitlePacketId !== null ? selectedMMTSSubtitlePacketId : 0xf338,
+                pts: Math.floor(now * 1000),
+                text: text,
+                len: text.length
+            });
+        }
+
+        function clearActiveTTMLSubtitleCues() {
+            if (ttmlSubtitleRenderer) {
+                ttmlSubtitleRenderer.clear();
+            }
+        }
+
+        function updateTTMLSubtitleStatus(result) {
+            ttmlSubtitleLastStatus = result;
+            renderTTMLSubtitleStatus();
+        }
+
+        function renderTTMLSubtitleStatus() {
+            var container = document.getElementById('ttmlSubtitleStatus');
+            if (!container) {
+                return;
+            }
+            if (!ttmlSubtitleLastStatus) {
+                container.textContent = 'TTML payload events=' + ttmlSubtitleEventCount + '  selected=' + (selectedMMTSSubtitlePacketId === null ? 'all' : formatPacketId(selectedMMTSSubtitlePacketId));
+                return;
+            }
+
+            var status = ttmlSubtitleLastStatus;
+            var parts = [
+                'TTML payload events=' + ttmlSubtitleEventCount,
+                'selected=' + (selectedMMTSSubtitlePacketId === null ? 'all' : formatPacketId(selectedMMTSSubtitlePacketId)),
+                'last_packet=' + formatPacketId(status.packetId),
+                'cues=' + status.cueCount,
+                'resources=' + (status.resourceCount || 0),
+                'resources_complete=' + (status.resourcesComplete ? 1 : 0),
+                'pts=' + (status.pts !== undefined ? status.pts : 'n/a'),
+                'base=' + (status.basePts !== null ? formatNumber(status.basePts, 3) : 'n/a'),
+                'effective=' + (status.effectiveBasePts !== null ? formatNumber(status.effectiveBasePts, 3) : 'n/a'),
+                'len=' + status.len
+            ];
+            if (status.arrivalAligned) {
+                parts.push('arrival-aligned');
+            }
+            container.textContent = parts.join('  ') + (status.preview ? '\npreview=' + status.preview : '');
+        }
+
+        function formatPacketId(packetId) {
+            return Number.isFinite(packetId) ? '0x' + Number(packetId).toString(16) : 'n/a';
         }
 
         function probe_video_capability() {

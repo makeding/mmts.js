@@ -38,6 +38,35 @@
     height: 100%;
 }
 
+.ttml-subtitle-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 2;
+    font-family: "Hiragino Maru Gothic Pro", "HGMaruGothicMPRO", "Yu Gothic Medium", "Meiryo", sans-serif;
+}
+
+.ttml-subtitle-block {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    color: #fff;
+    text-shadow:
+        -2px -2px 0 #000,
+         2px -2px 0 #000,
+        -2px  2px 0 #000,
+         2px  2px 0 #000,
+         0    0   4px #000;
+    white-space: pre-wrap;
+}
+
+.ttml-subtitle-line {
+    box-sizing: border-box;
+    width: 100%;
+}
+
 .urlInput {
     display: block;
     width: 100%;
@@ -84,6 +113,11 @@
     padding: 4px 6px;
     font-family: Menlo, Consolas, monospace;
     white-space: pre-wrap;
+}
+
+.ttml-subtitle-status {
+    margin-top: 4px;
+    color: #333333;
 }
 
 .track-item {

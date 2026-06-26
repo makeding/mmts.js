@@ -16,6 +16,7 @@ import {
     MMTSAudioTrackInfo,
     MMTSAudioTrackList,
     MMTSSubtitleData,
+    MMTSSubtitleResource,
     MMTSSubtitleTrackInfo,
     MMTSSubtitleTrackList,
     MMTSVideoTrackInfo,
@@ -53,6 +54,21 @@ interface AudioParseState {
     lastSamplePts?: number;
 }
 
+interface SubtitleMfuPayload {
+    subsampleNumber: number;
+    lastSubsampleNumber: number;
+    dataType: number;
+    payload: Uint8Array;
+}
+
+interface SubtitleMpuState {
+    subtitle?: MMTSSubtitleData;
+    resources: MMTSSubtitleResource[];
+    received: {[subsampleNumber: number]: boolean};
+    lastSubsampleNumber: number;
+    dispatchedPartial: boolean;
+}
+
 type AACAudioMetadata = {
     codec: 'aac',
     audio_object_type: MPEG4AudioObjectTypes;
@@ -86,6 +102,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private audio_track_infos_by_packet_id_: {[packetId: number]: MMTSAudioTrackInfo} = {};
     private video_track_infos_by_packet_id_: {[packetId: number]: MMTSVideoTrackInfo} = {};
     private subtitle_track_infos_by_packet_id_: {[packetId: number]: MMTSSubtitleTrackInfo} = {};
+    private subtitle_mpu_states_: {[key: string]: SubtitleMpuState} = {};
     private audio_parse_states_by_packet_id_: {[packetId: number]: AudioParseState} = {};
     private audio_tracks_signature_: string = '';
     private video_tracks_signature_: string = '';
@@ -148,6 +165,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.audio_track_infos_by_packet_id_ = null;
         this.video_track_infos_by_packet_id_ = null;
         this.subtitle_track_infos_by_packet_id_ = null;
+        this.subtitle_mpu_states_ = null;
         this.audio_parse_states_by_packet_id_ = null;
         this.media_info_ = null;
         this.audio_metadata_ = null;
@@ -386,6 +404,7 @@ class MMTSDemuxer extends BaseDemuxer {
                     packetId,
                     mpuSequenceNumber,
                     fragment.sampleNumber,
+                    fragment.offset,
                     hvc1,
                     false,
                     randomAccess,
@@ -421,6 +440,7 @@ class MMTSDemuxer extends BaseDemuxer {
             packetId,
             mpuSequenceNumber,
             fragment.sampleNumber,
+            fragment.offset,
             hvc1,
             keyframe,
             randomAccess,
@@ -431,10 +451,17 @@ class MMTSDemuxer extends BaseDemuxer {
     private appendH265NaluToAccessUnit(packetId: number,
                                        mpuSequenceNumber: number,
                                        sampleNumber: number,
+                                       offset: number | undefined,
                                        nalu: H265NaluHVC1,
                                        keyframe: boolean,
                                        randomAccess: boolean,
                                        isVcl: boolean): void {
+        if (offset === 0 &&
+            this.current_video_access_unit_ !== null &&
+            this.current_video_access_unit_.hasVcl) {
+            this.flushCurrentVideoAccessUnit();
+        }
+
         if (nalu.type === H265NaluType.kSliceAUD &&
             this.current_video_access_unit_ !== null) {
             if (this.current_video_access_unit_.hasVcl) {
@@ -595,8 +622,28 @@ class MMTSDemuxer extends BaseDemuxer {
                                    mpuSequenceNumber: number,
                                    fragment: MFUFragment,
                                    unit: Uint8Array): void {
-        const payload = this.extractSubtitlePayload(unit);
-        if (payload === null) {
+        const payloadUnit = this.extractSubtitleMfuPayload(unit);
+        if (payloadUnit === null) {
+            return;
+        }
+
+        if (payloadUnit.subsampleNumber === 0 && payloadUnit.dataType !== 0) {
+            return;
+        }
+
+        const state = this.getSubtitleMpuState(packetId, mpuSequenceNumber, payloadUnit.lastSubsampleNumber);
+
+        if (payloadUnit.subsampleNumber !== 0) {
+            state.resources = state.resources.filter((resource) => resource.index !== payloadUnit.subsampleNumber);
+            state.resources.push({
+                index: payloadUnit.subsampleNumber,
+                subsampleNumber: payloadUnit.subsampleNumber,
+                dataType: payloadUnit.dataType,
+                data: payloadUnit.payload,
+                len: payloadUnit.payload.byteLength
+            });
+            state.received[payloadUnit.subsampleNumber] = true;
+            this.dispatchSubtitleMpu(packetId, mpuSequenceNumber, state, false);
             return;
         }
 
@@ -607,9 +654,9 @@ class MMTSDemuxer extends BaseDemuxer {
         subtitle.language = asset.language;
         subtitle.mpuSequenceNumber = mpuSequenceNumber;
         subtitle.sampleNumber = fragment.sampleNumber;
-        subtitle.data = payload;
-        subtitle.len = payload.byteLength;
-        subtitle.text = decodeUTF8(payload);
+        subtitle.data = payloadUnit.payload;
+        subtitle.len = payloadUnit.payload.byteLength;
+        subtitle.text = decodeUTF8(payloadUnit.payload);
 
         const timestamp = this.program_.nextTimestamp(packetId, mpuSequenceNumber);
         if (timestamp !== null) {
@@ -619,14 +666,12 @@ class MMTSDemuxer extends BaseDemuxer {
             subtitle.dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
         }
 
-        if (this.onMMTSSubtitleData) {
-            this.onMMTSSubtitleData(subtitle);
-        }
-
-        this.logSubtitleData(subtitle);
+        state.subtitle = subtitle;
+        state.received[0] = true;
+        this.dispatchSubtitleMpu(packetId, mpuSequenceNumber, state, true);
     }
 
-    private extractSubtitlePayload(unit: Uint8Array): Uint8Array | null {
+    private extractSubtitleMfuPayload(unit: Uint8Array): SubtitleMfuPayload | null {
         if (unit.byteLength < 7) {
             return null;
         }
@@ -640,10 +685,6 @@ class MMTSDemuxer extends BaseDemuxer {
         const lengthExtFlag = ((flags >> 3) & 0x01) !== 0;
         const subsampleInfoListFlag = ((flags >> 2) & 0x01) !== 0;
 
-        if (dataType !== 0) {
-            return null;
-        }
-
         const dataSizeLength = lengthExtFlag ? 4 : 2;
         if (offset + dataSizeLength > unit.byteLength) {
             return null;
@@ -655,7 +696,7 @@ class MMTSDemuxer extends BaseDemuxer {
         offset += dataSizeLength;
 
         if (subsampleNumber === 0 && lastSubsampleNumber > 0 && subsampleInfoListFlag) {
-            const entrySize = lengthExtFlag ? 8 : 6;
+            const entrySize = lengthExtFlag ? 5 : 3;
             const skipSize = lastSubsampleNumber * entrySize;
             if (offset + skipSize > unit.byteLength) {
                 return null;
@@ -667,7 +708,80 @@ class MMTSDemuxer extends BaseDemuxer {
             return null;
         }
 
-        return unit.subarray(offset, offset + dataSize);
+        return {
+            subsampleNumber,
+            lastSubsampleNumber,
+            dataType,
+            payload: unit.subarray(offset, offset + dataSize)
+        };
+    }
+
+    private getSubtitleMpuState(packetId: number,
+                                mpuSequenceNumber: number,
+                                lastSubsampleNumber: number): SubtitleMpuState {
+        const key = this.subtitleMpuStateKey(packetId, mpuSequenceNumber);
+        let state = this.subtitle_mpu_states_[key];
+        if (state === undefined) {
+            state = {
+                resources: [],
+                received: {},
+                lastSubsampleNumber,
+                dispatchedPartial: false
+            };
+            this.subtitle_mpu_states_[key] = state;
+        } else if (lastSubsampleNumber > state.lastSubsampleNumber) {
+            state.lastSubsampleNumber = lastSubsampleNumber;
+        }
+        this.pruneSubtitleMpuStates(packetId, mpuSequenceNumber);
+        return state;
+    }
+
+    private dispatchSubtitleMpu(packetId: number,
+                                mpuSequenceNumber: number,
+                                state: SubtitleMpuState,
+                                allowPartial: boolean): void {
+        if (!state.subtitle) {
+            return;
+        }
+
+        const complete = this.isSubtitleMpuComplete(state);
+        if (!complete && (!allowPartial || state.dispatchedPartial)) {
+            return;
+        }
+
+        state.subtitle.resources = state.resources.slice().sort((a, b) => a.index - b.index);
+        state.subtitle.resourcesComplete = complete;
+        if (this.onMMTSSubtitleData) {
+            this.onMMTSSubtitleData(state.subtitle);
+        }
+        this.logSubtitleData(state.subtitle);
+        if (complete) {
+            delete this.subtitle_mpu_states_[this.subtitleMpuStateKey(packetId, mpuSequenceNumber)];
+        } else {
+            state.dispatchedPartial = true;
+        }
+    }
+
+    private isSubtitleMpuComplete(state: SubtitleMpuState): boolean {
+        for (let i = 0; i <= state.lastSubsampleNumber; i++) {
+            if (!state.received[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private pruneSubtitleMpuStates(packetId: number, currentMpuSequenceNumber: number): void {
+        Object.keys(this.subtitle_mpu_states_).forEach((key) => {
+            const parts = key.split(':');
+            if (Number(parts[0]) === packetId && Number(parts[1]) + 4 < currentMpuSequenceNumber) {
+                delete this.subtitle_mpu_states_[key];
+            }
+        });
+    }
+
+    private subtitleMpuStateKey(packetId: number, mpuSequenceNumber: number): string {
+        return `${packetId}:${mpuSequenceNumber}`;
     }
 
     private flushCurrentVideoAccessUnit(): void {
@@ -1908,7 +2022,8 @@ class MMTSDemuxer extends BaseDemuxer {
             `dts=${subtitle.dts !== undefined ? subtitle.dts : 'n/a'}, ` +
             `raw_pts=${subtitle.rawPts !== undefined ? subtitle.rawPts : 'n/a'}, ` +
             `raw_dts=${subtitle.rawDts !== undefined ? subtitle.rawDts : 'n/a'}, ` +
-            `len=${subtitle.len}`
+            `len=${subtitle.len}, resources=${subtitle.resources ? subtitle.resources.length : 0}, ` +
+            `resources_complete=${subtitle.resourcesComplete ? 1 : 0}`
         );
         // Log.v(this.TAG, `MMTS subtitle TTML:\n${subtitle.text || ''}`);
     }
