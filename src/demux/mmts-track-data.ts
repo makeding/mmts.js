@@ -5,6 +5,15 @@ export interface MMTSAudioTrackInfo {
     language?: string;
     componentType?: number;
     componentTag?: number;
+    assetGroupId?: number;
+    assetSelectionLevel?: number;
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
     streamType?: number;
     simulcastGroupTag?: number;
     mainComponent?: boolean;
@@ -25,6 +34,13 @@ export interface MMTSVideoTrackInfo {
     componentTag?: number;
     assetGroupId?: number;
     assetSelectionLevel?: number;
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
     resolution?: number;
     resolutionLabel?: string;
     frameRateCode?: number;
@@ -46,6 +62,15 @@ export interface MMTSSubtitleTrackInfo {
     codec?: string;
     language?: string;
     componentTag?: number;
+    assetGroupId?: number;
+    assetSelectionLevel?: number;
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
 }

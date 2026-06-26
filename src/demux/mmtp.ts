@@ -13,8 +13,11 @@ export const enum MMTPEncryptionFlag {
 
 export interface MMTPScramblingInfo {
     encryptionFlag: MMTPEncryptionFlag;
+    scrambleSystemControl: number;
     scramblingSubsystem: number;
+    scrambleSystemId?: number;
     messageAuthenticationControl: number;
+    authenticatedPayloadLength?: number;
     scramblingInitialCounterValue: number;
 }
 
@@ -33,6 +36,7 @@ export interface MMTPPacket {
     extensionHeaderLength?: number;
     extensionHeaderField?: Uint8Array;
     extensionHeaderScrambling?: MMTPScramblingInfo;
+    messageAuthenticationCode?: Uint8Array;
     payload: Uint8Array;
 }
 
@@ -105,29 +109,76 @@ export default class MMTP {
             offset += packet.extensionHeaderLength;
         }
 
-        packet.payload = data.subarray(offset);
+        let payloadEnd = data.byteLength;
+        const authenticatedPayloadLength = packet.extensionHeaderScrambling &&
+            packet.extensionHeaderScrambling.authenticatedPayloadLength;
+        if (authenticatedPayloadLength !== undefined && offset + authenticatedPayloadLength <= data.byteLength) {
+            payloadEnd = offset + authenticatedPayloadLength;
+            packet.messageAuthenticationCode = data.subarray(payloadEnd);
+        }
+
+        packet.payload = data.subarray(offset, payloadEnd);
         return packet;
     }
 
     private static parseScramblingExtension(field: Uint8Array,
                                             extensionHeaderType: number,
                                             extensionHeaderLength: number): MMTPScramblingInfo | undefined {
-        if (field.byteLength < 5) {
+        if (extensionHeaderType !== 0x0000 || field.byteLength < 5 || extensionHeaderLength !== field.byteLength) {
             return undefined;
         }
 
-        const extensionId = MMTP.readBe16(field, 0);
-        if ((extensionId & 0x7fff) !== 0x0001) {
+        let offset = 0;
+        while (offset + 4 <= field.byteLength) {
+            const header = MMTP.readBe16(field, offset);
+            const extensionType = header & 0x7fff;
+            const extensionEnd = (header & 0x8000) !== 0;
+            const extensionLength = MMTP.readBe16(field, offset + 2);
+            offset += 4;
+
+            if (offset + extensionLength > field.byteLength) {
+                return undefined;
+            }
+
+            if (extensionType === 0x0001) {
+                return MMTP.parseB61ScramblingExtension(field.subarray(offset, offset + extensionLength));
+            }
+
+            offset += extensionLength;
+            if (extensionEnd) {
+                break;
+            }
+        }
+
+        return undefined;
+    }
+
+    private static parseB61ScramblingExtension(field: Uint8Array): MMTPScramblingInfo | undefined {
+        if (field.byteLength < 1) {
             return undefined;
         }
 
-        const byte = field[4];
-        return {
+        let offset = 0;
+        const byte = field[offset++];
+        const scrambleSystemControl = (byte & 0x04) >> 2;
+        const messageAuthenticationControl = (byte & 0x02) >> 1;
+        const info: MMTPScramblingInfo = {
             encryptionFlag: (byte & 0x18) >> 3,
-            scramblingSubsystem: (byte & 0x04) >> 2,
-            messageAuthenticationControl: (byte & 0x02) >> 1,
+            scrambleSystemControl,
+            scramblingSubsystem: scrambleSystemControl,
+            messageAuthenticationControl,
             scramblingInitialCounterValue: byte & 0x01
         };
+
+        if (scrambleSystemControl !== 0 && offset < field.byteLength) {
+            info.scrambleSystemId = field[offset++];
+        }
+
+        if (messageAuthenticationControl !== 0 && offset + 2 <= field.byteLength) {
+            info.authenticatedPayloadLength = MMTP.readBe16(field, offset);
+        }
+
+        return info;
     }
 
     private static readBe16(data: Uint8Array, offset: number): number {

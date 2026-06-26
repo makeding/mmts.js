@@ -32,6 +32,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private output_video_dts_base_;
     private primary_video_packet_id_;
     private primary_audio_packet_id_;
+    private manually_selected_audio_packet_id_;
     private media_info_;
     private audio_metadata_;
     private video_metadata_;
@@ -78,6 +79,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private isH265IrapNalu;
     private maybeSelectPrimaryAudioAsset;
     selectAudioTrack(packetId: number): boolean;
+    private selectAudioTrackInternal;
     selectVideoTrack(packetId: number): boolean;
     selectPrimaryAudioTrack(): void;
     selectSecondaryAudioTrack(): void;
@@ -131,9 +133,14 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private formatHex;
     private formatH265NaluTypes;
     private formatPacketCounts;
+    private formatAssetConditionalAccessInfo;
+    private mmtLocationTypeName;
+    private layerTypeName;
+    private scrambleSystemName;
     private readU16;
     private readU32;
     private payloadTypeName;
+    private formatMmtpScramblingInfo;
     private scramblingName;
 }
 export default MMTSDemuxer;

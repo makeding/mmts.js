@@ -26,6 +26,7 @@ declare class MMTSProgram {
     private mmtp_packet_continuity_states_;
     private assets_by_packet_id_;
     private stream_states_by_packet_id_;
+    private conditional_access_info_;
     destroy(): void;
     parseSignalingPacket(packet: MMTPPacket): MMTAsset[];
     parseMpuPacket(packet: MMTPPacket): MMTSParsedMpu | null;
@@ -36,6 +37,10 @@ declare class MMTSProgram {
     private getPtsOffset;
     private getVideoFrameDuration;
     private getStreamState;
+    private mergeConditionalAccessInfos;
+    private applyConditionalAccessDefaults;
+    private copyDefinedConditionalAccessFields;
+    private copyMissingConditionalAccessFields;
     private mergeAsset;
     private mergeTimestampDescriptors;
     private mergeDescriptorCache;

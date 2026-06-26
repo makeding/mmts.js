@@ -1,12 +1,27 @@
 export const enum MMTTableId {
     MmtPackageTable = 0x20,
+    MhCat = 0x86,
     PackageListTable = 0x80,
     MhEit = 0x8b
 }
 
 export const enum MMTMessageId {
     Pa = 0x0000,
-    M2Section = 0x8000
+    M2Section = 0x8000,
+    Ca = 0x8001
+}
+
+export interface MMTConditionalAccessInfo {
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    accessControlPrivateData?: Uint8Array;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    scramblerPrivateData?: Uint8Array;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
+    messageAuthenticationPrivateData?: Uint8Array;
 }
 
 export interface MMTAsset {
@@ -18,6 +33,16 @@ export interface MMTAsset {
     componentTag?: number;
     assetGroupId?: number;
     assetSelectionLevel?: number;
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    accessControlPrivateData?: Uint8Array;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    scramblerPrivateData?: Uint8Array;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
+    messageAuthenticationPrivateData?: Uint8Array;
     videoResolution?: number;
     videoAspectRatio?: number;
     videoScanFlag?: boolean;
@@ -64,6 +89,7 @@ export interface MMTMpuTimestampOffset {
 
 export interface MMTSIResult {
     assets: MMTAsset[];
+    conditionalAccessInfos: MMTConditionalAccessInfo[];
     messages: number[];
     tables: number[];
 }
@@ -81,6 +107,9 @@ const LAST_FRAGMENT = 3;
 
 const MPU_TIMESTAMP_DESCRIPTOR = 0x0001;
 const ASSET_GROUP_DESCRIPTOR = 0x8000;
+const ACCESS_CONTROL_DESCRIPTOR = 0x8004;
+const SCRAMBLER_DESCRIPTOR = 0x8005;
+const MESSAGE_AUTHENTICATION_METHOD_DESCRIPTOR = 0x8006;
 const VIDEO_COMPONENT_DESCRIPTOR = 0x8010;
 const MH_STREAM_IDENTIFICATION_DESCRIPTOR = 0x8011;
 const MH_AUDIO_COMPONENT_DESCRIPTOR = 0x8014;
@@ -93,7 +122,7 @@ export default class MMTSI {
     public static parseSignalingPayload(payload: Uint8Array,
                                         packetSequenceNumber: number,
                                         fragmentState: SignalingFragmentState): MMTSIResult {
-        const result: MMTSIResult = {assets: [], messages: [], tables: []};
+        const result: MMTSIResult = {assets: [], conditionalAccessInfos: [], messages: [], tables: []};
         const reader = new ByteReader(payload);
         if (!reader.canRead(2)) {
             return result;
@@ -217,6 +246,9 @@ export default class MMTSI {
             case MMTMessageId.M2Section:
                 MMTSI.parseM2SectionMessage(reader, result);
                 break;
+            case MMTMessageId.Ca:
+                MMTSI.parseCaMessage(reader, result);
+                break;
         }
     }
 
@@ -262,6 +294,18 @@ export default class MMTSI {
         MMTSI.parseTable(new ByteReader(reader.readBytes(length)), result);
     }
 
+    private static parseCaMessage(reader: ByteReader, result: MMTSIResult): void {
+        if (!reader.canRead(5) || reader.readU16() !== MMTMessageId.Ca) {
+            return;
+        }
+        reader.skip(1); // version
+        const length = reader.readU16();
+        if (!reader.canRead(length)) {
+            return;
+        }
+        MMTSI.parseTable(new ByteReader(reader.readBytes(length)), result);
+    }
+
     private static parseTable(reader: ByteReader, result: MMTSIResult): boolean {
         if (!reader.canRead(1)) {
             return false;
@@ -273,6 +317,8 @@ export default class MMTSI {
         switch (tableId) {
             case MMTTableId.MmtPackageTable:
                 return MMTSI.parseMpt(reader, result);
+            case MMTTableId.MhCat:
+                return MMTSI.parseCat(reader, result);
             default:
                 reader.skip(reader.bytesLeft());
                 return true;
@@ -305,7 +351,15 @@ export default class MMTSI {
         if (!payload.canRead(descriptorsLength + 1)) {
             return false;
         }
-        payload.skip(descriptorsLength);
+        if (descriptorsLength > 0) {
+            const info: MMTConditionalAccessInfo = {};
+            MMTSI.parseConditionalAccessDescriptors(info, new ByteReader(payload.readBytes(descriptorsLength)));
+            if (MMTSI.hasConditionalAccessInfo(info)) {
+                result.conditionalAccessInfos.push(info);
+            }
+        } else {
+            payload.skip(descriptorsLength);
+        }
 
         const assetCount = payload.readU8();
         for (let i = 0; i < assetCount; i++) {
@@ -317,6 +371,25 @@ export default class MMTSI {
             }
         }
 
+        return true;
+    }
+
+    private static parseCat(reader: ByteReader, result: MMTSIResult): boolean {
+        if (!reader.canRead(4) || reader.readU8() !== MMTTableId.MhCat) {
+            return false;
+        }
+        reader.skip(1); // version
+        const length = reader.readU16();
+        if (!reader.canRead(length)) {
+            return false;
+        }
+
+        const info: MMTConditionalAccessInfo = {};
+        const descriptors = new ByteReader(reader.readBytes(length));
+        MMTSI.parseConditionalAccessDescriptors(info, descriptors);
+        if (MMTSI.hasConditionalAccessInfo(info)) {
+            result.conditionalAccessInfos.push(info);
+        }
         return true;
     }
 
@@ -362,7 +435,7 @@ export default class MMTSI {
         return asset;
     }
 
-    private static parseLocation(reader: ByteReader): {packetId?: number} | null {
+    private static parseLocation(reader: ByteReader): {locationType: number, packetId?: number} | null {
         if (!reader.canRead(1)) {
             return null;
         }
@@ -373,31 +446,31 @@ export default class MMTSI {
                 if (!reader.canRead(2)) {
                     return null;
                 }
-                return {packetId: reader.readU16()};
+                return {locationType, packetId: reader.readU16()};
             case 0x01:
                 if (!reader.canRead(12)) {
                     return null;
                 }
                 reader.skip(10);
-                return {packetId: reader.readU16()};
+                return {locationType, packetId: reader.readU16()};
             case 0x02:
                 if (!reader.canRead(36)) {
                     return null;
                 }
                 reader.skip(34);
-                return {packetId: reader.readU16()};
+                return {locationType, packetId: reader.readU16()};
             case 0x03:
                 if (!reader.canRead(6)) {
                     return null;
                 }
                 reader.skip(6);
-                return {};
+                return {locationType};
             case 0x04:
                 if (!reader.canRead(36)) {
                     return null;
                 }
                 reader.skip(36);
-                return {};
+                return {locationType};
             case 0x05:
                 if (!reader.canRead(1)) {
                     return null;
@@ -407,7 +480,7 @@ export default class MMTSI {
                     return null;
                 }
                 reader.skip(urlLength);
-                return {};
+                return {locationType};
             default:
                 return null;
         }
@@ -438,6 +511,11 @@ export default class MMTSI {
             switch (tag) {
                 case ASSET_GROUP_DESCRIPTOR:
                     MMTSI.parseAssetGroupDescriptor(asset, reader);
+                    break;
+                case ACCESS_CONTROL_DESCRIPTOR:
+                case SCRAMBLER_DESCRIPTOR:
+                case MESSAGE_AUTHENTICATION_METHOD_DESCRIPTOR:
+                    MMTSI.parseConditionalAccessDescriptor(asset, reader, tag);
                     break;
                 case MPU_TIMESTAMP_DESCRIPTOR:
                     MMTSI.parseMpuTimestampDescriptor(asset, reader);
@@ -473,6 +551,49 @@ export default class MMTSI {
         }
     }
 
+    private static parseConditionalAccessDescriptors(info: MMTConditionalAccessInfo, reader: ByteReader): void {
+        while (reader.bytesLeft() >= 3) {
+            const start = reader.offset;
+            const tag = reader.peekU16();
+
+            switch (tag) {
+                case ACCESS_CONTROL_DESCRIPTOR:
+                case SCRAMBLER_DESCRIPTOR:
+                case MESSAGE_AUTHENTICATION_METHOD_DESCRIPTOR:
+                    MMTSI.parseConditionalAccessDescriptor(info, reader, tag);
+                    break;
+                default:
+                    if (!MMTSI.skipDescriptor(reader)) {
+                        return;
+                    }
+                    break;
+            }
+
+            if (reader.offset <= start) {
+                return;
+            }
+        }
+    }
+
+    private static parseConditionalAccessDescriptor(info: MMTConditionalAccessInfo,
+                                                    reader: ByteReader,
+                                                    tag: number): void {
+        switch (tag) {
+            case ACCESS_CONTROL_DESCRIPTOR:
+                MMTSI.parseAccessControlDescriptor(info, reader);
+                break;
+            case SCRAMBLER_DESCRIPTOR:
+                MMTSI.parseScramblerDescriptor(info, reader);
+                break;
+            case MESSAGE_AUTHENTICATION_METHOD_DESCRIPTOR:
+                MMTSI.parseMessageAuthenticationMethodDescriptor(info, reader);
+                break;
+            default:
+                MMTSI.skipDescriptor(reader);
+                break;
+        }
+    }
+
     private static parseAssetGroupDescriptor(asset: MMTAsset, reader: ByteReader): void {
         const length = MMTSI.readShortDescriptorHeader(reader, ASSET_GROUP_DESCRIPTOR);
         if (length < 0 || !reader.canRead(length)) {
@@ -485,6 +606,73 @@ export default class MMTSI {
 
         asset.assetGroupId = descriptor.readU8();
         asset.assetSelectionLevel = descriptor.readU8();
+    }
+
+    private static parseAccessControlDescriptor(info: MMTConditionalAccessInfo, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, ACCESS_CONTROL_DESCRIPTOR);
+        if (length < 0 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        if (!descriptor.canRead(3)) {
+            return;
+        }
+
+        info.accessControlCaSystemId = descriptor.readU16();
+        const location = MMTSI.parseLocation(descriptor);
+        if (location === null) {
+            return;
+        }
+        info.accessControlLocationType = location.locationType;
+        info.accessControlPacketId = location.packetId;
+        info.accessControlPrivateData = descriptor.remainingBytes();
+    }
+
+    private static parseScramblerDescriptor(info: MMTConditionalAccessInfo, reader: ByteReader): void {
+        const values = MMTSI.parseLayerSystemDescriptor(reader, SCRAMBLER_DESCRIPTOR);
+        if (values === null) {
+            return;
+        }
+
+        info.scramblerLayerType = values.layerType;
+        info.scrambleSystemId = values.systemId;
+        info.scramblerPrivateData = values.privateData;
+    }
+
+    private static parseMessageAuthenticationMethodDescriptor(info: MMTConditionalAccessInfo, reader: ByteReader): void {
+        const values = MMTSI.parseLayerSystemDescriptor(reader, MESSAGE_AUTHENTICATION_METHOD_DESCRIPTOR);
+        if (values === null) {
+            return;
+        }
+
+        info.messageAuthenticationLayerType = values.layerType;
+        info.messageAuthenticationSystemId = values.systemId;
+        info.messageAuthenticationPrivateData = values.privateData;
+    }
+
+    private static hasConditionalAccessInfo(info: MMTConditionalAccessInfo): boolean {
+        return info.accessControlCaSystemId !== undefined ||
+            info.scrambleSystemId !== undefined ||
+            info.messageAuthenticationSystemId !== undefined;
+    }
+
+    private static parseLayerSystemDescriptor(reader: ByteReader,
+                                              expectedTag: number): {layerType: number, systemId: number, privateData: Uint8Array} | null {
+        const length = MMTSI.readShortDescriptorHeader(reader, expectedTag);
+        if (length < 0 || !reader.canRead(length)) {
+            return null;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        if (!descriptor.canRead(2)) {
+            return null;
+        }
+
+        const layerType = (descriptor.readU8() >> 6) & 0x03;
+        return {
+            layerType,
+            systemId: descriptor.readU8(),
+            privateData: descriptor.remainingBytes()
+        };
     }
 
     private static parseMpuTimestampDescriptor(asset: MMTAsset, reader: ByteReader): void {

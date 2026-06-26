@@ -1,5 +1,6 @@
 import MMTSI, {
     MMTAsset,
+    MMTConditionalAccessInfo,
     MMTMpuExtendedTimestampDescriptor,
     MMTMpuTimestampDescriptor,
     SignalingFragmentState
@@ -61,6 +62,7 @@ class MMTSProgram {
     private mmtp_packet_continuity_states_: {[packetId: number]: MMTSPacketContinuityState} = {};
     private assets_by_packet_id_: {[packetId: number]: MMTAsset} = {};
     private stream_states_by_packet_id_: {[packetId: number]: MMTSStreamState} = {};
+    private conditional_access_info_: MMTConditionalAccessInfo = {};
 
     public destroy(): void {
         this.signaling_fragment_states_ = null;
@@ -68,6 +70,7 @@ class MMTSProgram {
         this.mmtp_packet_continuity_states_ = null;
         this.assets_by_packet_id_ = null;
         this.stream_states_by_packet_id_ = null;
+        this.conditional_access_info_ = null;
     }
 
     public parseSignalingPacket(packet: MMTPPacket): MMTAsset[] {
@@ -84,11 +87,30 @@ class MMTSProgram {
         );
 
         const assets: MMTAsset[] = [];
+        const conditionalAccessUpdated = this.mergeConditionalAccessInfos(result.conditionalAccessInfos);
         for (const asset of result.assets) {
             if (asset.packetId >= 0) {
-                assets.push(this.mergeAsset(asset));
+                const merged = this.mergeAsset(asset);
+                this.applyConditionalAccessDefaults(merged);
+                assets.push(merged);
             } else {
                 assets.push(asset);
+            }
+        }
+
+        if (conditionalAccessUpdated) {
+            const seen: {[packetId: number]: boolean} = {};
+            for (const asset of assets) {
+                if (asset.packetId >= 0) {
+                    seen[asset.packetId] = true;
+                }
+            }
+            for (const key of Object.keys(this.assets_by_packet_id_)) {
+                const asset = this.assets_by_packet_id_[Number(key)];
+                this.applyConditionalAccessDefaults(asset);
+                if (!seen[asset.packetId]) {
+                    assets.push(asset);
+                }
             }
         }
 
@@ -230,6 +252,63 @@ class MMTSProgram {
             this.stream_states_by_packet_id_[packetId] = state;
         }
         return state;
+    }
+
+    private mergeConditionalAccessInfos(infos: MMTConditionalAccessInfo[]): boolean {
+        let updated = false;
+        for (const info of infos) {
+            updated = this.copyDefinedConditionalAccessFields(info, this.conditional_access_info_) || updated;
+        }
+        return updated;
+    }
+
+    private applyConditionalAccessDefaults(asset: MMTAsset): void {
+        this.copyMissingConditionalAccessFields(this.conditional_access_info_, asset);
+    }
+
+    private copyDefinedConditionalAccessFields(source: MMTConditionalAccessInfo,
+                                               target: MMTConditionalAccessInfo): boolean {
+        let updated = false;
+        const keys = [
+            'accessControlCaSystemId',
+            'accessControlLocationType',
+            'accessControlPacketId',
+            'accessControlPrivateData',
+            'scramblerLayerType',
+            'scrambleSystemId',
+            'scramblerPrivateData',
+            'messageAuthenticationLayerType',
+            'messageAuthenticationSystemId',
+            'messageAuthenticationPrivateData'
+        ];
+        for (const key of keys) {
+            if (source[key] !== undefined && target[key] !== source[key]) {
+                target[key] = source[key];
+                updated = true;
+            }
+        }
+        return updated;
+    }
+
+    private copyMissingConditionalAccessFields(source: MMTConditionalAccessInfo,
+                                               target: MMTConditionalAccessInfo): void {
+        const keys = [
+            'accessControlCaSystemId',
+            'accessControlLocationType',
+            'accessControlPacketId',
+            'accessControlPrivateData',
+            'scramblerLayerType',
+            'scrambleSystemId',
+            'scramblerPrivateData',
+            'messageAuthenticationLayerType',
+            'messageAuthenticationSystemId',
+            'messageAuthenticationPrivateData'
+        ];
+        for (const key of keys) {
+            if (target[key] === undefined && source[key] !== undefined) {
+                target[key] = source[key];
+            }
+        }
     }
 
     private mergeAsset(asset: MMTAsset): MMTAsset {

@@ -307,6 +307,7 @@
             if (track.assetSelectionLevel !== undefined) {
                 parts.push('sel=' + track.assetSelectionLevel);
             }
+            appendMMTSAssetControlInfo(parts, track);
             if (track.hierarchyChannel !== undefined) {
                 parts.push('hchan=' + track.hierarchyChannel);
             }
@@ -320,6 +321,32 @@
                 parts.push(track.assetType);
             }
             return parts.join(' ');
+        }
+
+        function appendMMTSAssetControlInfo(parts, track) {
+            if (track.accessControlCaSystemId !== undefined) {
+                parts.push('ca=0x' + Number(track.accessControlCaSystemId).toString(16));
+            }
+            if (track.accessControlPacketId !== undefined) {
+                parts.push('ca_pid=0x' + Number(track.accessControlPacketId).toString(16));
+            }
+            if (track.scrambleSystemId !== undefined) {
+                parts.push('scr=' + formatMMTSScrambleSystem(track.scrambleSystemId));
+            }
+            if (track.messageAuthenticationSystemId !== undefined) {
+                parts.push('auth=0x' + Number(track.messageAuthenticationSystemId).toString(16));
+            }
+        }
+
+        function formatMMTSScrambleSystem(systemId) {
+            switch (systemId) {
+                case 0x01:
+                    return 'aes';
+                case 0x02:
+                    return 'camellia';
+                default:
+                    return '0x' + Number(systemId).toString(16);
+            }
         }
 
         function formatNumber(value, digits) {
@@ -363,6 +390,12 @@
             if (track.language) {
                 parts.push(track.language);
             }
+            if (track.assetGroupId !== undefined) {
+                parts.push('group=' + track.assetGroupId);
+            }
+            if (track.assetSelectionLevel !== undefined) {
+                parts.push('sel=' + track.assetSelectionLevel);
+            }
             if (track.channelLayout) {
                 parts.push(track.channelLayout);
             } else if (track.channelCount) {
@@ -374,6 +407,7 @@
             if (track.componentType !== undefined) {
                 parts.push('component=0x' + Number(track.componentType).toString(16));
             }
+            appendMMTSAssetControlInfo(parts, track);
             return parts.join(' ');
         }
 

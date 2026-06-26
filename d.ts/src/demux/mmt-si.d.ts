@@ -1,11 +1,25 @@
 export declare const enum MMTTableId {
     MmtPackageTable = 32,
+    MhCat = 134,
     PackageListTable = 128,
     MhEit = 139
 }
 export declare const enum MMTMessageId {
     Pa = 0,
-    M2Section = 32768
+    M2Section = 32768,
+    Ca = 32769
+}
+export interface MMTConditionalAccessInfo {
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    accessControlPrivateData?: Uint8Array;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    scramblerPrivateData?: Uint8Array;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
+    messageAuthenticationPrivateData?: Uint8Array;
 }
 export interface MMTAsset {
     packetId: number;
@@ -16,6 +30,16 @@ export interface MMTAsset {
     componentTag?: number;
     assetGroupId?: number;
     assetSelectionLevel?: number;
+    accessControlCaSystemId?: number;
+    accessControlLocationType?: number;
+    accessControlPacketId?: number;
+    accessControlPrivateData?: Uint8Array;
+    scramblerLayerType?: number;
+    scrambleSystemId?: number;
+    scramblerPrivateData?: Uint8Array;
+    messageAuthenticationLayerType?: number;
+    messageAuthenticationSystemId?: number;
+    messageAuthenticationPrivateData?: Uint8Array;
     videoResolution?: number;
     videoAspectRatio?: number;
     videoScanFlag?: boolean;
@@ -58,6 +82,7 @@ export interface MMTMpuTimestampOffset {
 }
 export interface MMTSIResult {
     assets: MMTAsset[];
+    conditionalAccessInfos: MMTConditionalAccessInfo[];
     messages: number[];
     tables: number[];
 }
@@ -75,13 +100,22 @@ export default class MMTSI {
     private static parseSignalingMessage;
     private static parsePaMessage;
     private static parseM2SectionMessage;
+    private static parseCaMessage;
     private static parseTable;
     private static parseMpt;
+    private static parseCat;
     private static parseMptAsset;
     private static parseLocation;
     private static assetFromType;
     private static parseAssetDescriptors;
+    private static parseConditionalAccessDescriptors;
+    private static parseConditionalAccessDescriptor;
     private static parseAssetGroupDescriptor;
+    private static parseAccessControlDescriptor;
+    private static parseScramblerDescriptor;
+    private static parseMessageAuthenticationMethodDescriptor;
+    private static hasConditionalAccessInfo;
+    private static parseLayerSystemDescriptor;
     private static parseMpuTimestampDescriptor;
     private static parseMpuExtendedTimestampDescriptor;
     private static parseVideoComponentDescriptor;

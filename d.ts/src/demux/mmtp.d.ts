@@ -11,8 +11,11 @@ export declare const enum MMTPEncryptionFlag {
 }
 export interface MMTPScramblingInfo {
     encryptionFlag: MMTPEncryptionFlag;
+    scrambleSystemControl: number;
     scramblingSubsystem: number;
+    scrambleSystemId?: number;
     messageAuthenticationControl: number;
+    authenticatedPayloadLength?: number;
     scramblingInitialCounterValue: number;
 }
 export interface MMTPPacket {
@@ -30,11 +33,13 @@ export interface MMTPPacket {
     extensionHeaderLength?: number;
     extensionHeaderField?: Uint8Array;
     extensionHeaderScrambling?: MMTPScramblingInfo;
+    messageAuthenticationCode?: Uint8Array;
     payload: Uint8Array;
 }
 export default class MMTP {
     static parse(data: Uint8Array): MMTPPacket | null;
     private static parseScramblingExtension;
+    private static parseB61ScramblingExtension;
     private static readBe16;
     private static readBe32;
 }

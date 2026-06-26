@@ -1,7 +1,7 @@
 import BaseDemuxer from './base-demuxer';
 import TLV from './tlv';
 import CompressedIP from './compressed-ip';
-import MMTP, {MMTPEncryptionFlag, MMTPPayloadType} from './mmtp';
+import MMTP, {MMTPEncryptionFlag, MMTPPayloadType, MMTPScramblingInfo} from './mmtp';
 import {MMTAsset} from './mmt-si';
 import MPU, {MFUFragment} from './mpu';
 import MMTSProgram from './mmts-program';
@@ -101,6 +101,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private output_video_dts_base_: number = -1;
     private primary_video_packet_id_: number = -1;
     private primary_audio_packet_id_: number = -1;
+    private manually_selected_audio_packet_id_: number = -1;
     private media_info_ = new MediaInfo();
     private audio_metadata_: AACAudioMetadata = {
         codec: 'aac',
@@ -207,7 +208,8 @@ class MMTSDemuxer extends BaseDemuxer {
                     `payload=${this.payloadTypeName(mmtp.payloadType)}, ` +
                     `seq=${mmtp.packetSequenceNumber}, ` +
                     `rap=${mmtp.rapFlag ? 1 : 0}, ` +
-                    `scrambling=${this.scramblingName(mmtp.extensionHeaderScrambling && mmtp.extensionHeaderScrambling.encryptionFlag)}`
+                    `scrambling=${this.scramblingName(mmtp.extensionHeaderScrambling && mmtp.extensionHeaderScrambling.encryptionFlag)}` +
+                    this.formatMmtpScramblingInfo(mmtp.extensionHeaderScrambling)
                 );
             }
 
@@ -239,7 +241,11 @@ class MMTSDemuxer extends BaseDemuxer {
             this.updateTrackInfo(asset);
             const key = `${asset.packetId}:${asset.assetType}:${asset.codec || ''}:${asset.language || ''}:` +
                 `${asset.assetGroupId !== undefined ? asset.assetGroupId : ''}:` +
-                `${asset.assetSelectionLevel !== undefined ? asset.assetSelectionLevel : ''}`;
+                `${asset.assetSelectionLevel !== undefined ? asset.assetSelectionLevel : ''}:` +
+                `${asset.accessControlCaSystemId !== undefined ? asset.accessControlCaSystemId : ''}:` +
+                `${asset.accessControlPacketId !== undefined ? asset.accessControlPacketId : ''}:` +
+                `${asset.scrambleSystemId !== undefined ? asset.scrambleSystemId : ''}:` +
+                `${asset.messageAuthenticationSystemId !== undefined ? asset.messageAuthenticationSystemId : ''}`;
 
             if (!this.logged_asset_keys_[key]) {
                 this.logged_asset_keys_[key] = true;
@@ -250,6 +256,7 @@ class MMTSDemuxer extends BaseDemuxer {
                     `codec=${asset.codec || 'unknown'}, lang=${asset.language || 'und'}` +
                     (asset.assetGroupId !== undefined ? `, asset_group=${asset.assetGroupId}` : '') +
                     (asset.assetSelectionLevel !== undefined ? `, selection_level=${asset.assetSelectionLevel}` : '') +
+                    this.formatAssetConditionalAccessInfo(asset) +
                     (asset.mediaType === 'video' ? `, resolution=${this.videoResolutionLabel(asset)}` : '')
                 );
             }
@@ -964,7 +971,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        if (this.primary_audio_packet_id_ >= 0) {
+        if (this.primary_audio_packet_id_ >= 0 || this.manually_selected_audio_packet_id_ >= 0) {
             return;
         }
 
@@ -988,17 +995,23 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     public selectAudioTrack(packetId: number): boolean {
+        return this.selectAudioTrackInternal(packetId, true);
+    }
+
+    private selectAudioTrackInternal(packetId: number, manual: boolean): boolean {
         const info = this.audio_track_infos_by_packet_id_[packetId];
         if (info === undefined) {
             return false;
         }
 
         if (this.primary_audio_packet_id_ === packetId) {
+            this.manually_selected_audio_packet_id_ = manual ? packetId : -1;
             return true;
         }
 
         this.dispatchAudioMediaSegment(true);
         this.primary_audio_packet_id_ = packetId;
+        this.manually_selected_audio_packet_id_ = manual ? packetId : -1;
         this.audio_init_segment_dispatched_ = false;
         this.audio_last_sample_pts_ = undefined;
         this.audio_track_ = {
@@ -1040,7 +1053,7 @@ class MMTSDemuxer extends BaseDemuxer {
     public selectPrimaryAudioTrack(): void {
         const primary = this.findPreferredAudioTrack(false);
         if (primary !== undefined) {
-            this.selectAudioTrack(primary.packetId);
+            this.selectAudioTrackInternal(primary.packetId, false);
         }
     }
 
@@ -1284,6 +1297,13 @@ class MMTSDemuxer extends BaseDemuxer {
                 componentTag: asset.componentTag,
                 assetGroupId: asset.assetGroupId,
                 assetSelectionLevel: asset.assetSelectionLevel,
+                accessControlCaSystemId: asset.accessControlCaSystemId,
+                accessControlLocationType: asset.accessControlLocationType,
+                accessControlPacketId: asset.accessControlPacketId,
+                scramblerLayerType: asset.scramblerLayerType,
+                scrambleSystemId: asset.scrambleSystemId,
+                messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
+                messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
                 resolution: asset.videoResolution,
                 resolutionLabel: this.videoResolutionLabel(asset),
                 frameRateCode: asset.videoFrameRate,
@@ -1311,6 +1331,15 @@ class MMTSDemuxer extends BaseDemuxer {
                 language: asset.language,
                 componentType: asset.audioComponentType,
                 componentTag: asset.componentTag !== undefined ? asset.componentTag : asset.audioComponentTag,
+                assetGroupId: asset.assetGroupId,
+                assetSelectionLevel: asset.assetSelectionLevel,
+                accessControlCaSystemId: asset.accessControlCaSystemId,
+                accessControlLocationType: asset.accessControlLocationType,
+                accessControlPacketId: asset.accessControlPacketId,
+                scramblerLayerType: asset.scramblerLayerType,
+                scrambleSystemId: asset.scrambleSystemId,
+                messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
+                messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
                 streamType: asset.audioStreamType,
                 simulcastGroupTag: asset.audioSimulcastGroupTag,
                 mainComponent: asset.audioMainComponent,
@@ -1327,11 +1356,21 @@ class MMTSDemuxer extends BaseDemuxer {
 
         if (asset.assetType === 'stpp' || (asset.mediaType === 'subtitle' && asset.codec === 'ttml')) {
             this.subtitle_track_infos_by_packet_id_[asset.packetId] = {
+                ...this.subtitle_track_infos_by_packet_id_[asset.packetId],
                 packetId: asset.packetId,
                 assetType: asset.assetType,
                 codec: asset.codec || 'ttml',
                 language: asset.language,
                 componentTag: asset.componentTag,
+                assetGroupId: asset.assetGroupId,
+                assetSelectionLevel: asset.assetSelectionLevel,
+                accessControlCaSystemId: asset.accessControlCaSystemId,
+                accessControlLocationType: asset.accessControlLocationType,
+                accessControlPacketId: asset.accessControlPacketId,
+                scramblerLayerType: asset.scramblerLayerType,
+                scrambleSystemId: asset.scrambleSystemId,
+                messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
+                messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
                 dataComponentId: asset.dataComponentId,
                 dataComponentInfo: asset.dataComponentInfo
             };
@@ -1361,10 +1400,18 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private maybePromotePrimaryAudioTrack(packetId: number): void {
+        const manualPacketId = this.manually_selected_audio_packet_id_;
+        if (manualPacketId >= 0 && packetId !== manualPacketId) {
+            return;
+        }
+
         const info = this.audio_track_infos_by_packet_id_[packetId];
         if (!this.isMMTSAudioTrackSelectable(info)) {
             if (this.primary_audio_packet_id_ === packetId && !this.audio_init_segment_dispatched_) {
                 this.primary_audio_packet_id_ = -1;
+                if (this.manually_selected_audio_packet_id_ === packetId) {
+                    this.manually_selected_audio_packet_id_ = -1;
+                }
                 this.dispatchAudioTracksIfChanged(true);
             }
             this.logUnsupportedMMTSAudioTrack(packetId, info);
@@ -1372,6 +1419,10 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (!this.hasKnownMMTSAudioSupport(info)) {
+            return;
+        }
+
+        if (manualPacketId >= 0) {
             return;
         }
 
@@ -1573,7 +1624,15 @@ class MMTSDemuxer extends BaseDemuxer {
                 language: track.language || 'und',
                 componentTag: track.componentTag !== undefined ? this.formatHex(track.componentTag, 4) : undefined,
                 dataComponentId: track.dataComponentId !== undefined ? this.formatHex(track.dataComponentId, 4) : undefined,
-                dataComponentInfo: track.dataComponentInfo ? this.toHex(track.dataComponentInfo) : undefined
+                dataComponentInfo: track.dataComponentInfo ? this.toHex(track.dataComponentInfo) : undefined,
+                accessControlCaSystemId: track.accessControlCaSystemId !== undefined ?
+                    this.formatHex(track.accessControlCaSystemId, 4) : undefined,
+                accessControlPacketId: track.accessControlPacketId !== undefined ?
+                    this.formatHex(track.accessControlPacketId, 4) : undefined,
+                scramblerLayerType: track.scramblerLayerType,
+                scrambleSystemId: track.scrambleSystemId,
+                messageAuthenticationLayerType: track.messageAuthenticationLayerType,
+                messageAuthenticationSystemId: track.messageAuthenticationSystemId
             };
         }))}`);
     }
@@ -2177,6 +2236,86 @@ class MMTSDemuxer extends BaseDemuxer {
         }).join(',');
     }
 
+    private formatAssetConditionalAccessInfo(asset: MMTAsset): string {
+        const parts: string[] = [];
+        if (asset.accessControlCaSystemId !== undefined) {
+            parts.push(`ca_system=${this.formatHex(asset.accessControlCaSystemId, 4)}`);
+        }
+        if (asset.accessControlLocationType !== undefined) {
+            parts.push(`ca_location=${this.mmtLocationTypeName(asset.accessControlLocationType)}`);
+        }
+        if (asset.accessControlPacketId !== undefined) {
+            parts.push(`ca_packet=${this.formatHex(asset.accessControlPacketId, 4)}`);
+        }
+        if (asset.accessControlPrivateData !== undefined && asset.accessControlPrivateData.byteLength > 0) {
+            parts.push(`ca_private=${asset.accessControlPrivateData.byteLength}B`);
+        }
+        if (asset.scrambleSystemId !== undefined) {
+            parts.push(
+                `scrambler=${this.layerTypeName(asset.scramblerLayerType)}/` +
+                `${this.scrambleSystemName(asset.scrambleSystemId)}`
+            );
+        }
+        if (asset.scramblerPrivateData !== undefined && asset.scramblerPrivateData.byteLength > 0) {
+            parts.push(`scrambler_private=${asset.scramblerPrivateData.byteLength}B`);
+        }
+        if (asset.messageAuthenticationSystemId !== undefined) {
+            parts.push(
+                `auth=${this.layerTypeName(asset.messageAuthenticationLayerType)}/` +
+                `${this.formatHex(asset.messageAuthenticationSystemId, 2)}`
+            );
+        }
+        if (asset.messageAuthenticationPrivateData !== undefined &&
+            asset.messageAuthenticationPrivateData.byteLength > 0) {
+            parts.push(`auth_private=${asset.messageAuthenticationPrivateData.byteLength}B`);
+        }
+
+        return parts.length > 0 ? ', ' + parts.join(', ') : '';
+    }
+
+    private mmtLocationTypeName(locationType: number): string {
+        switch (locationType) {
+            case 0x00:
+                return 'same-flow';
+            case 0x01:
+                return 'ipv4';
+            case 0x02:
+                return 'ipv6';
+            case 0x03:
+                return 'ts';
+            case 0x04:
+                return 'ts-ipv6';
+            case 0x05:
+                return 'url';
+            default:
+                return `unknown(${locationType})`;
+        }
+    }
+
+    private layerTypeName(layerType: number | undefined): string {
+        switch (layerType) {
+            case 0x01:
+                return 'mmtp';
+            case 0x02:
+                return 'ip';
+            case undefined:
+                return 'unknown';
+            default:
+                return `layer${layerType}`;
+        }
+    }
+
+    private scrambleSystemName(systemId: number): string {
+        switch (systemId) {
+            case 0x01:
+                return 'aes-128';
+            case 0x02:
+                return 'camellia-128';
+            default:
+                return this.formatHex(systemId, 2);
+        }
+    }
+
     private readU16(data: Uint8Array, offset: number): number {
         return (data[offset] << 8) | data[offset + 1];
     }
@@ -2197,6 +2336,31 @@ class MMTSDemuxer extends BaseDemuxer {
             default:
                 return `unknown(${payloadType})`;
         }
+    }
+
+    private formatMmtpScramblingInfo(info: MMTPScramblingInfo | undefined): string {
+        if (info === undefined) {
+            return '';
+        }
+
+        const parts: string[] = [];
+        if (info.scrambleSystemId !== undefined) {
+            parts.push(`scramble_system=${this.scrambleSystemName(info.scrambleSystemId)}`);
+        } else if (info.scrambleSystemControl !== 0) {
+            parts.push('scramble_system=present');
+        }
+        if (info.messageAuthenticationControl !== 0) {
+            parts.push(
+                info.authenticatedPayloadLength !== undefined ?
+                    `auth_payload=${info.authenticatedPayloadLength}` :
+                    'auth_payload=present'
+            );
+        }
+        if (info.scramblingInitialCounterValue !== 0) {
+            parts.push('counter=present');
+        }
+
+        return parts.length > 0 ? ', ' + parts.join(', ') : '';
     }
 
     private scramblingName(encryptionFlag: MMTPEncryptionFlag | undefined): string {
