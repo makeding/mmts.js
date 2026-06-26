@@ -5,7 +5,7 @@ import { SCTE35Data } from './scte35';
 import { KLVData } from './klv';
 import { PGSData } from './pgs-data';
 import { SEIData } from './sei';
-import { MMTSAudioTrackList, MMTSSubtitleData, MMTSSubtitleTrackList } from './mmts-track-data';
+import { MMTSAudioTrackList, MMTSSubtitleData, MMTSSubtitleTrackList, MMTSVideoTrackList } from './mmts-track-data';
 type OnErrorCallback = (type: string, info: string) => void;
 type OnMediaInfoCallback = (mediaInfo: MediaInfo) => void;
 type OnMetaDataArrivedCallback = (metadata: any) => void;
@@ -21,6 +21,7 @@ type OnSCTE35MetadataCallback = (scte35_data: SCTE35Data) => void;
 type OnPESPrivateDataCallback = (private_data: PESPrivateData) => void;
 type OnPESPrivateDataDescriptorCallback = (private_data_descriptor: PESPrivateDataDescriptor) => void;
 type OnMMTSAudioTracksCallback = (audio_tracks: MMTSAudioTrackList) => void;
+type OnMMTSVideoTracksCallback = (video_tracks: MMTSVideoTrackList) => void;
 type OnMMTSSubtitleTracksCallback = (subtitle_tracks: MMTSSubtitleTrackList) => void;
 type OnMMTSSubtitleDataCallback = (subtitle_data: MMTSSubtitleData) => void;
 export default abstract class BaseDemuxer {
@@ -39,6 +40,7 @@ export default abstract class BaseDemuxer {
     onPESPrivateData: OnPESPrivateDataCallback;
     onPESPrivateDataDescriptor: OnPESPrivateDataDescriptorCallback;
     onMMTSAudioTracks: OnMMTSAudioTracksCallback;
+    onMMTSVideoTracks: OnMMTSVideoTracksCallback;
     onMMTSSubtitleTracks: OnMMTSSubtitleTracksCallback;
     onMMTSSubtitleData: OnMMTSSubtitleDataCallback;
     constructor();

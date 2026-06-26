@@ -258,6 +258,9 @@ class PlayerEngineMainThread implements PlayerEngine {
         this._transmuxer.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, (audio_tracks: any) => {
             this._emitter.emit(PlayerEvents.MMTS_AUDIO_TRACKS, audio_tracks);
         });
+        this._transmuxer.on(TransmuxingEvents.MMTS_VIDEO_TRACKS, (video_tracks: any) => {
+            this._emitter.emit(PlayerEvents.MMTS_VIDEO_TRACKS, video_tracks);
+        });
         this._transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, (subtitle_tracks: any) => {
             this._emitter.emit(PlayerEvents.MMTS_SUBTITLE_TRACKS, subtitle_tracks);
         });

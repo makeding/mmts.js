@@ -11,6 +11,7 @@ export interface MMTSTimestamp {
 export interface MMTSCompletedMfuUnit {
     fragment: MFUFragment;
     mpuSequenceNumber: number;
+    randomAccess: boolean;
     unit: Uint8Array;
 }
 export interface MMTSParsedMpu {
@@ -28,8 +29,9 @@ declare class MMTSProgram {
     parseMpuPacket(packet: MMTPPacket): MMTSParsedMpu | null;
     getAsset(packetId: number): MMTAsset | undefined;
     get streamCount(): number;
-    resetTimestamp(packetId: number, mpuSequenceNumber: number): void;
     nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null;
+    private getPtsOffset;
+    private getVideoFrameDuration;
     private getStreamState;
     private mergeAsset;
     private mergeTimestampDescriptors;

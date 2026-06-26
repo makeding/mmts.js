@@ -71,6 +71,7 @@ export type WorkerMessagePacketPlayerEventExtraData = WorkerMessagePacketPlayerE
         | PlayerEvents.PES_PRIVATE_DATA_DESCRIPTOR
         | PlayerEvents.PES_PRIVATE_DATA_ARRIVED
         | PlayerEvents.MMTS_AUDIO_TRACKS
+        | PlayerEvents.MMTS_VIDEO_TRACKS
         | PlayerEvents.MMTS_SUBTITLE_TRACKS
         | PlayerEvents.MMTS_SUBTITLE_DATA_ARRIVED,
     extraData: any,

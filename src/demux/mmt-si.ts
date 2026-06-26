@@ -16,6 +16,11 @@ export interface MMTAsset {
     codec?: string;
     language?: string;
     componentTag?: number;
+    videoResolution?: number;
+    videoAspectRatio?: number;
+    videoScanFlag?: boolean;
+    videoFrameRate?: number;
+    videoTransferCharacteristics?: number;
     audioComponentType?: number;
     audioComponentTag?: number;
     audioStreamType?: number;
@@ -499,8 +504,6 @@ export default class MMTSI {
                 return;
             }
             defaultPtsOffset = descriptor.readU16();
-        } else if (ptsOffsetType === 0) {
-            return;
         }
 
         const extended: MMTMpuExtendedTimestampDescriptor[] = [];
@@ -550,8 +553,16 @@ export default class MMTSI {
             return;
         }
         const descriptor = new ByteReader(reader.readBytes(length));
-        if (descriptor.canRead(7)) {
-            descriptor.skip(5);
+        if (descriptor.canRead(8)) {
+            let byte = descriptor.readU8();
+            asset.videoResolution = (byte >> 4) & 0x0f;
+            asset.videoAspectRatio = byte & 0x0f;
+            byte = descriptor.readU8();
+            asset.videoScanFlag = (byte & 0x80) !== 0;
+            asset.videoFrameRate = byte & 0x1f;
+            asset.componentTag = descriptor.readU16();
+            byte = descriptor.readU8();
+            asset.videoTransferCharacteristics = (byte >> 4) & 0x0f;
             asset.language = descriptor.readAscii(3);
         }
     }

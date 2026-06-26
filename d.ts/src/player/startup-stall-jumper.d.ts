@@ -8,6 +8,7 @@ declare class StartupStallJumper {
     destroy(): void;
     private _onMediaCanPlay;
     private _onMediaStalled;
+    private _onMediaWaiting;
     private _onMediaProgress;
     private _detectAndFixStuckPlayback;
 }

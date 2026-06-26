@@ -82,6 +82,7 @@ In multipart mode, `duration` `filesize` `url` field in `MediaDataSource` struct
 | `liveSyncPlaybackRate?`          | `number`  | `1.2`                        | PlaybackRate limited between [1, 2] will be used for latency chasing. Effective only if `isLive: true` and `liveSync: true` |
 | `liveSyncMinLatency?`            | `number`  | `undefined`                  | Minimum acceptable buffer latency in HTMLMediaElement, in seconds. Effective only if `isLive: true` and `liveSync: true` |
 | `liveSyncMinPlaybackRate?`       | `number`  | `0.95`                       | PlaybackRate limited between [0.5, 1] will be used for latency chasing. Effective only if `isLive: true` and `liveSync: true` |
+| `mmtsVideoPacketId?`             | `number`  | `undefined`                  | Force the primary MMTS HEVC video packet_id. Useful for service-specific video asset selection. |
 | `lazyLoad?`                      | `boolean` | `true`                       | Abort the http connection if there's enough data for playback. |
 | `lazyLoadMaxDuration?`           | `number`  | `3 * 60`                     | Indicates how many seconds of data to be kept for `lazyLoad`. |
 | `lazyLoadRecoverDuration?`       | `number`  | `30`                         | Indicates the `lazyLoad` recover time boundary in seconds. |
@@ -217,6 +218,10 @@ A series of constants that can be used with `Player.on()` / `Player.off()`. They
 | SMPTE2038_METADATA_ARRIVED | Provides SMPTE2038 Metadata packets containing private data callback |
 | SCTE35_METADATA_ARRIVED    | Provides SCTE35 Metadata packets containing section (stream_type=0x86) callback |
 | PES_PRIVATE_DATA_ARRIVED   | Provides ISO/IEC 13818-1 PES packets containing private data (stream_type=0x06) callback |
+| MMTS_AUDIO_TRACKS          | Provides MMTS audio track list callback |
+| MMTS_VIDEO_TRACKS          | Provides MMTS video track list and broadcast-mode callback |
+| MMTS_SUBTITLE_TRACKS       | Provides MMTS subtitle track list callback |
+| MMTS_SUBTITLE_DATA_ARRIVED | Provides MMTS subtitle data callback |
 | STATISTICS_INFO            | Provides playback statistics information like dropped frames, current speed, etc. |
 | DESTROYING                 | Fired when the player begins teardown |
 

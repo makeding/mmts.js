@@ -17,6 +17,19 @@ export interface MMTSAudioTrackInfo {
     selected: boolean;
 }
 
+export interface MMTSVideoTrackInfo {
+    packetId: number;
+    assetType: string;
+    codec?: string;
+    language?: string;
+    componentTag?: number;
+    resolution?: number;
+    resolutionLabel?: string;
+    frameRateCode?: number;
+    active: boolean;
+    selected: boolean;
+}
+
 export interface MMTSSubtitleTrackInfo {
     packetId: number;
     assetType: string;
@@ -30,6 +43,18 @@ export interface MMTSSubtitleTrackInfo {
 export class MMTSAudioTrackList {
     tracks: MMTSAudioTrackInfo[];
     selectedPacketId?: number;
+}
+
+export class MMTSVideoTrackList {
+    tracks: MMTSVideoTrackInfo[];
+    selectedPacketId?: number;
+    fallback: boolean;
+    fallbackReason?: string;
+    broadcastMode?: string;
+    hasMain: boolean;
+    mainActive: boolean;
+    hasRain: boolean;
+    rainActive: boolean;
 }
 
 export class MMTSSubtitleTrackList {

@@ -295,6 +295,9 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
         transmuxer.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, (audio_tracks: any) => {
             emitPlayerEventsExtraData(PlayerEvents.MMTS_AUDIO_TRACKS, audio_tracks);
         });
+        transmuxer.on(TransmuxingEvents.MMTS_VIDEO_TRACKS, (video_tracks: any) => {
+            emitPlayerEventsExtraData(PlayerEvents.MMTS_VIDEO_TRACKS, video_tracks);
+        });
         transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, (subtitle_tracks: any) => {
             emitPlayerEventsExtraData(PlayerEvents.MMTS_SUBTITLE_TRACKS, subtitle_tracks);
         });

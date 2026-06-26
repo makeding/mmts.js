@@ -14,6 +14,11 @@ export interface MMTAsset {
     codec?: string;
     language?: string;
     componentTag?: number;
+    videoResolution?: number;
+    videoAspectRatio?: number;
+    videoScanFlag?: boolean;
+    videoFrameRate?: number;
+    videoTransferCharacteristics?: number;
     audioComponentType?: number;
     audioComponentTag?: number;
     audioStreamType?: number;

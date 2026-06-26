@@ -73,6 +73,7 @@ class Transmuxer {
             ctl.on(TransmuxingEvents.PES_PRIVATE_DATA_DESCRIPTOR, this._onPESPrivateDataDescriptor.bind(this));
             ctl.on(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, this._onPESPrivateDataArrived.bind(this));
             ctl.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, this._onMMTSAudioTracks.bind(this));
+            ctl.on(TransmuxingEvents.MMTS_VIDEO_TRACKS, this._onMMTSVideoTracks.bind(this));
             ctl.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, this._onMMTSSubtitleTracks.bind(this));
             ctl.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, this._onMMTSSubtitleDataArrived.bind(this));
             ctl.on(TransmuxingEvents.STATISTICS_INFO, this._onStatisticsInfo.bind(this));
@@ -283,6 +284,12 @@ class Transmuxer {
         });
     }
 
+    _onMMTSVideoTracks(data) {
+        Promise.resolve().then(() => {
+            this._emitter.emit(TransmuxingEvents.MMTS_VIDEO_TRACKS, data);
+        });
+    }
+
     _onMMTSSubtitleTracks(data) {
         Promise.resolve().then(() => {
             this._emitter.emit(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, data);
@@ -361,6 +368,7 @@ class Transmuxer {
             case TransmuxingEvents.PES_PRIVATE_DATA_DESCRIPTOR:
             case TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED:
             case TransmuxingEvents.MMTS_AUDIO_TRACKS:
+            case TransmuxingEvents.MMTS_VIDEO_TRACKS:
             case TransmuxingEvents.MMTS_SUBTITLE_TRACKS:
             case TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED:
             case TransmuxingEvents.STATISTICS_INFO:

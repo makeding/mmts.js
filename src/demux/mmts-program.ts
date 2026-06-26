@@ -11,6 +11,7 @@ interface MFUFragmentState {
     data: number[];
     lastSeq: number;
     mpuSequenceNumber: number;
+    randomAccess: boolean;
     state: 'init' | 'not-started' | 'in-fragment' | 'skip';
 }
 
@@ -18,6 +19,11 @@ interface MMTSStreamState {
     lastMpuSequenceNumber?: number;
     auCount: number;
     firstDts?: number;
+}
+
+interface AssembledMFU {
+    unit: Uint8Array;
+    randomAccess: boolean;
 }
 
 const MAX_TIMESTAMP_DESCRIPTORS = 100;
@@ -33,6 +39,7 @@ export interface MMTSTimestamp {
 export interface MMTSCompletedMfuUnit {
     fragment: MFUFragment;
     mpuSequenceNumber: number;
+    randomAccess: boolean;
     unit: Uint8Array;
 }
 
@@ -89,17 +96,13 @@ class MMTSProgram {
 
         const units: MMTSCompletedMfuUnit[] = [];
         for (const fragment of mpu.mfuFragments) {
-            const unit = this.assembleMfuFragment(
-                packet.packetId,
-                packet.packetSequenceNumber,
-                mpu.mpuSequenceNumber,
-                fragment
-            );
-            if (unit !== null) {
+            const assembled = this.assembleMfuFragment(packet, mpu.mpuSequenceNumber, fragment);
+            if (assembled !== null) {
                 units.push({
                     fragment,
                     mpuSequenceNumber: mpu.mpuSequenceNumber,
-                    unit
+                    randomAccess: assembled.randomAccess,
+                    unit: assembled.unit
                 });
             }
         }
@@ -117,13 +120,6 @@ class MMTSProgram {
 
     public get streamCount(): number {
         return Object.keys(this.assets_by_packet_id_).length;
-    }
-
-    public resetTimestamp(packetId: number, mpuSequenceNumber: number): void {
-        const state = this.getStreamState(packetId);
-        state.lastMpuSequenceNumber = mpuSequenceNumber;
-        state.auCount = 0;
-        state.firstDts = undefined;
     }
 
     public nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null {
@@ -159,7 +155,7 @@ class MMTSProgram {
         let dts = Math.round(timestampDescriptor.presentationTimeUs * timescale / 1000000) -
             extendedTimestampDescriptor.decodingTimeOffset;
         for (let i = 0; i < auIndex; i++) {
-            dts += extendedTimestampDescriptor.au[i].ptsOffset;
+            dts += this.getPtsOffset(asset, extendedTimestampDescriptor.au[i].ptsOffset, timescale);
         }
 
         const pts = dts + extendedTimestampDescriptor.au[auIndex].dtsPtsOffset;
@@ -172,6 +168,45 @@ class MMTSProgram {
         const normalizedPts = pts - state.firstDts;
         state.auCount++;
         return {dts, pts: normalizedPts, rawDts, rawPts, timescale};
+    }
+
+    private getPtsOffset(asset: MMTAsset, ptsOffset: number, timescale: number): number {
+        if (ptsOffset > 0 || asset.mediaType !== 'video') {
+            return ptsOffset;
+        }
+
+        return this.getVideoFrameDuration(asset.videoFrameRate, timescale);
+    }
+
+    private getVideoFrameDuration(videoFrameRate: number | undefined, timescale: number): number {
+        switch (videoFrameRate) {
+            case 1:
+                return Math.round(timescale / 15);
+            case 2:
+                return Math.round(timescale * 1001 / 24000);
+            case 3:
+                return Math.round(timescale / 24);
+            case 4:
+                return Math.round(timescale / 25);
+            case 5:
+                return Math.round(timescale * 1001 / 30000);
+            case 6:
+                return Math.round(timescale / 30);
+            case 7:
+                return Math.round(timescale / 50);
+            case 8:
+                return Math.round(timescale * 1001 / 60000);
+            case 9:
+                return Math.round(timescale / 60);
+            case 10:
+                return Math.round(timescale / 100);
+            case 11:
+                return Math.round(timescale * 1001 / 120000);
+            case 12:
+                return Math.round(timescale / 120);
+            default:
+                return 0;
+        }
     }
 
     private getStreamState(packetId: number): MMTSStreamState {
@@ -274,16 +309,18 @@ class MMTSProgram {
         return oldestIndex;
     }
 
-    private assembleMfuFragment(packetId: number,
-                                packetSequenceNumber: number,
+    private assembleMfuFragment(packet: MMTPPacket,
                                 mpuSequenceNumber: number,
-                                fragment: MFUFragment): Uint8Array | null {
+                                fragment: MFUFragment): AssembledMFU | null {
+        const packetId = packet.packetId;
+        const packetSequenceNumber = packet.packetSequenceNumber;
         let state = this.mfu_fragment_states_[packetId];
         if (state === undefined) {
             state = {
                 data: [],
                 lastSeq: 0,
                 mpuSequenceNumber: 0,
+                randomAccess: false,
                 state: 'init'
             };
             this.mfu_fragment_states_[packetId] = state;
@@ -293,12 +330,14 @@ class MMTSProgram {
             state.state = 'skip';
         } else if (((state.lastSeq + 1) >>> 0) !== packetSequenceNumber) {
             state.data = [];
+            state.randomAccess = false;
             state.state = 'skip';
         }
         state.lastSeq = packetSequenceNumber;
 
         if (state.mpuSequenceNumber !== 0 && state.mpuSequenceNumber !== mpuSequenceNumber && state.state === 'in-fragment') {
             state.data = [];
+            state.randomAccess = false;
             state.state = 'skip';
         }
         state.mpuSequenceNumber = mpuSequenceNumber;
@@ -306,32 +345,45 @@ class MMTSProgram {
         switch (fragment.fragmentationIndicator) {
             case FragmentationIndicator.NotFragmented:
                 state.data = [];
+                state.randomAccess = false;
                 state.state = 'not-started';
-                return fragment.payload;
+                return {
+                    unit: fragment.payload,
+                    randomAccess: packet.rapFlag
+                };
             case FragmentationIndicator.FirstFragment:
                 if (state.state === 'in-fragment') {
                     state.data = [];
+                    state.randomAccess = false;
                     state.state = 'skip';
                     return null;
                 }
                 state.data = Array.prototype.slice.call(fragment.payload);
+                state.randomAccess = packet.rapFlag;
                 state.state = 'in-fragment';
                 return null;
             case FragmentationIndicator.MiddleFragment:
                 if (state.state !== 'in-fragment') {
                     return null;
                 }
+                state.randomAccess = state.randomAccess || packet.rapFlag;
                 this.appendToState(state, fragment.payload);
                 return null;
             case FragmentationIndicator.LastFragment:
                 if (state.state !== 'in-fragment') {
                     return null;
                 }
+                state.randomAccess = state.randomAccess || packet.rapFlag;
                 this.appendToState(state, fragment.payload);
                 const completeUnit = new Uint8Array(state.data);
+                const randomAccess = state.randomAccess;
                 state.data = [];
+                state.randomAccess = false;
                 state.state = 'not-started';
-                return completeUnit;
+                return {
+                    unit: completeUnit,
+                    randomAccess
+                };
             default:
                 return null;
         }

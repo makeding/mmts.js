@@ -361,6 +361,7 @@ class TransmuxingController {
         demuxer.onError = this._onDemuxException.bind(this);
         demuxer.onMediaInfo = this._onMediaInfo.bind(this);
         demuxer.onMMTSAudioTracks = this._onMMTSAudioTracks.bind(this);
+        demuxer.onMMTSVideoTracks = this._onMMTSVideoTracks.bind(this);
         demuxer.onMMTSSubtitleTracks = this._onMMTSSubtitleTracks.bind(this);
         demuxer.onMMTSSubtitleData = this._onMMTSSubtitleData.bind(this);
 
@@ -524,6 +525,10 @@ class TransmuxingController {
 
     _onMMTSAudioTracks(audio_tracks) {
         this._emitter.emit(TransmuxingEvents.MMTS_AUDIO_TRACKS, audio_tracks);
+    }
+
+    _onMMTSVideoTracks(video_tracks) {
+        this._emitter.emit(TransmuxingEvents.MMTS_VIDEO_TRACKS, video_tracks);
     }
 
     _onMMTSSubtitleTracks(subtitle_tracks) {

@@ -63,6 +63,14 @@
             <button onclick="probe_video_capability()">Probe Codec</button>
         </div>
         <div class="track-panel">
+            <div class="track-title">Video info</div>
+            <div id="videoInfo" class="track-list">No video info</div>
+        </div>
+        <div class="track-panel">
+            <div class="track-title">MMTS video tracks</div>
+            <div id="mmtsVideoTracks" class="track-list">No MMTS video tracks</div>
+        </div>
+        <div class="track-panel">
             <div class="track-title">MMTS audio tracks</div>
             <div id="mmtsAudioTracks" class="track-list">No MMTS audio tracks</div>
         </div>
@@ -75,6 +83,8 @@
         var checkBoxFields = ['isLive', 'withCredentials', 'liveBufferLatencyChasing'];
         var streamURL, mediaSourceURL;
         var mmtsAudioTracks = null;
+        var mmtsVideoTracks = null;
+        var lastMediaInfo = null;
         var lastVideoContentType = 'video/mp4; codecs="hvc1.2.1.L183.B0"';
 
         function logDemo(message) {
@@ -142,11 +152,15 @@
             player = mpegts.createPlayer(mediaDataSource, config);
             setupMediaElementDebug(element);
             player.attachMediaElement(element);
+            resetVideoInfo();
+            resetMMTSVideoTracks();
             resetMMTSAudioTracks();
             player.on(mpegts.Events.ERROR, function(type, detail, info) {
                 logDemo('mpegts error: type=' + type + ', detail=' + detail + ', info=' + JSON.stringify(info || null));
             });
             player.on(mpegts.Events.MEDIA_INFO, function(info) {
+                lastMediaInfo = info || null;
+                renderVideoInfo();
                 logDemo('media info: ' + JSON.stringify(info));
                 if (info && info.mimeType && info.videoCodec) {
                     lastVideoContentType = 'video/mp4; codecs="' + info.videoCodec + '"';
@@ -157,6 +171,11 @@
                 mmtsAudioTracks = data;
                 logDemo('mmts audio tracks: ' + JSON.stringify(data));
                 renderMMTSAudioTracks();
+            });
+            player.on(mpegts.Events.MMTS_VIDEO_TRACKS, function(data) {
+                mmtsVideoTracks = data;
+                logDemo('mmts video tracks: ' + JSON.stringify(data));
+                renderMMTSVideoTracks();
             });
             player.load();
         }
@@ -192,6 +211,98 @@
             if (player != null && player.switchSecondaryAudio) {
                 player.switchSecondaryAudio();
             }
+        }
+
+        function resetVideoInfo() {
+            lastMediaInfo = null;
+            renderVideoInfo();
+        }
+
+        function renderVideoInfo() {
+            var container = document.getElementById('videoInfo');
+            if (!container) {
+                return;
+            }
+
+            var element = document.getElementsByName('videoElement')[0];
+            var parts = [];
+            if (lastMediaInfo) {
+                if (lastMediaInfo.width && lastMediaInfo.height) {
+                    parts.push('media=' + lastMediaInfo.width + 'x' + lastMediaInfo.height);
+                }
+                if (lastMediaInfo.fps) {
+                    parts.push('fps=' + formatNumber(lastMediaInfo.fps, 3));
+                }
+                if (lastMediaInfo.videoCodec) {
+                    parts.push('video=' + lastMediaInfo.videoCodec);
+                }
+                if (lastMediaInfo.audioCodec) {
+                    parts.push('audio=' + lastMediaInfo.audioCodec);
+                }
+                if (lastMediaInfo.audioChannelCount) {
+                    parts.push('audio_ch=' + lastMediaInfo.audioChannelCount);
+                }
+            }
+            if (element && element.videoWidth && element.videoHeight) {
+                parts.push('element=' + element.videoWidth + 'x' + element.videoHeight);
+            }
+            if (element && element.duration) {
+                parts.push('duration=' + element.duration);
+            }
+
+            container.textContent = parts.length ? parts.join('  ') : 'No video info';
+        }
+
+        function resetMMTSVideoTracks() {
+            mmtsVideoTracks = null;
+            renderMMTSVideoTracks();
+        }
+
+        function renderMMTSVideoTracks() {
+            var container = document.getElementById('mmtsVideoTracks');
+            if (!container) {
+                return;
+            }
+            if (!mmtsVideoTracks || !mmtsVideoTracks.tracks || mmtsVideoTracks.tracks.length === 0) {
+                container.textContent = 'No MMTS video tracks';
+                return;
+            }
+
+            var lines = [];
+            lines.push(
+                'mode=' + (mmtsVideoTracks.broadcastMode || 'unknown') +
+                ' fallback=' + (mmtsVideoTracks.fallback ? 'yes' : 'no') +
+                ' main=' + (mmtsVideoTracks.hasMain ? (mmtsVideoTracks.mainActive ? 'active' : 'inactive') : 'missing') +
+                ' rain=' + (mmtsVideoTracks.hasRain ? (mmtsVideoTracks.rainActive ? 'active' : 'inactive') : 'missing')
+            );
+            mmtsVideoTracks.tracks.forEach(function(track) {
+                lines.push(formatMMTSVideoTrack(track));
+            });
+            container.textContent = lines.join('\n');
+        }
+
+        function formatMMTSVideoTrack(track) {
+            var parts = [];
+            parts.push(track.selected ? '*' : ' ');
+            parts.push(track.active ? 'active' : 'inactive');
+            parts.push('packet_id=0x' + Number(track.packetId).toString(16));
+            if (track.resolutionLabel) {
+                parts.push(track.resolutionLabel);
+            }
+            if (track.language) {
+                parts.push(track.language);
+            }
+            if (track.assetType) {
+                parts.push(track.assetType);
+            }
+            return parts.join(' ');
+        }
+
+        function formatNumber(value, digits) {
+            if (!Number.isFinite(value)) {
+                return String(value);
+            }
+            return Number(value).toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
         }
 
         function resetMMTSAudioTracks() {
@@ -266,9 +377,11 @@
             };
             element.onloadedmetadata = function() {
                 logDemo('loadedmetadata: duration=' + element.duration + ', video=' + element.videoWidth + 'x' + element.videoHeight);
+                renderVideoInfo();
             };
             element.onplaying = function() {
                 logDemo('playing: currentTime=' + element.currentTime);
+                renderVideoInfo();
             };
             element.onstalled = function() {
                 logDemo('stalled: currentTime=' + element.currentTime);
@@ -290,10 +403,10 @@
                 type: 'media-source',
                 video: {
                     contentType: contentType,
-                    width: 7680,
-                    height: 4320,
+                    width: lastMediaInfo && lastMediaInfo.width || 7680,
+                    height: lastMediaInfo && lastMediaInfo.height || 4320,
                     bitrate: 80000000,
-                    framerate: 60
+                    framerate: lastMediaInfo && lastMediaInfo.fps || 60
                 }
             }).then(function(info) {
                 logDemo('mediaCapabilities: ' + JSON.stringify(info));

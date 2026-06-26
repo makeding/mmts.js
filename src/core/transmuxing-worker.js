@@ -68,6 +68,7 @@ let TransmuxingWorker = function (self) {
                 controller.on(TransmuxingEvents.PES_PRIVATE_DATA_DESCRIPTOR, onPESPrivateDataDescriptor.bind(this));
                 controller.on(TransmuxingEvents.PES_PRIVATE_DATA_ARRIVED, onPESPrivateDataArrived.bind(this));
                 controller.on(TransmuxingEvents.MMTS_AUDIO_TRACKS, onMMTSAudioTracks.bind(this));
+                controller.on(TransmuxingEvents.MMTS_VIDEO_TRACKS, onMMTSVideoTracks.bind(this));
                 controller.on(TransmuxingEvents.MMTS_SUBTITLE_TRACKS, onMMTSSubtitleTracks.bind(this));
                 controller.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, onMMTSSubtitleDataArrived.bind(this));
                 controller.on(TransmuxingEvents.STATISTICS_INFO, onStatisticsInfo.bind(this));
@@ -265,6 +266,14 @@ let TransmuxingWorker = function (self) {
     function onMMTSAudioTracks(data) {
         let obj = {
             msg: TransmuxingEvents.MMTS_AUDIO_TRACKS,
+            data: data
+        };
+        self.postMessage(obj);
+    }
+
+    function onMMTSVideoTracks(data) {
+        let obj = {
+            msg: TransmuxingEvents.MMTS_VIDEO_TRACKS,
             data: data
         };
         self.postMessage(obj);

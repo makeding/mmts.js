@@ -35,17 +35,20 @@ class StartupStallJumper {
         this.e = {
             onMediaCanPlay: this._onMediaCanPlay.bind(this),
             onMediaStalled: this._onMediaStalled.bind(this),
+            onMediaWaiting: this._onMediaWaiting.bind(this),
             onMediaProgress: this._onMediaProgress.bind(this),
         };
 
         this._media_element.addEventListener('canplay', this.e.onMediaCanPlay);
         this._media_element.addEventListener('stalled', this.e.onMediaStalled);
+        this._media_element.addEventListener('waiting', this.e.onMediaWaiting);
         this._media_element.addEventListener('progress', this.e.onMediaProgress);
     }
 
     public destroy(): void {
         this._media_element.removeEventListener('canplay', this.e.onMediaCanPlay);
         this._media_element.removeEventListener('stalled', this.e.onMediaStalled);
+        this._media_element.removeEventListener('waiting', this.e.onMediaWaiting);
         this._media_element.removeEventListener('progress', this.e.onMediaProgress);
         this._media_element = null;
         this._on_direct_seek = null;
@@ -58,6 +61,10 @@ class StartupStallJumper {
     }
 
     private _onMediaStalled(e: Event): void {
+        this._detectAndFixStuckPlayback(true);
+    }
+
+    private _onMediaWaiting(e: Event): void {
         this._detectAndFixStuckPlayback(true);
     }
 
