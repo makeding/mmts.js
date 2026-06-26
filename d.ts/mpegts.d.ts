@@ -407,6 +407,7 @@ declare namespace Mpegts {
         switchPrimaryAudio(): void;
         switchSecondaryAudio(): void;
         selectAudioTrack(packetId: number): void;
+        selectVideoTrack(packetId: number): void;
         mediaInfo: MSEPlayerMediaInfo;
         statisticsInfo: MSEPlayerStatisticsInfo;
     }

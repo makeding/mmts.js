@@ -56,6 +56,7 @@ class MSEController {
         this._mediaElementProxy = null;
 
         this._isBufferFull = false;
+        this._hasFatalMediaError = false;
         this._hasPendingEos = false;
 
         this._requireSetMediaDuration = false;
@@ -173,6 +174,7 @@ class MSEController {
             }
             this._pendingSourceBufferInit = [];
             this._isBufferFull = false;
+            this._hasFatalMediaError = false;
             this._mediaSource = null;
         }
     }
@@ -290,53 +292,57 @@ class MSEController {
     flush() {
         // remove all appended buffers
         for (let type in this._sourceBuffers) {
-            if (!this._sourceBuffers[type]) {
-                continue;
+            this.flushType(type);
+        }
+    }
+
+    flushType(type) {
+        if (!this._sourceBuffers[type]) {
+            return;
+        }
+
+        // abort current buffer append algorithm
+        let sb = this._sourceBuffers[type];
+        if (this._mediaSource.readyState === 'open') {
+            try {
+                // If range removal algorithm is running, InvalidStateError will be throwed
+                // Ignore it.
+                sb.abort();
+            } catch (error) {
+                Log.e(this.TAG, error.message);
             }
+        }
 
-            // abort current buffer append algorithm
-            let sb = this._sourceBuffers[type];
-            if (this._mediaSource.readyState === 'open') {
-                try {
-                    // If range removal algorithm is running, InvalidStateError will be throwed
-                    // Ignore it.
-                    sb.abort();
-                } catch (error) {
-                    Log.e(this.TAG, error.message);
-                }
-            }
+        // pending segments should be discard
+        let ps = this._pendingSegments[type];
+        ps.splice(0, ps.length);
 
-            // pending segments should be discard
-            let ps = this._pendingSegments[type];
-            ps.splice(0, ps.length);
+        if (this._mediaSource.readyState === 'closed') {
+            // Parent MediaSource object has been detached from HTMLMediaElement
+            return;
+        }
 
-            if (this._mediaSource.readyState === 'closed') {
-                // Parent MediaSource object has been detached from HTMLMediaElement
-                continue;
-            }
+        // record ranges to be remove from SourceBuffer
+        for (let i = 0; i < sb.buffered.length; i++) {
+            let start = sb.buffered.start(i);
+            let end = sb.buffered.end(i);
+            this._pendingRemoveRanges[type].push({start, end});
+        }
 
-            // record ranges to be remove from SourceBuffer
-            for (let i = 0; i < sb.buffered.length; i++) {
-                let start = sb.buffered.start(i);
-                let end = sb.buffered.end(i);
-                this._pendingRemoveRanges[type].push({start, end});
-            }
+        // if sb is not updating, let's remove ranges now!
+        if (!sb.updating) {
+            this._doRemoveRanges();
+        }
 
-            // if sb is not updating, let's remove ranges now!
-            if (!sb.updating) {
-                this._doRemoveRanges();
-            }
-
-            // Safari 10 may get InvalidStateError in the later appendBuffer() after SourceBuffer.remove() call
-            // Internal parser's state may be invalid at this time. Re-append last InitSegment to workaround.
-            // Related issue: https://bugs.webkit.org/show_bug.cgi?id=159230
-            if (Browser.safari) {
-                let lastInitSegment = this._lastInitSegments[type];
-                if (lastInitSegment) {
-                    this._pendingSegments[type].push(lastInitSegment);
-                    if (!sb.updating) {
-                        this._doAppendSegments();
-                    }
+        // Safari 10 may get InvalidStateError in the later appendBuffer() after SourceBuffer.remove() call
+        // Internal parser's state may be invalid at this time. Re-append last InitSegment to workaround.
+        // Related issue: https://bugs.webkit.org/show_bug.cgi?id=159230
+        if (Browser.safari) {
+            let lastInitSegment = this._lastInitSegments[type];
+            if (lastInitSegment) {
+                this._pendingSegments[type].push(lastInitSegment);
+                if (!sb.updating) {
+                    this._doAppendSegments();
                 }
             }
         }
@@ -362,8 +368,49 @@ class MSEController {
             // Notify media data loading complete
             // This is helpful for correcting total duration to match last media segment
             // Otherwise MediaElement's ended event may not be triggered
+            this._fixDurationOnEndOfStream();
             ms.endOfStream();
         }
+    }
+
+    _fixDurationOnEndOfStream() {
+        if (this._config.isLive) {
+            return;
+        }
+
+        let ms = this._mediaSource;
+        if (!ms || ms.readyState !== 'open') {
+            return;
+        }
+
+        let bufferedEnd = this._getBufferedEnd();
+        if (bufferedEnd <= 0) {
+            return;
+        }
+
+        let current = ms.duration;
+        if (isFinite(current) && current >= bufferedEnd) {
+            return;
+        }
+
+        Log.v(this.TAG, `Update MediaSource duration from ${current} to ${bufferedEnd} on endOfStream`);
+        ms.duration = bufferedEnd;
+    }
+
+    _getBufferedEnd() {
+        let end = 0;
+        for (let type in this._sourceBuffers) {
+            let sb = this._sourceBuffers[type];
+            if (!sb) {
+                continue;
+            }
+
+            let buffered = sb.buffered;
+            for (let i = 0; i < buffered.length; i++) {
+                end = Math.max(end, buffered.end(i));
+            }
+        }
+        return end;
     }
 
     _needCleanupSourceBuffer() {
@@ -456,6 +503,11 @@ class MSEController {
     }
 
     _doAppendSegments() {
+        if (this._hasFatalMediaError) {
+            this._discardPendingSegments();
+            return;
+        }
+
         let pendingSegments = this._pendingSegments;
 
         for (let type in pendingSegments) {
@@ -489,8 +541,8 @@ class MSEController {
                     this._sourceBuffers[type].appendBuffer(segment.data);
                     this._isBufferFull = false;
                 } catch (error) {
-                    this._pendingSegments[type].unshift(segment);
                     if (error.code === 22) {  // QuotaExceededError
+                        this._pendingSegments[type].unshift(segment);
                         /* Notice that FireFox may not throw QuotaExceededError if SourceBuffer is full
                          * Currently we can only do lazy-load to avoid SourceBuffer become scattered.
                          * SourceBuffer eviction policy may be changed in future version of FireFox.
@@ -506,12 +558,31 @@ class MSEController {
                         }
                         this._isBufferFull = true;
                     } else {
-                        Log.e(this.TAG, error.message);
-                        this._emitter.emit(MSEEvents.ERROR, {code: error.code, msg: error.message});
+                        this._emitFatalMediaError(error);
                     }
                 }
             }
         }
+    }
+
+    _discardPendingSegments() {
+        for (let type in this._pendingSegments) {
+            let pending = this._pendingSegments[type];
+            if (pending) {
+                pending.splice(0, pending.length);
+            }
+        }
+    }
+
+    _emitFatalMediaError(error) {
+        this._discardPendingSegments();
+        if (this._hasFatalMediaError) {
+            return;
+        }
+
+        this._hasFatalMediaError = true;
+        Log.e(this.TAG, error.message);
+        this._emitter.emit(MSEEvents.ERROR, {code: error.code, msg: error.message});
     }
 
     _onSourceOpen() {

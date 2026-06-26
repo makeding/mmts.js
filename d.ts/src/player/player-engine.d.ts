@@ -13,6 +13,7 @@ export default interface PlayerEngine {
     switchPrimaryAudio(): void;
     switchSecondaryAudio(): void;
     selectAudioTrack(packetId: number): void;
+    selectVideoTrack(packetId: number): void;
     readonly mediaInfo: MediaInfo | undefined;
     readonly statisticsInfo: any | undefined;
 }

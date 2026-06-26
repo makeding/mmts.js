@@ -17,6 +17,7 @@ declare class PlayerEngineMainThread implements PlayerEngine {
     private _mse_source_opened;
     private _has_pending_load;
     private _loaded_metadata_received;
+    private _pending_video_track_switch;
     private _media_info?;
     private _statistics_info?;
     private e?;
@@ -34,6 +35,7 @@ declare class PlayerEngineMainThread implements PlayerEngine {
     switchPrimaryAudio(): void;
     switchSecondaryAudio(): void;
     selectAudioTrack(packetId: number): void;
+    selectVideoTrack(packetId: number): void;
     get mediaInfo(): MediaInfo;
     get statisticsInfo(): any;
     private _onMSESourceOpen;

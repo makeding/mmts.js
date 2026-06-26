@@ -181,6 +181,14 @@ class Transmuxer {
         }
     }
 
+    selectVideoTrack(packetId) {
+        if (this._worker) {
+            this._worker.postMessage({cmd: 'select_video_track', packet_id: packetId});
+        } else if (this._controller._demuxer instanceof MMTSDemuxer) {
+            this._controller._demuxer.selectVideoTrack(packetId);
+        }
+    }
+
     _onInitSegment(type, initSegment) {
         // do async invoke
         Promise.resolve().then(() => {

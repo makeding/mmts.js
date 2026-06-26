@@ -268,17 +268,23 @@
                 return;
             }
 
-            var lines = [];
-            lines.push(
+            container.innerHTML = '';
+            var summary = document.createElement('div');
+            summary.textContent =
                 'selected=' + (mmtsVideoTracks.selectedRole || 'unknown') +
                 ' fallback=' + (mmtsVideoTracks.fallback ? 'yes' : 'no') +
                 ' primary=' + (mmtsVideoTracks.hasPrimary ? (mmtsVideoTracks.primaryActive ? 'active' : 'inactive') : 'missing') +
-                ' secondary=' + (mmtsVideoTracks.hasSecondary ? (mmtsVideoTracks.secondaryActive ? 'active' : 'inactive') : 'missing')
-            );
+                ' secondary=' + (mmtsVideoTracks.hasSecondary ? (mmtsVideoTracks.secondaryActive ? 'active' : 'inactive') : 'missing');
+            container.appendChild(summary);
             mmtsVideoTracks.tracks.forEach(function(track) {
-                lines.push(formatMMTSVideoTrack(track));
+                var item = document.createElement('div');
+                item.className = 'track-item' + (track.selected ? ' selected' : '');
+                item.textContent = formatMMTSVideoTrack(track);
+                item.onclick = function() {
+                    player_select_video_track(track.packetId);
+                };
+                container.appendChild(item);
             });
-            container.textContent = lines.join('\n');
         }
 
         function formatMMTSVideoTrack(track) {
@@ -359,6 +365,13 @@
         function player_select_audio_track(packetId) {
             if (player != null && player.selectAudioTrack) {
                 player.selectAudioTrack(packetId);
+            }
+        }
+
+        function player_select_video_track(packetId) {
+            if (player != null && player.selectVideoTrack) {
+                logDemo('select MMTS video packet_id=0x' + Number(packetId).toString(16));
+                player.selectVideoTrack(packetId);
             }
         }
 

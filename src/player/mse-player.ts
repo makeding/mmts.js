@@ -107,6 +107,10 @@ class MSEPlayer {
         this._player_engine.selectAudioTrack(packetId);
     }
 
+    public selectVideoTrack(packetId: number): void {
+        this._player_engine.selectVideoTrack(packetId);
+    }
+
     public get type(): string {
         return this._type;
     }

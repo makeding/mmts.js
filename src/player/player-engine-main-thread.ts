@@ -58,6 +58,7 @@ class PlayerEngineMainThread implements PlayerEngine {
     private _mse_source_opened: boolean = false;
     private _has_pending_load: boolean = false;
     private _loaded_metadata_received: boolean = false;
+    private _pending_video_track_switch: boolean = false;
 
     private _media_info?: MediaInfo = null;
     private _statistics_info?: any = null;
@@ -190,6 +191,10 @@ class PlayerEngineMainThread implements PlayerEngine {
             this._mse_controller.appendInitSegment(is);
         });
         this._transmuxer.on(TransmuxingEvents.MEDIA_SEGMENT, (type: string, ms: any) => {
+            if (type === 'video' && this._pending_video_track_switch) {
+                this._pending_video_track_switch = false;
+                this._mse_controller.flushType('video');
+            }
             this._mse_controller.appendMediaSegment(ms);
             if (!this._config.isLive && type === 'video' && ms.data && ms.data.byteLength > 0 && ('info' in ms)) {
                 this._seeking_handler.appendSyncPoints(ms.info.syncPoints);
@@ -312,6 +317,7 @@ class PlayerEngineMainThread implements PlayerEngine {
 
     public unload(): void {
         this._media_element?.pause();
+        this._pending_video_track_switch = false;
 
         this._live_latency_synchronizer?.destroy();
         this._live_latency_synchronizer = null;
@@ -361,6 +367,11 @@ class PlayerEngineMainThread implements PlayerEngine {
 
     public selectAudioTrack(packetId: number): void {
         this._transmuxer.selectAudioTrack(packetId);
+    }
+
+    public selectVideoTrack(packetId: number): void {
+        this._pending_video_track_switch = true;
+        this._transmuxer.selectVideoTrack(packetId);
     }
 
     public get mediaInfo(): MediaInfo {

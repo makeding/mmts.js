@@ -24,6 +24,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private dropped_video_sample_count_;
     private logged_video_nalu_count_;
     private logged_dropped_video_sample_count_;
+    private logged_video_discontinuity_count_;
     private logged_video_sample_count_;
     private last_video_dts_;
     private last_video_pts_;
@@ -43,6 +44,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private loas_previous_frame_;
     private video_sample_index_;
     private video_started_;
+    private video_waiting_random_access_;
+    private dropped_video_timestamp_keys_;
     private current_video_access_unit_;
     private pre_init_video_units_;
     constructor(probeData: any, config: any);
@@ -67,12 +70,15 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private hasVideoParameterSets;
     private logVideoSample;
     private dropVideoTimestamp;
+    private dropVideoTimestampOnce;
+    private handleMpuDiscontinuity;
     private consumeVideoTimestamp;
     private consumeAudioTimestamp;
     private isH265VclNalu;
     private isH265IrapNalu;
     private maybeSelectPrimaryAudioAsset;
     selectAudioTrack(packetId: number): boolean;
+    selectVideoTrack(packetId: number): boolean;
     selectPrimaryAudioTrack(): void;
     selectSecondaryAudioTrack(): void;
     private maybeSelectPrimaryVideoAsset;

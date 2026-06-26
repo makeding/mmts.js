@@ -35,6 +35,7 @@ import {
     WorkerCommandPacketReadyStateChange,
     WorkerCommandPacketSwitchAudio,
     WorkerCommandPacketSelectAudioTrack,
+    WorkerCommandPacketSelectVideoTrack,
 } from './player-engine-worker-cmd-def.js';
 import {
     WorkerMessagePacket,
@@ -62,6 +63,7 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
 
     let mse_source_opened: boolean = false;
     let has_pending_load: boolean = false;
+    let pending_video_track_switch: boolean = false;
 
     let media_element_current_time: number = 0;
     let media_element_ready_state: number = 0;
@@ -145,6 +147,12 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
                 transmuxer.selectAudioTrack(packet.packet_id);
                 break;
             }
+            case 'select_video_track': {
+                const packet = command_packet as WorkerCommandPacketSelectVideoTrack;
+                pending_video_track_switch = true;
+                transmuxer.selectVideoTrack(packet.packet_id);
+                break;
+            }
         }
     });
 
@@ -210,6 +218,10 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
             mse_controller.appendInitSegment(is);
         });
         transmuxer.on(TransmuxingEvents.MEDIA_SEGMENT, (type: string, ms: any) => {
+            if (type === 'video' && pending_video_track_switch) {
+                pending_video_track_switch = false;
+                mse_controller.flushType('video');
+            }
             mse_controller.appendMediaSegment(ms);
             self.postMessage({
                 msg: 'buffered_position_changed',
@@ -309,6 +321,7 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
     }
 
     function unload(): void {
+        pending_video_track_switch = false;
         if (mse_controller) {
             mse_controller.flush();
         }

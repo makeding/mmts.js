@@ -21,6 +21,10 @@ interface MMTSStreamState {
     firstDts?: number;
 }
 
+interface MMTSPacketContinuityState {
+    lastSeq?: number;
+}
+
 interface AssembledMFU {
     unit: Uint8Array;
     randomAccess: boolean;
@@ -46,6 +50,7 @@ export interface MMTSCompletedMfuUnit {
 export interface MMTSParsedMpu {
     asset: MMTAsset | undefined;
     mpu: MPUInfo;
+    discontinuity: boolean;
     units: MMTSCompletedMfuUnit[];
 }
 
@@ -53,12 +58,14 @@ class MMTSProgram {
 
     private signaling_fragment_states_: {[packetId: number]: SignalingFragmentState} = {};
     private mfu_fragment_states_: {[packetId: number]: MFUFragmentState} = {};
+    private mmtp_packet_continuity_states_: {[packetId: number]: MMTSPacketContinuityState} = {};
     private assets_by_packet_id_: {[packetId: number]: MMTAsset} = {};
     private stream_states_by_packet_id_: {[packetId: number]: MMTSStreamState} = {};
 
     public destroy(): void {
         this.signaling_fragment_states_ = null;
         this.mfu_fragment_states_ = null;
+        this.mmtp_packet_continuity_states_ = null;
         this.assets_by_packet_id_ = null;
         this.stream_states_by_packet_id_ = null;
     }
@@ -89,6 +96,7 @@ class MMTSProgram {
     }
 
     public parseMpuPacket(packet: MMTPPacket): MMTSParsedMpu | null {
+        const discontinuity = this.checkMmtpPacketDiscontinuity(packet.packetId, packet.packetSequenceNumber);
         const mpu = MPU.parse(packet.payload);
         if (mpu === null) {
             return null;
@@ -110,12 +118,18 @@ class MMTSProgram {
         return {
             asset: this.assets_by_packet_id_[packet.packetId],
             mpu,
+            discontinuity,
             units
         };
     }
 
     public getAsset(packetId: number): MMTAsset | undefined {
         return this.assets_by_packet_id_[packetId];
+    }
+
+    public resetMpuPacketState(packetId: number): void {
+        delete this.mmtp_packet_continuity_states_[packetId];
+        delete this.mfu_fragment_states_[packetId];
     }
 
     public get streamCount(): number {
@@ -387,6 +401,22 @@ class MMTSProgram {
             default:
                 return null;
         }
+    }
+
+    private checkMmtpPacketDiscontinuity(packetId: number, packetSequenceNumber: number): boolean {
+        let state = this.mmtp_packet_continuity_states_[packetId];
+        if (state === undefined) {
+            state = {};
+            this.mmtp_packet_continuity_states_[packetId] = state;
+        }
+
+        const lastSeq = state.lastSeq;
+        state.lastSeq = packetSequenceNumber;
+        if (lastSeq === undefined) {
+            return false;
+        }
+
+        return ((lastSeq + 1) >>> 0) !== packetSequenceNumber;
     }
 
     private appendToState(state: MFUFragmentState, data: Uint8Array): void {

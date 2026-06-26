@@ -128,6 +128,11 @@ let TransmuxingWorker = function (self) {
                     controller._demuxer.selectAudioTrack(e.data.packet_id);
                 }
                 break;
+            case 'select_video_track':
+                if (controller._demuxer instanceof MMTSDemuxer) {
+                    controller._demuxer.selectVideoTrack(e.data.packet_id);
+                }
+                break;
         }
     });
 
