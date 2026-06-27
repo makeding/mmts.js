@@ -44,6 +44,8 @@ interface PendingMFUUnit {
 interface VideoTimestamp {
     dts: number;
     pts: number;
+    rawDts?: number;
+    rawPts?: number;
     source: 'descriptor' | 'fallback' | 'corrected';
 }
 
@@ -116,6 +118,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private last_video_pts_: number = -1;
     private last_video_duration_: number = 17;
     private output_video_dts_base_: number = -1;
+    private output_video_raw_dts_base_: number = -1;
     private primary_video_packet_id_: number = -1;
     private primary_audio_packet_id_: number = -1;
     private manually_selected_audio_packet_id_: number = -1;
@@ -748,6 +751,9 @@ class MMTSDemuxer extends BaseDemuxer {
         if (!complete && (!allowPartial || state.dispatchedPartial)) {
             return;
         }
+        if (!this.alignSubtitleTimestampToVideoTimeline(state.subtitle)) {
+            return;
+        }
 
         state.subtitle.resources = state.resources.slice().sort((a, b) => a.index - b.index);
         state.subtitle.resourcesComplete = complete;
@@ -760,6 +766,31 @@ class MMTSDemuxer extends BaseDemuxer {
         } else {
             state.dispatchedPartial = true;
         }
+    }
+
+    private alignSubtitleTimestampToVideoTimeline(subtitle: MMTSSubtitleData): boolean {
+        if (subtitle.rawPts === undefined || subtitle.rawDts === undefined) {
+            return true;
+        }
+        if (this.output_video_raw_dts_base_ < 0) {
+            return false;
+        }
+
+        subtitle.pts = subtitle.rawPts - this.output_video_raw_dts_base_;
+        subtitle.dts = subtitle.rawDts - this.output_video_raw_dts_base_;
+        return true;
+    }
+
+    private flushSubtitleMpuStates(): void {
+        Object.keys(this.subtitle_mpu_states_).forEach((key) => {
+            const state = this.subtitle_mpu_states_[key];
+            if (state === undefined) {
+                return;
+            }
+
+            const parts = key.split(':');
+            this.dispatchSubtitleMpu(Number(parts[0]), Number(parts[1]), state, true);
+        });
     }
 
     private isSubtitleMpuComplete(state: SubtitleMpuState): boolean {
@@ -829,6 +860,10 @@ class MMTSDemuxer extends BaseDemuxer {
         const videoTimestamp = this.consumeVideoTimestamp(packetId, mpuSequenceNumber);
         if (this.output_video_dts_base_ < 0 && this.video_sample_index_ === 0) {
             this.output_video_dts_base_ = videoTimestamp.dts;
+        }
+        if (this.output_video_raw_dts_base_ < 0 && videoTimestamp.rawDts !== undefined) {
+            this.output_video_raw_dts_base_ = videoTimestamp.rawDts;
+            this.flushSubtitleMpuStates();
         }
 
         let dts = videoTimestamp.dts - this.output_video_dts_base_;
@@ -986,11 +1021,15 @@ class MMTSDemuxer extends BaseDemuxer {
         let dts: number;
         let originalPts: number;
         let originalDts: number;
+        let rawPts: number | undefined;
+        let rawDts: number | undefined;
         let originalSource: 'descriptor' | 'fallback' = 'descriptor';
 
         if (timestamp !== null) {
             pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
             dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
+            rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
+            rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);
             originalPts = pts;
             originalDts = dts;
 
@@ -1052,7 +1091,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
         this.last_video_dts_ = dts;
         this.last_video_pts_ = pts;
-        return {dts, pts, source};
+        return {dts, pts, rawDts, rawPts, source};
     }
 
     private consumeAudioTimestamp(packetId: number, mpuSequenceNumber: number): number | undefined {
@@ -1367,6 +1406,7 @@ class MMTSDemuxer extends BaseDemuxer {
         const lastVideoPts = this.last_video_pts_;
         const lastVideoDuration = this.last_video_duration_;
         const outputVideoDtsBase = this.output_video_dts_base_;
+        const outputVideoRawDtsBase = this.output_video_raw_dts_base_;
 
         this.video_metadata_ = {
             vps: undefined,
@@ -1382,6 +1422,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.last_video_pts_ = -1;
         this.last_video_duration_ = 17;
         this.output_video_dts_base_ = -1;
+        this.output_video_raw_dts_base_ = -1;
         this.logged_video_nalu_count_ = 0;
         this.logged_dropped_video_sample_count_ = 0;
         this.logged_video_discontinuity_count_ = 0;
@@ -1397,6 +1438,7 @@ class MMTSDemuxer extends BaseDemuxer {
             this.last_video_pts_ = lastVideoPts;
             this.last_video_duration_ = lastVideoDuration;
             this.output_video_dts_base_ = outputVideoDtsBase;
+            this.output_video_raw_dts_base_ = outputVideoRawDtsBase;
         }
     }
 
