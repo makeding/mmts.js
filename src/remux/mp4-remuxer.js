@@ -120,6 +120,8 @@ class MP4Remuxer {
     }
 
     insertDiscontinuity() {
+        this._audioStashedLastSample = null;
+        this._videoStashedLastSample = null;
         this._audioNextDts = this._videoNextDts = undefined;
     }
 
