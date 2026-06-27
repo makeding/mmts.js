@@ -23,11 +23,11 @@ import {H265NaluHVC1, H265NaluType} from '../demux/h265';
 import {MMTSAudioTrackInfo, MMTSVideoTrackInfo} from '../demux/mmts-track-data';
 
 export function isH265VclNalu(naluType: number): boolean {
-    return naluType >= H265NaluType.kSliceTRAIL_N && naluType <= H265NaluType.kSliceCRA_NUT;
+    return naluType >= 0 && naluType <= 31;
 }
 
 export function isH265IrapNalu(naluType: number): boolean {
-    return naluType >= H265NaluType.kSliceBLA_W_LP && naluType <= H265NaluType.kSliceRSV_IRAP_VCL23;
+    return naluType >= 16 && naluType <= 23;
 }
 
 export function hasVideoParameterSets(units: H265NaluHVC1[]): boolean {

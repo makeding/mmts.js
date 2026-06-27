@@ -27,6 +27,8 @@ class StartupStallJumper {
     private _canplay_received: boolean = false;
     private _last_jump_target: number = -1;
     private _last_jump_clock: number = 0;
+    private _stall_check_timer: number | null = null;
+    private _stall_check_time: number = 0;
 
     private e: any = null;
 
@@ -48,6 +50,7 @@ class StartupStallJumper {
     }
 
     public destroy(): void {
+        this._clearStallCheckTimer();
         this._media_element.removeEventListener('canplay', this.e.onMediaCanPlay);
         this._media_element.removeEventListener('stalled', this.e.onMediaStalled);
         this._media_element.removeEventListener('waiting', this.e.onMediaWaiting);
@@ -64,10 +67,12 @@ class StartupStallJumper {
 
     private _onMediaStalled(e: Event): void {
         this._detectAndFixStuckPlayback(true);
+        this._scheduleStallCheck();
     }
 
     private _onMediaWaiting(e: Event): void {
         this._detectAndFixStuckPlayback(true);
+        this._scheduleStallCheck();
     }
 
     private _onMediaProgress(e: Event): void {
@@ -116,6 +121,70 @@ class StartupStallJumper {
                 }
                 return null;
             }
+        }
+
+        return null;
+    }
+
+    private _scheduleStallCheck(): void {
+        const media = this._media_element;
+        if (media == null || media.paused || media.ended || media.seeking) {
+            return;
+        }
+
+        this._clearStallCheckTimer();
+        this._stall_check_time = media.currentTime;
+        this._stall_check_timer = window.setTimeout(this._onStallCheckTimer.bind(this), 1200);
+    }
+
+    private _clearStallCheckTimer(): void {
+        if (this._stall_check_timer == null) {
+            return;
+        }
+
+        window.clearTimeout(this._stall_check_timer);
+        this._stall_check_timer = null;
+    }
+
+    private _onStallCheckTimer(): void {
+        this._stall_check_timer = null;
+
+        const media = this._media_element;
+        if (media == null || media.paused || media.ended || media.seeking) {
+            return;
+        }
+
+        if (media.currentTime > this._stall_check_time + 0.05) {
+            return;
+        }
+
+        const target = this._findBufferedJumpTarget(media) || this._findSmallForwardJumpTarget(media);
+        if (target == null || !this._shouldJumpTo(target)) {
+            return;
+        }
+
+        Log.w(this.TAG, `Playback still stuck at ${media.currentTime}, fast-forward to ${target}`);
+        this._last_jump_target = target;
+        this._last_jump_clock = StartupStallJumper._getClockTime();
+        this._on_direct_seek(target);
+    }
+
+    private _findSmallForwardJumpTarget(media: HTMLMediaElement): number | null {
+        const current = media.currentTime;
+        const target = current + 0.35;
+        const buffered = media.buffered;
+        const tolerance = 0.05;
+
+        for (let i = 0; i < buffered.length; i++) {
+            const start = buffered.start(i);
+            const end = buffered.end(i);
+            if (current >= start - tolerance && current < end - tolerance) {
+                return Math.min(target, end - tolerance);
+            }
+        }
+
+        if (buffered.length === 0 && media.readyState >= 2) {
+            return target;
         }
 
         return null;
