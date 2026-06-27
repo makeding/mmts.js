@@ -12,21 +12,23 @@ import H265Parser from './h265-parser';
 import MediaInfo from '../core/media-info';
 import Log from '../utils/logger.js';
 import MMTSAudioTimeline from '../utils/mmts-audio-timeline';
+import MMTSSubtitleAssembler from '../utils/mmts-subtitle-assembler';
 import {
-    audioChannelCountFromAacConfig,
-    audioChannelCountFromComponentType,
-    audioLayoutFromAacConfig,
-    audioLayoutFromComponentType,
-    audioSampleRateFromCode,
-    compareMMTSVideoTrackPriority,
+    createMMTSAudioTrackInfo,
+    createMMTSSubtitleTrackInfo,
+    createMMTSVideoTrackInfo,
     findMMTSPrimaryVideoTrack,
     findMMTSSecondaryVideoTrack,
+    findPreferredAudioTrack,
     formatAssetConditionalAccessInfo,
     formatH265NaluTypes,
     formatHex,
     formatMmtpScramblingInfo,
     formatMsTimestamp,
     formatPacketCounts,
+    getSortedAudioTrackInfos,
+    getSortedSubtitleTrackInfos,
+    getSortedVideoTrackInfos,
     getMMTSSelectedVideoRole,
     hasH265CraNalu,
     hasH265IdrNalu,
@@ -41,19 +43,15 @@ import {
     isSupportedAACChannelConfig,
     payloadTypeName,
     readH265NaluType,
-    readU16,
-    readU32,
     scramblingName,
-    scoreAudioTrack,
     toHex,
+    updateMMTSAudioTrackInfoFromFrame,
     videoResolutionLabel
 } from '../utils/mmts-demuxer-utils';
-import decodeUTF8 from '../utils/utf8-conv.js';
 import {
     MMTSAudioTrackInfo,
     MMTSAudioTrackList,
     MMTSSubtitleData,
-    MMTSSubtitleResource,
     MMTSSubtitleTrackInfo,
     MMTSSubtitleTrackList,
     MMTSVideoTrackInfo,
@@ -93,21 +91,6 @@ interface AudioParseState {
     lastSamplePts?: number;
 }
 
-interface SubtitleMfuPayload {
-    subsampleNumber: number;
-    lastSubsampleNumber: number;
-    dataType: number;
-    payload: Uint8Array;
-}
-
-interface SubtitleMpuState {
-    subtitle?: MMTSSubtitleData;
-    resources: MMTSSubtitleResource[];
-    received: {[subsampleNumber: number]: boolean};
-    lastSubsampleNumber: number;
-    dispatchedPartial: boolean;
-}
-
 type AACAudioMetadata = {
     codec: 'aac',
     audio_object_type: MPEG4AudioObjectTypes;
@@ -142,7 +125,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private audio_track_infos_by_packet_id_: {[packetId: number]: MMTSAudioTrackInfo} = {};
     private video_track_infos_by_packet_id_: {[packetId: number]: MMTSVideoTrackInfo} = {};
     private subtitle_track_infos_by_packet_id_: {[packetId: number]: MMTSSubtitleTrackInfo} = {};
-    private subtitle_mpu_states_: {[key: string]: SubtitleMpuState} = {};
+    private subtitle_assembler_: MMTSSubtitleAssembler;
     private audio_parse_states_by_packet_id_: {[packetId: number]: AudioParseState} = {};
     private audio_timeline_: MMTSAudioTimeline = new MMTSAudioTimeline();
     private audio_tracks_signature_: string = '';
@@ -195,6 +178,19 @@ class MMTSDemuxer extends BaseDemuxer {
     public constructor(probeData: any, config: any) {
         super();
         this.config_ = config;
+        this.subtitle_assembler_ = new MMTSSubtitleAssembler({
+            nextTimestamp: (packetId, mpuSequenceNumber) => this.program_.nextTimestamp(packetId, mpuSequenceNumber),
+            getVideoTimeline: () => ({
+                lastVideoDts: this.last_video_dts_,
+                lastVideoPts: this.last_video_pts_,
+                outputVideoDtsBase: this.output_video_dts_base_,
+                outputVideoRawDtsBase: this.output_video_raw_dts_base_,
+                videoSampleIndex: this.video_sample_index_,
+                droppedVideoSampleCount: this.dropped_video_sample_count_
+            }),
+            onSubtitleData: (subtitle) => this.onMMTSSubtitleData && this.onMMTSSubtitleData(subtitle),
+            logSubtitleData: (subtitle) => this.logSubtitleData(subtitle)
+        });
 
         Log.v(this.TAG, `TLV sync_offset = ${probeData.syncOffset}, probe_packets = ${probeData.packetCount || 0}`);
     }
@@ -210,7 +206,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.audio_track_infos_by_packet_id_ = null;
         this.video_track_infos_by_packet_id_ = null;
         this.subtitle_track_infos_by_packet_id_ = null;
-        this.subtitle_mpu_states_ = null;
+        this.subtitle_assembler_ && this.subtitle_assembler_.destroy();
+        this.subtitle_assembler_ = null;
         this.audio_parse_states_by_packet_id_ = null;
         this.audio_timeline_ && this.audio_timeline_.destroy();
         this.audio_timeline_ = null;
@@ -370,7 +367,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (asset.assetType === 'stpp' || (asset.mediaType === 'subtitle' && asset.codec === 'ttml')) {
-            this.processSubtitleMfuUnit(packetId, asset, mpuSequenceNumber, fragment, unit);
+            this.subtitle_assembler_.processMfuUnit(packetId, asset, mpuSequenceNumber, fragment, unit);
             return;
         }
 
@@ -676,224 +673,6 @@ class MMTSDemuxer extends BaseDemuxer {
             (!this.video_started_ || this.video_waiting_random_access_);
     }
 
-    private processSubtitleMfuUnit(packetId: number,
-                                   asset: MMTAsset,
-                                   mpuSequenceNumber: number,
-                                   fragment: MFUFragment,
-                                   unit: Uint8Array): void {
-        const payloadUnit = this.extractSubtitleMfuPayload(unit);
-        if (payloadUnit === null) {
-            return;
-        }
-
-        if (payloadUnit.subsampleNumber === 0 && payloadUnit.dataType !== 0) {
-            return;
-        }
-
-        const state = this.getSubtitleMpuState(packetId, mpuSequenceNumber, payloadUnit.lastSubsampleNumber);
-
-        if (payloadUnit.subsampleNumber !== 0) {
-            state.resources = state.resources.filter((resource) => resource.index !== payloadUnit.subsampleNumber);
-            state.resources.push({
-                index: payloadUnit.subsampleNumber,
-                subsampleNumber: payloadUnit.subsampleNumber,
-                dataType: payloadUnit.dataType,
-                data: payloadUnit.payload,
-                len: payloadUnit.payload.byteLength
-            });
-            state.received[payloadUnit.subsampleNumber] = true;
-            this.dispatchSubtitleMpu(packetId, mpuSequenceNumber, state, false);
-            return;
-        }
-
-        const subtitle = new MMTSSubtitleData();
-        subtitle.packetId = packetId;
-        subtitle.assetType = asset.assetType;
-        subtitle.codec = asset.codec || 'ttml';
-        subtitle.language = asset.language;
-        subtitle.mpuSequenceNumber = mpuSequenceNumber;
-        subtitle.sampleNumber = fragment.sampleNumber;
-        subtitle.data = payloadUnit.payload;
-        subtitle.len = payloadUnit.payload.byteLength;
-        subtitle.text = decodeUTF8(payloadUnit.payload);
-        subtitle.subtitleTimingMode = asset.subtitleTimingMode;
-        subtitle.subtitleReferenceStartTime = asset.subtitleReferenceStartTimeUs !== undefined
-            ? Math.floor(asset.subtitleReferenceStartTimeUs / 1000)
-            : undefined;
-
-        const timestamp = this.program_.nextTimestamp(packetId, mpuSequenceNumber);
-        if (timestamp !== null) {
-            subtitle.rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
-            subtitle.rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);
-            subtitle.pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
-            subtitle.dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
-        }
-
-        state.subtitle = subtitle;
-        state.received[0] = true;
-        this.dispatchSubtitleMpu(packetId, mpuSequenceNumber, state, true);
-    }
-
-    private extractSubtitleMfuPayload(unit: Uint8Array): SubtitleMfuPayload | null {
-        if (unit.byteLength < 7) {
-            return null;
-        }
-
-        let offset = 0;
-        offset += 2; // subtitle_tag + subtitle_sequence_number
-        const subsampleNumber = unit[offset++];
-        const lastSubsampleNumber = unit[offset++];
-        const flags = unit[offset++];
-        const dataType = flags >> 4;
-        const lengthExtFlag = ((flags >> 3) & 0x01) !== 0;
-        const subsampleInfoListFlag = ((flags >> 2) & 0x01) !== 0;
-
-        const dataSizeLength = lengthExtFlag ? 4 : 2;
-        if (offset + dataSizeLength > unit.byteLength) {
-            return null;
-        }
-
-        const dataSize = lengthExtFlag
-            ? readU32(unit, offset)
-            : readU16(unit, offset);
-        offset += dataSizeLength;
-
-        if (subsampleNumber === 0 && lastSubsampleNumber > 0 && subsampleInfoListFlag) {
-            const entrySize = lengthExtFlag ? 5 : 3;
-            const skipSize = lastSubsampleNumber * entrySize;
-            if (offset + skipSize > unit.byteLength) {
-                return null;
-            }
-            offset += skipSize;
-        }
-
-        if (offset + dataSize > unit.byteLength) {
-            return null;
-        }
-
-        return {
-            subsampleNumber,
-            lastSubsampleNumber,
-            dataType,
-            payload: unit.subarray(offset, offset + dataSize)
-        };
-    }
-
-    private getSubtitleMpuState(packetId: number,
-                                mpuSequenceNumber: number,
-                                lastSubsampleNumber: number): SubtitleMpuState {
-        const key = this.subtitleMpuStateKey(packetId, mpuSequenceNumber);
-        let state = this.subtitle_mpu_states_[key];
-        if (state === undefined) {
-            state = {
-                resources: [],
-                received: {},
-                lastSubsampleNumber,
-                dispatchedPartial: false
-            };
-            this.subtitle_mpu_states_[key] = state;
-        } else if (lastSubsampleNumber > state.lastSubsampleNumber) {
-            state.lastSubsampleNumber = lastSubsampleNumber;
-        }
-        this.pruneSubtitleMpuStates(packetId, mpuSequenceNumber);
-        return state;
-    }
-
-    private dispatchSubtitleMpu(packetId: number,
-                                mpuSequenceNumber: number,
-                                state: SubtitleMpuState,
-                                allowPartial: boolean): void {
-        if (!state.subtitle) {
-            return;
-        }
-
-        const complete = this.isSubtitleMpuComplete(state);
-        if (!complete && (!allowPartial || state.dispatchedPartial)) {
-            return;
-        }
-        if (!this.alignSubtitleTimestampToVideoTimeline(state.subtitle)) {
-            return;
-        }
-        if (state.subtitle.subtitleTimingMode === 0x02 &&
-            state.subtitle.subtitleReferenceStartTime !== undefined &&
-            this.output_video_raw_dts_base_ < 0) {
-            return;
-        }
-
-        if (this.last_video_dts_ >= 0 && this.output_video_dts_base_ >= 0) {
-            state.subtitle.videoMediaDts = this.last_video_dts_ - this.output_video_dts_base_;
-        }
-        if (this.last_video_pts_ >= 0 && this.output_video_dts_base_ >= 0) {
-            state.subtitle.videoMediaPts = this.last_video_pts_ - this.output_video_dts_base_;
-        }
-        state.subtitle.videoRawDtsBase = this.output_video_raw_dts_base_ >= 0 ? this.output_video_raw_dts_base_ : undefined;
-        state.subtitle.videoDtsBase = this.output_video_dts_base_ >= 0 ? this.output_video_dts_base_ : undefined;
-        if (state.subtitle.subtitleReferenceStartTime !== undefined && this.output_video_raw_dts_base_ >= 0) {
-            state.subtitle.subtitleReferenceStartMediaTime =
-                state.subtitle.subtitleReferenceStartTime - this.output_video_raw_dts_base_;
-        }
-        state.subtitle.videoSampleIndex = this.video_sample_index_;
-        state.subtitle.droppedVideoSampleCount = this.dropped_video_sample_count_;
-        state.subtitle.resources = state.resources.slice().sort((a, b) => a.index - b.index);
-        state.subtitle.resourcesComplete = complete;
-        if (this.onMMTSSubtitleData) {
-            this.onMMTSSubtitleData(state.subtitle);
-        }
-        this.logSubtitleData(state.subtitle);
-        if (complete) {
-            delete this.subtitle_mpu_states_[this.subtitleMpuStateKey(packetId, mpuSequenceNumber)];
-        } else {
-            state.dispatchedPartial = true;
-        }
-    }
-
-    private alignSubtitleTimestampToVideoTimeline(subtitle: MMTSSubtitleData): boolean {
-        if (subtitle.rawPts === undefined || subtitle.rawDts === undefined) {
-            return true;
-        }
-        if (this.output_video_raw_dts_base_ < 0) {
-            return false;
-        }
-
-        subtitle.pts = subtitle.rawPts - this.output_video_raw_dts_base_;
-        subtitle.dts = subtitle.rawDts - this.output_video_raw_dts_base_;
-        return true;
-    }
-
-    private flushSubtitleMpuStates(): void {
-        Object.keys(this.subtitle_mpu_states_).forEach((key) => {
-            const state = this.subtitle_mpu_states_[key];
-            if (state === undefined) {
-                return;
-            }
-
-            const parts = key.split(':');
-            this.dispatchSubtitleMpu(Number(parts[0]), Number(parts[1]), state, true);
-        });
-    }
-
-    private isSubtitleMpuComplete(state: SubtitleMpuState): boolean {
-        for (let i = 0; i <= state.lastSubsampleNumber; i++) {
-            if (!state.received[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private pruneSubtitleMpuStates(packetId: number, currentMpuSequenceNumber: number): void {
-        Object.keys(this.subtitle_mpu_states_).forEach((key) => {
-            const parts = key.split(':');
-            if (Number(parts[0]) === packetId && Number(parts[1]) + 4 < currentMpuSequenceNumber) {
-                delete this.subtitle_mpu_states_[key];
-            }
-        });
-    }
-
-    private subtitleMpuStateKey(packetId: number, mpuSequenceNumber: number): string {
-        return `${packetId}:${mpuSequenceNumber}`;
-    }
-
     private flushCurrentVideoAccessUnit(): void {
         const accessUnit = this.current_video_access_unit_;
         this.current_video_access_unit_ = null;
@@ -955,7 +734,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         if (this.output_video_raw_dts_base_ < 0 && videoTimestamp.rawDts !== undefined) {
             this.output_video_raw_dts_base_ = videoTimestamp.rawDts;
-            this.flushSubtitleMpuStates();
+            this.subtitle_assembler_.flush();
         }
 
         let dts = videoTimestamp.dts - this.output_video_dts_base_;
@@ -1599,126 +1378,45 @@ class MMTSDemuxer extends BaseDemuxer {
 
     private updateTrackInfo(asset: MMTAsset): void {
         if (asset.assetType === 'hev1' || asset.mediaType === 'video') {
-            this.video_track_infos_by_packet_id_[asset.packetId] = {
-                ...this.video_track_infos_by_packet_id_[asset.packetId],
-                packetId: asset.packetId,
-                assetType: asset.assetType,
-                codec: asset.codec || 'hevc',
-                language: asset.language,
-                componentTag: asset.componentTag,
-                assetGroupId: asset.assetGroupId,
-                assetSelectionLevel: asset.assetSelectionLevel,
-                accessControlCaSystemId: asset.accessControlCaSystemId,
-                accessControlLocationType: asset.accessControlLocationType,
-                accessControlPacketId: asset.accessControlPacketId,
-                scramblerLayerType: asset.scramblerLayerType,
-                scrambleSystemId: asset.scrambleSystemId,
-                messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
-                messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
-                resolution: asset.videoResolution,
-                resolutionLabel: videoResolutionLabel(asset),
-                frameRateCode: asset.videoFrameRate,
-                hierarchyType: asset.hierarchyType,
-                hierarchyLayerIndex: asset.hierarchyLayerIndex,
-                hierarchyEmbeddedLayerIndex: asset.hierarchyEmbeddedLayerIndex,
-                hierarchyChannel: asset.hierarchyChannel,
-                hierarchyTemporalScalability: asset.hierarchyTemporalScalability,
-                hierarchySpatialScalability: asset.hierarchySpatialScalability,
-                hierarchyQualityScalability: asset.hierarchyQualityScalability,
-                active: (this.mmtp_mpu_counts_by_packet_id_[asset.packetId] || 0) > 0 ||
-                    this.scorePendingVideoAsset(asset.packetId) > 0,
-                selected: asset.packetId === this.primary_video_packet_id_
-            };
+            const active = (this.mmtp_mpu_counts_by_packet_id_[asset.packetId] || 0) > 0 ||
+                this.scorePendingVideoAsset(asset.packetId) > 0;
+            this.video_track_infos_by_packet_id_[asset.packetId] = createMMTSVideoTrackInfo(
+                asset,
+                this.video_track_infos_by_packet_id_[asset.packetId],
+                active,
+                asset.packetId === this.primary_video_packet_id_
+            );
             this.dispatchVideoTracksIfChanged();
             return;
         }
 
         if (asset.assetType === 'mp4a' || asset.codec === 'aac-latm') {
-            this.audio_track_infos_by_packet_id_[asset.packetId] = {
-                ...this.audio_track_infos_by_packet_id_[asset.packetId],
-                packetId: asset.packetId,
-                assetType: asset.assetType,
-                codec: asset.codec || 'aac-latm',
-                language: asset.language,
-                componentType: asset.audioComponentType,
-                componentTag: asset.componentTag !== undefined ? asset.componentTag : asset.audioComponentTag,
-                assetGroupId: asset.assetGroupId,
-                assetSelectionLevel: asset.assetSelectionLevel,
-                accessControlCaSystemId: asset.accessControlCaSystemId,
-                accessControlLocationType: asset.accessControlLocationType,
-                accessControlPacketId: asset.accessControlPacketId,
-                scramblerLayerType: asset.scramblerLayerType,
-                scrambleSystemId: asset.scrambleSystemId,
-                messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
-                messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
-                streamType: asset.audioStreamType,
-                simulcastGroupTag: asset.audioSimulcastGroupTag,
-                mainComponent: asset.audioMainComponent,
-                qualityIndicator: asset.audioQualityIndicator,
-                samplingRateCode: asset.audioSamplingRateCode,
-                audioSampleRate: audioSampleRateFromCode(asset.audioSamplingRateCode),
-                channelLayout: audioLayoutFromComponentType(asset.audioComponentType),
-                channelCount: audioChannelCountFromComponentType(asset.audioComponentType),
-                selected: asset.packetId === this.primary_audio_packet_id_
-            };
+            this.audio_track_infos_by_packet_id_[asset.packetId] = createMMTSAudioTrackInfo(
+                asset,
+                this.audio_track_infos_by_packet_id_[asset.packetId],
+                asset.packetId === this.primary_audio_packet_id_
+            );
             this.dispatchAudioTracksIfChanged();
             return;
         }
 
         if (asset.assetType === 'stpp' || (asset.mediaType === 'subtitle' && asset.codec === 'ttml')) {
-            this.subtitle_track_infos_by_packet_id_[asset.packetId] = {
-                ...this.subtitle_track_infos_by_packet_id_[asset.packetId],
-                packetId: asset.packetId,
-                assetType: asset.assetType,
-                codec: asset.codec || 'ttml',
-                language: asset.language,
-                componentTag: asset.componentTag,
-                assetGroupId: asset.assetGroupId,
-                assetSelectionLevel: asset.assetSelectionLevel,
-                accessControlCaSystemId: asset.accessControlCaSystemId,
-                accessControlLocationType: asset.accessControlLocationType,
-                accessControlPacketId: asset.accessControlPacketId,
-                scramblerLayerType: asset.scramblerLayerType,
-                scrambleSystemId: asset.scrambleSystemId,
-                messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
-                messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
-                dataComponentId: asset.dataComponentId,
-                dataComponentInfo: asset.dataComponentInfo,
-                subtitleTag: asset.subtitleTag,
-                subtitleInfoVersion: asset.subtitleInfoVersion,
-                subtitleStartMpuSequenceNumber: asset.subtitleStartMpuSequenceNumber,
-                subtitleType: asset.subtitleType,
-                subtitleFormat: asset.subtitleFormat,
-                subtitleOperationMode: asset.subtitleOperationMode,
-                subtitleTimingMode: asset.subtitleTimingMode,
-                subtitleDisplayMode: asset.subtitleDisplayMode,
-                subtitleResolution: asset.subtitleResolution,
-                subtitleCompressionType: asset.subtitleCompressionType,
-                subtitleReferenceStartTime: asset.subtitleReferenceStartTimeUs !== undefined
-                    ? Math.floor(asset.subtitleReferenceStartTimeUs / 1000)
-                    : undefined
-            };
+            this.subtitle_track_infos_by_packet_id_[asset.packetId] = createMMTSSubtitleTrackInfo(
+                asset,
+                this.subtitle_track_infos_by_packet_id_[asset.packetId]
+            );
             this.dispatchSubtitleTracksIfChanged();
         }
     }
 
     private updateAudioTrackInfoFromFrame(packetId: number, frame: LOASAACFrame): void {
         const prev = this.audio_track_infos_by_packet_id_[packetId];
-        this.audio_track_infos_by_packet_id_[packetId] = {
-            ...prev,
+        this.audio_track_infos_by_packet_id_[packetId] = updateMMTSAudioTrackInfoFromFrame(
             packetId,
-            assetType: prev ? prev.assetType : 'mp4a',
-            codec: prev && prev.codec ? prev.codec : 'aac-latm',
-            channelConfig: frame.channel_config,
-            channelCount: audioChannelCountFromAacConfig(frame.channel_config) ||
-                (prev && prev.channelCount) ||
-                audioChannelCountFromComponentType(prev && prev.componentType),
-            channelLayout: audioLayoutFromAacConfig(frame.channel_config) ||
-                (prev && prev.channelLayout) ||
-                audioLayoutFromComponentType(prev && prev.componentType),
-            audioSampleRate: frame.sampling_frequency,
-            selected: packetId === this.primary_audio_packet_id_
-        };
+            frame,
+            prev,
+            packetId === this.primary_audio_packet_id_
+        );
         this.maybePromotePrimaryAudioTrack(packetId);
         this.dispatchAudioTracksIfChanged();
     }
@@ -1765,17 +1463,7 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private findPreferredAudioTrack(requireKnownSupport: boolean): MMTSAudioTrackInfo | undefined {
-        const tracks = this.getSortedAudioTrackInfos().filter((track) => {
-            return isMMTSAudioTrackSelectable(track) &&
-                (!requireKnownSupport || hasKnownMMTSAudioSupport(track));
-        });
-        if (tracks.length === 0) {
-            return undefined;
-        }
-
-        return tracks.reduce((best, track) => {
-            return scoreAudioTrack(track) > scoreAudioTrack(best) ? track : best;
-        }, tracks[0]);
+        return findPreferredAudioTrack(this.getSortedAudioTrackInfos(), requireKnownSupport);
     }
 
     private logUnsupportedMMTSAudioTrack(packetId: number, info: MMTSAudioTrackInfo | undefined): void {
@@ -1928,21 +1616,15 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private getSortedAudioTrackInfos(): MMTSAudioTrackInfo[] {
-        return Object.keys(this.audio_track_infos_by_packet_id_)
-            .map((key) => this.audio_track_infos_by_packet_id_[Number(key)])
-            .sort((a, b) => a.packetId - b.packetId);
+        return getSortedAudioTrackInfos(this.audio_track_infos_by_packet_id_);
     }
 
     private getSortedVideoTrackInfos(): MMTSVideoTrackInfo[] {
-        return Object.keys(this.video_track_infos_by_packet_id_)
-            .map((key) => this.video_track_infos_by_packet_id_[Number(key)])
-            .sort((a, b) => compareMMTSVideoTrackPriority(a, b));
+        return getSortedVideoTrackInfos(this.video_track_infos_by_packet_id_);
     }
 
     private getSortedSubtitleTrackInfos(): MMTSSubtitleTrackInfo[] {
-        return Object.keys(this.subtitle_track_infos_by_packet_id_)
-            .map((key) => this.subtitle_track_infos_by_packet_id_[Number(key)])
-            .sort((a, b) => a.packetId - b.packetId);
+        return getSortedSubtitleTrackInfos(this.subtitle_track_infos_by_packet_id_);
     }
 
     private logSubtitleData(subtitle: MMTSSubtitleData): void {
@@ -1969,14 +1651,6 @@ class MMTSDemuxer extends BaseDemuxer {
             `resources_complete=${subtitle.resourcesComplete ? 1 : 0}`
         );
         // Log.v(this.TAG, `MMTS subtitle TTML:\n${subtitle.text || ''}`);
-    }
-
-    private toHex(data: Uint8Array): string {
-        const hex: string[] = [];
-        for (let i = 0; i < data.byteLength; i++) {
-            hex.push(data[i].toString(16).padStart(2, '0'));
-        }
-        return hex.join('');
     }
 
     private detectAudioMetadataChange(sample: AudioData): boolean {

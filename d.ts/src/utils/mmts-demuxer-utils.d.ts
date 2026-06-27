@@ -1,7 +1,8 @@
 import { MMTAsset } from '../demux/mmt-si';
 import { MMTPEncryptionFlag, MMTPPayloadType, MMTPScramblingInfo } from '../demux/mmtp';
 import { H265NaluHVC1 } from '../demux/h265';
-import { MMTSAudioTrackInfo, MMTSVideoTrackInfo } from '../demux/mmts-track-data';
+import { LOASAACFrame } from '../demux/aac';
+import { MMTSAudioTrackInfo, MMTSSubtitleTrackInfo, MMTSVideoTrackInfo } from '../demux/mmts-track-data';
 export declare function isH265VclNalu(naluType: number): boolean;
 export declare function isH265IrapNalu(naluType: number): boolean;
 export declare function hasVideoParameterSets(units: H265NaluHVC1[]): boolean;
@@ -24,6 +25,20 @@ export declare function isSupportedAACChannelConfig(channelConfig: number): bool
 export declare function hasKnownMMTSAudioSupport(info: MMTSAudioTrackInfo | undefined): boolean;
 export declare function isMMTSAudioTrackSelectable(info: MMTSAudioTrackInfo | undefined): boolean;
 export declare function scoreAudioTrack(track: MMTSAudioTrackInfo): number;
+export declare function findPreferredAudioTrack(tracks: MMTSAudioTrackInfo[], requireKnownSupport: boolean): MMTSAudioTrackInfo | undefined;
+export declare function getSortedAudioTrackInfos(tracksByPacketId: {
+    [packetId: number]: MMTSAudioTrackInfo;
+}): MMTSAudioTrackInfo[];
+export declare function getSortedVideoTrackInfos(tracksByPacketId: {
+    [packetId: number]: MMTSVideoTrackInfo;
+}): MMTSVideoTrackInfo[];
+export declare function getSortedSubtitleTrackInfos(tracksByPacketId: {
+    [packetId: number]: MMTSSubtitleTrackInfo;
+}): MMTSSubtitleTrackInfo[];
+export declare function createMMTSVideoTrackInfo(asset: MMTAsset, previous: MMTSVideoTrackInfo | undefined, active: boolean, selected: boolean): MMTSVideoTrackInfo;
+export declare function createMMTSAudioTrackInfo(asset: MMTAsset, previous: MMTSAudioTrackInfo | undefined, selected: boolean): MMTSAudioTrackInfo;
+export declare function createMMTSSubtitleTrackInfo(asset: MMTAsset, previous: MMTSSubtitleTrackInfo | undefined): MMTSSubtitleTrackInfo;
+export declare function updateMMTSAudioTrackInfoFromFrame(packetId: number, frame: LOASAACFrame, previous: MMTSAudioTrackInfo | undefined, selected: boolean): MMTSAudioTrackInfo;
 export declare function videoResolutionLabel(asset: MMTAsset): string;
 export declare function toHex(data: Uint8Array): string;
 export declare function formatHex(value: number, width: number): string;

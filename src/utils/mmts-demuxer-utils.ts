@@ -20,7 +20,8 @@ import {MMTAsset} from '../demux/mmt-si';
 import {MMTPEncryptionFlag, MMTPPayloadType, MMTPScramblingInfo} from '../demux/mmtp';
 import MPU from '../demux/mpu';
 import {H265NaluHVC1, H265NaluType} from '../demux/h265';
-import {MMTSAudioTrackInfo, MMTSVideoTrackInfo} from '../demux/mmts-track-data';
+import {LOASAACFrame} from '../demux/aac';
+import {MMTSAudioTrackInfo, MMTSSubtitleTrackInfo, MMTSVideoTrackInfo} from '../demux/mmts-track-data';
 
 export function isH265VclNalu(naluType: number): boolean {
     return naluType >= 0 && naluType <= 31;
@@ -350,6 +351,163 @@ export function scoreAudioTrack(track: MMTSAudioTrackInfo): number {
     const main = track.mainComponent ? 100 : 0;
     const quality = track.qualityIndicator !== undefined ? track.qualityIndicator : 0;
     return knownSupport + channelCount * 1000 + main + quality;
+}
+
+export function findPreferredAudioTrack(tracks: MMTSAudioTrackInfo[],
+                                        requireKnownSupport: boolean): MMTSAudioTrackInfo | undefined {
+    const candidates = tracks.filter((track) => {
+        return isMMTSAudioTrackSelectable(track) &&
+            (!requireKnownSupport || hasKnownMMTSAudioSupport(track));
+    });
+    if (candidates.length === 0) {
+        return undefined;
+    }
+
+    return candidates.reduce((best, track) => {
+        return scoreAudioTrack(track) > scoreAudioTrack(best) ? track : best;
+    }, candidates[0]);
+}
+
+export function getSortedAudioTrackInfos(tracksByPacketId: {[packetId: number]: MMTSAudioTrackInfo}): MMTSAudioTrackInfo[] {
+    return Object.keys(tracksByPacketId)
+        .map((key) => tracksByPacketId[Number(key)])
+        .sort((a, b) => a.packetId - b.packetId);
+}
+
+export function getSortedVideoTrackInfos(tracksByPacketId: {[packetId: number]: MMTSVideoTrackInfo}): MMTSVideoTrackInfo[] {
+    return Object.keys(tracksByPacketId)
+        .map((key) => tracksByPacketId[Number(key)])
+        .sort((a, b) => compareMMTSVideoTrackPriority(a, b));
+}
+
+export function getSortedSubtitleTrackInfos(tracksByPacketId: {[packetId: number]: MMTSSubtitleTrackInfo}): MMTSSubtitleTrackInfo[] {
+    return Object.keys(tracksByPacketId)
+        .map((key) => tracksByPacketId[Number(key)])
+        .sort((a, b) => a.packetId - b.packetId);
+}
+
+export function createMMTSVideoTrackInfo(asset: MMTAsset,
+                                         previous: MMTSVideoTrackInfo | undefined,
+                                         active: boolean,
+                                         selected: boolean): MMTSVideoTrackInfo {
+    return {
+        ...previous,
+        packetId: asset.packetId,
+        assetType: asset.assetType,
+        codec: asset.codec || 'hevc',
+        language: asset.language,
+        componentTag: asset.componentTag,
+        assetGroupId: asset.assetGroupId,
+        assetSelectionLevel: asset.assetSelectionLevel,
+        accessControlCaSystemId: asset.accessControlCaSystemId,
+        accessControlLocationType: asset.accessControlLocationType,
+        accessControlPacketId: asset.accessControlPacketId,
+        scramblerLayerType: asset.scramblerLayerType,
+        scrambleSystemId: asset.scrambleSystemId,
+        messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
+        messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
+        resolution: asset.videoResolution,
+        resolutionLabel: videoResolutionLabel(asset),
+        frameRateCode: asset.videoFrameRate,
+        hierarchyType: asset.hierarchyType,
+        hierarchyLayerIndex: asset.hierarchyLayerIndex,
+        hierarchyEmbeddedLayerIndex: asset.hierarchyEmbeddedLayerIndex,
+        hierarchyChannel: asset.hierarchyChannel,
+        hierarchyTemporalScalability: asset.hierarchyTemporalScalability,
+        hierarchySpatialScalability: asset.hierarchySpatialScalability,
+        hierarchyQualityScalability: asset.hierarchyQualityScalability,
+        active,
+        selected
+    };
+}
+
+export function createMMTSAudioTrackInfo(asset: MMTAsset,
+                                         previous: MMTSAudioTrackInfo | undefined,
+                                         selected: boolean): MMTSAudioTrackInfo {
+    return {
+        ...previous,
+        packetId: asset.packetId,
+        assetType: asset.assetType,
+        codec: asset.codec || 'aac-latm',
+        language: asset.language,
+        componentType: asset.audioComponentType,
+        componentTag: asset.componentTag !== undefined ? asset.componentTag : asset.audioComponentTag,
+        assetGroupId: asset.assetGroupId,
+        assetSelectionLevel: asset.assetSelectionLevel,
+        accessControlCaSystemId: asset.accessControlCaSystemId,
+        accessControlLocationType: asset.accessControlLocationType,
+        accessControlPacketId: asset.accessControlPacketId,
+        scramblerLayerType: asset.scramblerLayerType,
+        scrambleSystemId: asset.scrambleSystemId,
+        messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
+        messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
+        streamType: asset.audioStreamType,
+        simulcastGroupTag: asset.audioSimulcastGroupTag,
+        mainComponent: asset.audioMainComponent,
+        qualityIndicator: asset.audioQualityIndicator,
+        samplingRateCode: asset.audioSamplingRateCode,
+        audioSampleRate: audioSampleRateFromCode(asset.audioSamplingRateCode),
+        channelLayout: audioLayoutFromComponentType(asset.audioComponentType),
+        channelCount: audioChannelCountFromComponentType(asset.audioComponentType),
+        selected
+    };
+}
+
+export function createMMTSSubtitleTrackInfo(asset: MMTAsset,
+                                            previous: MMTSSubtitleTrackInfo | undefined): MMTSSubtitleTrackInfo {
+    return {
+        ...previous,
+        packetId: asset.packetId,
+        assetType: asset.assetType,
+        codec: asset.codec || 'ttml',
+        language: asset.language,
+        componentTag: asset.componentTag,
+        assetGroupId: asset.assetGroupId,
+        assetSelectionLevel: asset.assetSelectionLevel,
+        accessControlCaSystemId: asset.accessControlCaSystemId,
+        accessControlLocationType: asset.accessControlLocationType,
+        accessControlPacketId: asset.accessControlPacketId,
+        scramblerLayerType: asset.scramblerLayerType,
+        scrambleSystemId: asset.scrambleSystemId,
+        messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
+        messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
+        dataComponentId: asset.dataComponentId,
+        dataComponentInfo: asset.dataComponentInfo,
+        subtitleTag: asset.subtitleTag,
+        subtitleInfoVersion: asset.subtitleInfoVersion,
+        subtitleStartMpuSequenceNumber: asset.subtitleStartMpuSequenceNumber,
+        subtitleType: asset.subtitleType,
+        subtitleFormat: asset.subtitleFormat,
+        subtitleOperationMode: asset.subtitleOperationMode,
+        subtitleTimingMode: asset.subtitleTimingMode,
+        subtitleDisplayMode: asset.subtitleDisplayMode,
+        subtitleResolution: asset.subtitleResolution,
+        subtitleCompressionType: asset.subtitleCompressionType,
+        subtitleReferenceStartTime: asset.subtitleReferenceStartTimeUs !== undefined
+            ? Math.floor(asset.subtitleReferenceStartTimeUs / 1000)
+            : undefined
+    };
+}
+
+export function updateMMTSAudioTrackInfoFromFrame(packetId: number,
+                                                  frame: LOASAACFrame,
+                                                  previous: MMTSAudioTrackInfo | undefined,
+                                                  selected: boolean): MMTSAudioTrackInfo {
+    return {
+        ...previous,
+        packetId,
+        assetType: previous ? previous.assetType : 'mp4a',
+        codec: previous && previous.codec ? previous.codec : 'aac-latm',
+        channelConfig: frame.channel_config,
+        channelCount: audioChannelCountFromAacConfig(frame.channel_config) ||
+            (previous && previous.channelCount) ||
+            audioChannelCountFromComponentType(previous && previous.componentType),
+        channelLayout: audioLayoutFromAacConfig(frame.channel_config) ||
+            (previous && previous.channelLayout) ||
+            audioLayoutFromComponentType(previous && previous.componentType),
+        audioSampleRate: frame.sampling_frequency,
+        selected
+    };
 }
 
 export function videoResolutionLabel(asset: MMTAsset): string {
