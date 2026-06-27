@@ -73,6 +73,17 @@ export interface MMTSSubtitleTrackInfo {
     messageAuthenticationSystemId?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
+    subtitleTag?: number;
+    subtitleInfoVersion?: number;
+    subtitleStartMpuSequenceNumber?: number;
+    subtitleType?: number;
+    subtitleFormat?: number;
+    subtitleOperationMode?: number;
+    subtitleTimingMode?: number;
+    subtitleDisplayMode?: number;
+    subtitleResolution?: number;
+    subtitleCompressionType?: number;
+    subtitleReferenceStartTime?: number;
 }
 
 export class MMTSAudioTrackList {
@@ -107,6 +118,15 @@ export class MMTSSubtitleData {
     dts?: number;
     rawPts?: number;
     rawDts?: number;
+    subtitleTimingMode?: number;
+    subtitleReferenceStartTime?: number;
+    subtitleReferenceStartMediaTime?: number;
+    videoMediaDts?: number;
+    videoMediaPts?: number;
+    videoRawDtsBase?: number;
+    videoDtsBase?: number;
+    videoSampleIndex?: number;
+    droppedVideoSampleCount?: number;
     text?: string;
     data: Uint8Array;
     resources?: MMTSSubtitleResource[];

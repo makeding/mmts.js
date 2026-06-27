@@ -80,12 +80,16 @@
             <div class="track-title">MMTS subtitle tracks</div>
             <div id="mmtsSubtitleTracks" class="track-list">No MMTS subtitle tracks</div>
             <div id="ttmlSubtitleStatus" class="track-list ttml-subtitle-status">TTML payload events=0</div>
+            <div id="ttmlFontDownloads" class="track-list ttml-font-downloads">No TTML fonts</div>
         </div>
         <textarea name="logcatbox" class="logcatBox" rows="10"></textarea>
     </div>
 
     <script src="../dist/mpegts.js"></script>
-    <script type="module" src="../../aribb62.js/src/index.js"></script>
+    <script type="module">
+        import * as aribb62js from '../../aribb62.js/src/index.js';
+        window.aribb62js = aribb62js;
+    </script>
     
     <script>
         var checkBoxFields = ['isLive', 'withCredentials', 'liveBufferLatencyChasing'];
@@ -98,6 +102,10 @@
         var ttmlSubtitleRenderer = null;
         var ttmlSubtitleEventCount = 0;
         var ttmlSubtitleLastStatus = null;
+        var ttmlSubtitleDataCache = [];
+        var ttmlSubtitleReplayActive = false;
+        var ttmlCachedFontFaces = [];
+        var ttmlCachedFontFaceKeys = {};
         var selectedMMTSSubtitlePacketId = null;
 
         function logDemo(message) {
@@ -384,6 +392,124 @@
             return Number(value).toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
         }
 
+        function formatSeconds(value) {
+            return Number.isFinite(value) ? formatNumber(value, 3) + 's' : 'n/a';
+        }
+
+        function formatMsSeconds(value) {
+            return Number.isFinite(value) ? formatSeconds(value / 1000) : 'n/a';
+        }
+
+        function formatTimelineRange(start, end) {
+            return formatSeconds(start) + '..' + formatSeconds(end);
+        }
+
+        function formatMMTSPacketTimeline(data) {
+            data = data || {};
+            return 'pkt_rel pts/dts=' + formatMsSeconds(data.pts) + '/' + formatMsSeconds(data.dts) +
+                ' pkt_abs rawPts/rawDts=' + formatMsSeconds(data.rawPts) + '/' + formatMsSeconds(data.rawDts) +
+                ' video_base raw/dts=' + formatMsSeconds(data.videoRawDtsBase) + '/' + formatMsSeconds(data.videoDtsBase) +
+                ' video_samples=' + (data.videoSampleIndex !== undefined ? data.videoSampleIndex : 'n/a') +
+                ' dropped_video=' + (data.droppedVideoSampleCount !== undefined ? data.droppedVideoSampleCount : 'n/a');
+        }
+
+        function inspectTTMLTimeline(text, timelineOffset) {
+            var result = {
+                minBegin: null,
+                maxEnd: null,
+                minRelativeBegin: null,
+                maxRelativeEnd: null
+            };
+            if (!text || typeof DOMParser === 'undefined') {
+                return result;
+            }
+
+            var doc = new DOMParser().parseFromString(text, 'application/xml');
+            if (!doc || doc.getElementsByTagName('parsererror').length > 0) {
+                return result;
+            }
+
+            var nodes = doc.getElementsByTagName('*');
+            for (var i = 0; i < nodes.length; i++) {
+                var node = nodes[i];
+                var name = node.localName || String(node.nodeName || '').replace(/^.*:/, '');
+                if (name !== 'p' && name !== 'audio') {
+                    continue;
+                }
+
+                var begin = parseTTMLTimeValue(readTTMLAttr(node, 'begin'));
+                var end = parseTTMLTimeValue(readTTMLAttr(node, 'end'));
+                var dur = parseTTMLTimeValue(readTTMLAttr(node, 'dur'));
+                var parent = node.parentNode;
+                while ((begin === null || end === null || dur === null) && parent && parent.nodeType === 1) {
+                    if (begin === null) {
+                        begin = parseTTMLTimeValue(readTTMLAttr(parent, 'begin'));
+                    }
+                    if (end === null) {
+                        end = parseTTMLTimeValue(readTTMLAttr(parent, 'end'));
+                    }
+                    if (dur === null) {
+                        dur = parseTTMLTimeValue(readTTMLAttr(parent, 'dur'));
+                    }
+                    parent = parent.parentNode;
+                }
+                if (end === null && dur !== null && begin !== null) {
+                    end = dur === Infinity ? Infinity : begin + dur;
+                }
+                if (begin !== null && (result.minBegin === null || begin < result.minBegin)) {
+                    result.minBegin = begin;
+                }
+                if (end !== null && (result.maxEnd === null || end > result.maxEnd)) {
+                    result.maxEnd = end;
+                }
+            }
+
+            if (Number.isFinite(timelineOffset)) {
+                result.minRelativeBegin = result.minBegin !== null ? result.minBegin + timelineOffset : null;
+                result.maxRelativeEnd = result.maxEnd !== null ? result.maxEnd + timelineOffset : null;
+            }
+            return result;
+        }
+
+        function readTTMLAttr(node, local) {
+            if (!node || !node.attributes) {
+                return '';
+            }
+            var direct = node.getAttribute(local) || node.getAttribute('tts:' + local) || node.getAttribute('ttp:' + local);
+            if (direct) {
+                return direct;
+            }
+            for (var i = 0; i < node.attributes.length; i++) {
+                if (node.attributes[i].localName === local) {
+                    return node.attributes[i].value;
+                }
+            }
+            return '';
+        }
+
+        function parseTTMLTimeValue(value) {
+            if (!value) {
+                return null;
+            }
+            var text = String(value).trim();
+            if (text === 'indefinite') {
+                return Infinity;
+            }
+            var clock = text.match(/^(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+            if (clock) {
+                return Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3]) + Number('0.' + (clock[4] || '0'));
+            }
+            var seconds = text.match(/^([0-9.]+)s$/);
+            if (seconds) {
+                return Number(seconds[1]);
+            }
+            var millis = text.match(/^([0-9.]+)ms$/);
+            if (millis) {
+                return Number(millis[1]) / 1000;
+            }
+            return null;
+        }
+
         function resetMMTSAudioTracks() {
             mmtsAudioTracks = null;
             renderMMTSAudioTracks();
@@ -506,6 +632,7 @@
             }
             clearActiveTTMLSubtitleCues();
             renderMMTSSubtitleTracks();
+            replayCachedTTMLSubtitles();
             renderTTMLSubtitleStatus();
         }
 
@@ -552,6 +679,10 @@
             element.onwaiting = function() {
                 logDemo('waiting: currentTime=' + element.currentTime);
             };
+            element.onseeked = function() {
+                logDemo('seeked: currentTime=' + element.currentTime);
+                replayCachedTTMLSubtitles();
+            };
         }
 
         function setupTTMLSubtitleOverlay(element) {
@@ -561,10 +692,11 @@
                 logDemo('aribb62.js is not loaded');
                 return;
             }
-            ttmlSubtitleRenderer = new aribb62js.B62TTMLRenderer({
+            ttmlSubtitleRenderer = new window.aribb62js.B62TTMLRenderer({
                 mediaElement: element,
                 overlayElement: overlay,
-                isLive: document.getElementById('isLive').checked
+                isLive: document.getElementById('isLive').checked,
+                maxCues: 100000
             });
         }
 
@@ -575,10 +707,15 @@
             }
             ttmlSubtitleEventCount = 0;
             ttmlSubtitleLastStatus = null;
+            resetTTMLSubtitleDataCache();
             renderTTMLSubtitleStatus();
         }
 
-        function pushMMTSTTMLSubtitleData(video, data) {
+        function pushMMTSTTMLSubtitleData(video, data, options) {
+            options = options || {};
+            if (!options.replay) {
+                cacheTTMLSubtitleData(data);
+            }
             if (selectedMMTSSubtitlePacketId !== null && (!data || data.packetId !== selectedMMTSSubtitlePacketId)) {
                 return;
             }
@@ -592,9 +729,35 @@
 
             var result = ttmlSubtitleRenderer.push(data);
             result.resourcesComplete = data && data.resourcesComplete;
+            result.dts = data && data.dts;
+            result.rawPts = data && data.rawPts;
+            result.rawDts = data && data.rawDts;
+            result.videoRawDtsBase = data && data.videoRawDtsBase;
+            result.videoDtsBase = data && data.videoDtsBase;
+            result.videoSampleIndex = data && data.videoSampleIndex;
+            result.droppedVideoSampleCount = data && data.droppedVideoSampleCount;
+            cacheTTMLFontDownloads(result.fontFaces || [], data);
             ttmlSubtitleEventCount = result.eventCount;
+            var timeline = inspectTTMLTimeline(result.text, result.timelineOffset);
+            result.timelineDebug = timeline;
             updateTTMLSubtitleStatus(result);
-            logDemo('mmts subtitle data #' + result.eventCount + ': packet_id=' + formatPacketId(result.packetId) + ', cues=' + result.cueCount + ', resources=' + (result.resourceCount || 0) + ', resources_complete=' + (data && data.resourcesComplete ? 1 : 0) + ', pts=' + (result.pts !== undefined ? result.pts : 'n/a') + ', base=' + (result.basePts !== null ? formatNumber(result.basePts, 3) : 'n/a') + ', effective=' + (result.effectiveBasePts !== null ? formatNumber(result.effectiveBasePts, 3) : 'n/a') + (result.arrivalAligned ? ', arrival-aligned' : '') + ', len=' + result.len);
+            if (!options.replay) {
+                logDemo('mmts subtitle data #' + result.eventCount +
+                    ': packet_id=' + formatPacketId(result.packetId) +
+                    ', cues=' + result.cueCount +
+                    ', cached=' + ttmlSubtitleDataCache.length +
+                    ', resources=' + (result.resourceCount || 0) +
+                    ', resources_complete=' + (data && data.resourcesComplete ? 1 : 0) +
+                    ', fonts=' + (result.fontFaceCount || 0) +
+                    ', ' + formatMMTSPacketTimeline(data) +
+                    ', base=' + (result.basePts !== null ? formatSeconds(result.basePts) : 'n/a') +
+                    ', effective=' + (result.effectiveBasePts !== null ? formatSeconds(result.effectiveBasePts) : 'n/a') +
+                    ', offset=' + (result.timelineOffset !== null ? formatSeconds(result.timelineOffset) : 'n/a') +
+                    ', ttml_abs=' + formatTimelineRange(timeline.minBegin, timeline.maxEnd) +
+                    ', ttml_rel=' + formatTimelineRange(timeline.minRelativeBegin, timeline.maxRelativeEnd) +
+                    (result.arrivalAligned ? ', arrival-aligned' : '') +
+                    ', len=' + result.len);
+            }
         }
 
         function inject_test_ttml_subtitle() {
@@ -626,6 +789,155 @@
             }
         }
 
+        function cacheTTMLSubtitleData(data) {
+            if (!data) {
+                return;
+            }
+            ttmlSubtitleDataCache.push(data);
+        }
+
+        function resetTTMLSubtitleDataCache() {
+            ttmlSubtitleDataCache = [];
+            ttmlSubtitleReplayActive = false;
+            ttmlCachedFontFaces.forEach(function(fontFace) {
+                if (fontFace.ownedUrl && fontFace.url && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+                    URL.revokeObjectURL(fontFace.url);
+                }
+            });
+            ttmlCachedFontFaces = [];
+            ttmlCachedFontFaceKeys = {};
+        }
+
+        function replayCachedTTMLSubtitles() {
+            if (ttmlSubtitleReplayActive || !ttmlSubtitleRenderer || ttmlSubtitleDataCache.length === 0) {
+                return;
+            }
+            var video = document.getElementsByName('videoElement')[0];
+            ttmlSubtitleReplayActive = true;
+            clearActiveTTMLSubtitleCues();
+            for (var i = 0; i < ttmlSubtitleDataCache.length; i++) {
+                pushMMTSTTMLSubtitleData(video, ttmlSubtitleDataCache[i], { replay: true });
+            }
+            ttmlSubtitleReplayActive = false;
+            logDemo('replayed cached TTML payloads: count=' + ttmlSubtitleDataCache.length);
+            renderTTMLSubtitleStatus();
+        }
+
+        function cacheTTMLFontDownloads(fontFaces, data) {
+            fontFaces.forEach(function(fontFace) {
+                var key = [
+                    data && data.packetId,
+                    data && data.mpuSequenceNumber,
+                    fontFace.resourceIndex,
+                    fontFace.family,
+                    fontFace.format,
+                    fontFace.unicodeRange,
+                    fontFace.src
+                ].join('|');
+                if (ttmlCachedFontFaceKeys[key]) {
+                    return;
+                }
+
+                var cached = {
+                    family: fontFace.family || '',
+                    format: fontFace.format || '',
+                    unicodeRange: fontFace.unicodeRange || '',
+                    src: fontFace.src || '',
+                    resourceIndex: fontFace.resourceIndex,
+                    downloadName: fontFace.downloadName || '',
+                    url: fontFace.url || '',
+                    ownedUrl: false
+                };
+                var resource = findTTMLResourceByIndex(data, fontFace.resourceIndex);
+                var bytes = resource ? toUint8Array(resource.data || resource.payload || resource.bytes) : null;
+                if (bytes && typeof Blob !== 'undefined' && typeof URL !== 'undefined' && URL.createObjectURL) {
+                    cached.url = URL.createObjectURL(new Blob([bytes], { type: mimeTypeForFontFormat(cached.format) }));
+                    cached.ownedUrl = true;
+                }
+                if (!cached.url) {
+                    return;
+                }
+
+                ttmlCachedFontFaceKeys[key] = true;
+                ttmlCachedFontFaces.push(cached);
+            });
+        }
+
+        function findTTMLResourceByIndex(data, index) {
+            if (!data || !Number.isFinite(index)) {
+                return null;
+            }
+            var lists = [data.resources, data.subsamples];
+            for (var i = 0; i < lists.length; i++) {
+                var list = lists[i];
+                if (!Array.isArray(list)) {
+                    continue;
+                }
+                for (var j = 0; j < list.length; j++) {
+                    var item = list[j];
+                    if (Number(firstDefined(
+                        item && item.index,
+                        item && item.subsampleIndex,
+                        item && item.subsampleNumber,
+                        item && item.subsample,
+                        item && item.id
+                    )) === index) {
+                        return item;
+                    }
+                }
+            }
+            var maps = [data.resourceMap, data.resourcesBySubsample];
+            for (var k = 0; k < maps.length; k++) {
+                var map = maps[k];
+                if (!map || typeof map !== 'object') {
+                    continue;
+                }
+                if (map[index] !== undefined) {
+                    var value = map[index];
+                    return typeof value === 'object' && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) ?
+                        value :
+                        { index: index, data: value };
+                }
+            }
+            return null;
+        }
+
+        function firstDefined() {
+            for (var i = 0; i < arguments.length; i++) {
+                if (arguments[i] !== undefined && arguments[i] !== null) {
+                    return arguments[i];
+                }
+            }
+            return undefined;
+        }
+
+        function toUint8Array(data) {
+            if (!data) {
+                return null;
+            }
+            if (data instanceof Uint8Array) {
+                return data;
+            }
+            if (data instanceof ArrayBuffer) {
+                return new Uint8Array(data);
+            }
+            if (Array.isArray(data)) {
+                return new Uint8Array(data);
+            }
+            return null;
+        }
+
+        function mimeTypeForFontFormat(format) {
+            switch (String(format || '').toLowerCase()) {
+                case 'svg':
+                    return 'image/svg+xml';
+                case 'woff':
+                    return 'font/woff';
+                default:
+                    return 'application/octet-stream';
+            }
+        }
+
         function updateTTMLSubtitleStatus(result) {
             ttmlSubtitleLastStatus = result;
             renderTTMLSubtitleStatus();
@@ -638,6 +950,7 @@
             }
             if (!ttmlSubtitleLastStatus) {
                 container.textContent = 'TTML payload events=' + ttmlSubtitleEventCount + '  selected=' + (selectedMMTSSubtitlePacketId === null ? 'all' : formatPacketId(selectedMMTSSubtitlePacketId));
+                renderTTMLFontDownloads(null);
                 return;
             }
 
@@ -647,17 +960,61 @@
                 'selected=' + (selectedMMTSSubtitlePacketId === null ? 'all' : formatPacketId(selectedMMTSSubtitlePacketId)),
                 'last_packet=' + formatPacketId(status.packetId),
                 'cues=' + status.cueCount,
+                'cached=' + ttmlSubtitleDataCache.length,
                 'resources=' + (status.resourceCount || 0),
                 'resources_complete=' + (status.resourcesComplete ? 1 : 0),
+                'fonts=' + (status.fontFaceCount || 0),
                 'pts=' + (status.pts !== undefined ? status.pts : 'n/a'),
                 'base=' + (status.basePts !== null ? formatNumber(status.basePts, 3) : 'n/a'),
                 'effective=' + (status.effectiveBasePts !== null ? formatNumber(status.effectiveBasePts, 3) : 'n/a'),
+                'offset=' + (status.timelineOffset !== null ? formatNumber(status.timelineOffset, 3) : 'n/a'),
                 'len=' + status.len
             ];
             if (status.arrivalAligned) {
                 parts.push('arrival-aligned');
             }
-            container.textContent = parts.join('  ') + (status.preview ? '\npreview=' + status.preview : '');
+            if (status.timelineDebug) {
+                parts.push('pkt_rel=' + formatMsSeconds(status.pts) + '/' + formatMsSeconds(status.dts));
+                parts.push('pkt_abs=' + formatMsSeconds(status.rawPts) + '/' + formatMsSeconds(status.rawDts));
+                parts.push('video_base=' + formatMsSeconds(status.videoRawDtsBase) + '/' + formatMsSeconds(status.videoDtsBase));
+                parts.push('video_samples=' + (status.videoSampleIndex !== undefined ? status.videoSampleIndex : 'n/a'));
+                parts.push('dropped_video=' + (status.droppedVideoSampleCount !== undefined ? status.droppedVideoSampleCount : 'n/a'));
+                parts.push('ttml_abs=' + formatTimelineRange(status.timelineDebug.minBegin, status.timelineDebug.maxEnd));
+                parts.push('ttml_rel=' + formatTimelineRange(status.timelineDebug.minRelativeBegin, status.timelineDebug.maxRelativeEnd));
+            }
+            container.textContent = parts.join('  ') +
+                (status.preview ? '\npreview=' + status.preview : '') +
+                (status.previewCodePoints ? '\ncodepoints=' + status.previewCodePoints : '');
+            renderTTMLFontDownloads(ttmlCachedFontFaces);
+        }
+
+        function renderTTMLFontDownloads(fontFaces) {
+            var container = document.getElementById('ttmlFontDownloads');
+            if (!container) {
+                return;
+            }
+            container.innerHTML = '';
+            if (!fontFaces || fontFaces.length === 0) {
+                container.textContent = 'No TTML fonts';
+                return;
+            }
+
+            var title = document.createElement('div');
+            title.textContent = 'TTML font downloads';
+            container.appendChild(title);
+            fontFaces.forEach(function(fontFace, index) {
+                var link = document.createElement('a');
+                link.href = fontFace.url;
+                link.download = fontFace.downloadName || ('aribb62-font-' + index + '.' + (fontFace.format || 'bin'));
+                link.textContent = [
+                    'font ' + index,
+                    fontFace.format || 'unknown',
+                    fontFace.unicodeRange || 'all',
+                    fontFace.family || '',
+                    fontFace.downloadName || ''
+                ].filter(Boolean).join('  ');
+                container.appendChild(link);
+            });
         }
 
         function formatPacketId(packetId) {

@@ -140,6 +140,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private dispatchVideoInitSegment;
     private dispatchVideoMediaSegment;
     private formatHex;
+    private formatMsTimestamp;
     private formatH265NaluTypes;
     private formatPacketCounts;
     private formatAssetConditionalAccessInfo;

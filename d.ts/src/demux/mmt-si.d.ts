@@ -61,6 +61,17 @@ export interface MMTAsset {
     audioSamplingRateCode?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
+    subtitleTag?: number;
+    subtitleInfoVersion?: number;
+    subtitleStartMpuSequenceNumber?: number;
+    subtitleType?: number;
+    subtitleFormat?: number;
+    subtitleOperationMode?: number;
+    subtitleTimingMode?: number;
+    subtitleDisplayMode?: number;
+    subtitleResolution?: number;
+    subtitleCompressionType?: number;
+    subtitleReferenceStartTimeUs?: number;
     timestampDescriptorCount?: number;
     extendedTimestampDescriptorCount?: number;
     timestampDescriptors?: MMTMpuTimestampDescriptor[];
@@ -122,6 +133,7 @@ export default class MMTSI {
     private static parseAudioComponentDescriptor;
     private static parseStreamIdentificationDescriptor;
     private static parseDataComponentDescriptor;
+    private static parseAdditionalAribSubtitleInfo;
     private static parseHierarchyDescriptor;
     private static readShortDescriptorHeader;
     private static skipDescriptor;

@@ -64,6 +64,17 @@ export interface MMTAsset {
     audioSamplingRateCode?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
+    subtitleTag?: number;
+    subtitleInfoVersion?: number;
+    subtitleStartMpuSequenceNumber?: number;
+    subtitleType?: number;
+    subtitleFormat?: number;
+    subtitleOperationMode?: number;
+    subtitleTimingMode?: number;
+    subtitleDisplayMode?: number;
+    subtitleResolution?: number;
+    subtitleCompressionType?: number;
+    subtitleReferenceStartTimeUs?: number;
     timestampDescriptorCount?: number;
     extendedTimestampDescriptorCount?: number;
     timestampDescriptors?: MMTMpuTimestampDescriptor[];
@@ -849,6 +860,46 @@ export default class MMTSI {
         asset.dataComponentInfo = descriptor.remainingBytes();
         if (dataComponentId === 0x0020 || dataComponentId === 0x0008) {
             asset.codec = 'ttml';
+            MMTSI.parseAdditionalAribSubtitleInfo(asset, asset.dataComponentInfo);
+        }
+    }
+
+    private static parseAdditionalAribSubtitleInfo(asset: MMTAsset, data: Uint8Array): void {
+        if (!data || data.byteLength < 8) {
+            return;
+        }
+
+        const reader = new ByteReader(data);
+        asset.subtitleTag = reader.readU8();
+
+        let byte = reader.readU8();
+        asset.subtitleInfoVersion = (byte >> 4) & 0x0f;
+        const hasStartMpuSequenceNumber = ((byte >> 3) & 0x01) !== 0;
+
+        asset.language = reader.readAscii(3);
+
+        byte = reader.readU8();
+        asset.subtitleType = (byte >> 6) & 0x03;
+        asset.subtitleFormat = (byte >> 2) & 0x0f;
+        asset.subtitleOperationMode = byte & 0x03;
+
+        byte = reader.readU8();
+        asset.subtitleTimingMode = (byte >> 4) & 0x0f;
+        asset.subtitleDisplayMode = byte & 0x0f;
+
+        byte = reader.readU8();
+        asset.subtitleResolution = (byte >> 4) & 0x0f;
+        asset.subtitleCompressionType = byte & 0x0f;
+
+        if (hasStartMpuSequenceNumber) {
+            if (!reader.canRead(4)) {
+                return;
+            }
+            asset.subtitleStartMpuSequenceNumber = reader.readU32();
+        }
+
+        if (asset.subtitleTimingMode === 0x02 && reader.canRead(8)) {
+            asset.subtitleReferenceStartTimeUs = MMTSI.readNtpTimestampUs(reader);
         }
     }
 
