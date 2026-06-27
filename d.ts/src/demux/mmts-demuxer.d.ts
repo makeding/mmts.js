@@ -20,8 +20,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private subtitle_track_infos_by_packet_id_;
     private subtitle_mpu_states_;
     private audio_parse_states_by_packet_id_;
-    private audio_timestamp_offsets_by_packet_id_;
-    private pending_audio_timeline_seeds_by_packet_id_;
+    private audio_timeline_;
     private audio_tracks_signature_;
     private video_tracks_signature_;
     private subtitle_tracks_signature_;

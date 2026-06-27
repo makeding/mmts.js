@@ -25,6 +25,8 @@ class StartupStallJumper {
     private _media_element: HTMLMediaElement = null;
     private _on_direct_seek: (target: number) => void = null;
     private _canplay_received: boolean = false;
+    private _last_jump_target: number = -1;
+    private _last_jump_clock: number = 0;
 
     private e: any = null;
 
@@ -77,15 +79,55 @@ class StartupStallJumper {
         const buffered = media.buffered;
 
         if (is_stalled || !this._canplay_received || media.readyState < 2) {  // HAVE_CURRENT_DATA
-            if (buffered.length > 0 && media.currentTime < buffered.start(0)) {
-                Log.w(this.TAG, `Playback seems stuck at ${media.currentTime}, seek to ${buffered.start(0)}`);
-                this._on_direct_seek(buffered.start(0));
+            const target = this._findBufferedJumpTarget(media);
+            if (target != null && this._shouldJumpTo(target)) {
+                Log.w(this.TAG, `Playback seems stuck at ${media.currentTime}, seek to ${target}`);
+                this._last_jump_target = target;
+                this._last_jump_clock = StartupStallJumper._getClockTime();
+                this._on_direct_seek(target);
                 this._media_element.removeEventListener('progress', this.e.onMediaProgress);
             }
         } else {
             // Playback doesn't stuck, remove progress event listener
             this._media_element.removeEventListener('progress', this.e.onMediaProgress);
         }
+    }
+
+    private _findBufferedJumpTarget(media: HTMLMediaElement): number | null {
+        const buffered = media.buffered;
+        const current = media.currentTime;
+        const tolerance = 0.05;
+        const edge_tolerance = 0.2;
+
+        for (let i = 0; i < buffered.length; i++) {
+            const start = buffered.start(i);
+            const end = buffered.end(i);
+
+            if (current < start - tolerance) {
+                return start;
+            }
+
+            if (current >= start - tolerance && current <= end + tolerance) {
+                if (current >= end - edge_tolerance && i + 1 < buffered.length) {
+                    const next_start = buffered.start(i + 1);
+                    if (next_start > current + tolerance) {
+                        return next_start;
+                    }
+                }
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private _shouldJumpTo(target: number): boolean {
+        const now = StartupStallJumper._getClockTime();
+        return Math.abs(target - this._last_jump_target) > 0.01 || now - this._last_jump_clock > 1000;
+    }
+
+    private static _getClockTime(): number {
+        return self.performance && self.performance.now ? self.performance.now() : Date.now();
     }
 
 }

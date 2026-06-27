@@ -1,7 +1,7 @@
 import BaseDemuxer from './base-demuxer';
 import TLV from './tlv';
 import CompressedIP from './compressed-ip';
-import MMTP, {MMTPEncryptionFlag, MMTPPayloadType, MMTPScramblingInfo} from './mmtp';
+import MMTP, {MMTPPayloadType} from './mmtp';
 import {MMTAsset} from './mmt-si';
 import MPU, {MFUFragment} from './mpu';
 import MMTSProgram, {MMTSTimestamp} from './mmts-program';
@@ -11,6 +11,42 @@ import {H265NaluHVC1, H265NaluPayload, H265NaluType, HEVCDecoderConfigurationRec
 import H265Parser from './h265-parser';
 import MediaInfo from '../core/media-info';
 import Log from '../utils/logger.js';
+import MMTSAudioTimeline from '../utils/mmts-audio-timeline';
+import {
+    audioChannelCountFromAacConfig,
+    audioChannelCountFromComponentType,
+    audioLayoutFromAacConfig,
+    audioLayoutFromComponentType,
+    audioSampleRateFromCode,
+    compareMMTSVideoTrackPriority,
+    findMMTSPrimaryVideoTrack,
+    findMMTSSecondaryVideoTrack,
+    formatAssetConditionalAccessInfo,
+    formatH265NaluTypes,
+    formatHex,
+    formatMmtpScramblingInfo,
+    formatMsTimestamp,
+    formatPacketCounts,
+    getMMTSSelectedVideoRole,
+    hasH265CraNalu,
+    hasH265IdrNalu,
+    hasH265PostCraTrailingVclNalu,
+    hasH265RaslNalu,
+    hasKnownMMTSAudioSupport,
+    hasVideoParameterSets,
+    isH265IrapNalu,
+    isH265VclNalu,
+    isMMTSAudioTrackSelectable,
+    isMMTSVideoFallback,
+    payloadTypeName,
+    readH265NaluType,
+    readU16,
+    readU32,
+    scramblingName,
+    scoreAudioTrack,
+    toHex,
+    videoResolutionLabel
+} from '../utils/mmts-demuxer-utils';
 import decodeUTF8 from '../utils/utf8-conv.js';
 import {
     MMTSAudioTrackInfo,
@@ -107,8 +143,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private subtitle_track_infos_by_packet_id_: {[packetId: number]: MMTSSubtitleTrackInfo} = {};
     private subtitle_mpu_states_: {[key: string]: SubtitleMpuState} = {};
     private audio_parse_states_by_packet_id_: {[packetId: number]: AudioParseState} = {};
-    private audio_timestamp_offsets_by_packet_id_: {[packetId: number]: number} = {};
-    private pending_audio_timeline_seeds_by_packet_id_: {[packetId: number]: number} = {};
+    private audio_timeline_: MMTSAudioTimeline = new MMTSAudioTimeline();
     private audio_tracks_signature_: string = '';
     private video_tracks_signature_: string = '';
     private subtitle_tracks_signature_: string = '';
@@ -176,8 +211,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.subtitle_track_infos_by_packet_id_ = null;
         this.subtitle_mpu_states_ = null;
         this.audio_parse_states_by_packet_id_ = null;
-        this.audio_timestamp_offsets_by_packet_id_ = null;
-        this.pending_audio_timeline_seeds_by_packet_id_ = null;
+        this.audio_timeline_ && this.audio_timeline_.destroy();
+        this.audio_timeline_ = null;
         this.media_info_ = null;
         this.audio_metadata_ = null;
         this.video_metadata_ = null;
@@ -233,12 +268,12 @@ class MMTSDemuxer extends BaseDemuxer {
             if (this.parsed_mmtp_count_ <= 10) {
                 Log.v(
                     this.TAG,
-                    `MMTP packet_id=${this.formatHex(mmtp.packetId, 4)}, ` +
-                    `payload=${this.payloadTypeName(mmtp.payloadType)}, ` +
+                    `MMTP packet_id=${formatHex(mmtp.packetId, 4)}, ` +
+                    `payload=${payloadTypeName(mmtp.payloadType)}, ` +
                     `seq=${mmtp.packetSequenceNumber}, ` +
                     `rap=${mmtp.rapFlag ? 1 : 0}, ` +
-                    `scrambling=${this.scramblingName(mmtp.extensionHeaderScrambling && mmtp.extensionHeaderScrambling.encryptionFlag)}` +
-                    this.formatMmtpScramblingInfo(mmtp.extensionHeaderScrambling)
+                    `scrambling=${scramblingName(mmtp.extensionHeaderScrambling && mmtp.extensionHeaderScrambling.encryptionFlag)}` +
+                    formatMmtpScramblingInfo(mmtp.extensionHeaderScrambling)
                 );
             }
 
@@ -280,13 +315,13 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.logged_asset_keys_[key] = true;
                 Log.v(
                     this.TAG,
-                    `MPT asset packet_id=${this.formatHex(asset.packetId, 4)}, ` +
+                    `MPT asset packet_id=${formatHex(asset.packetId, 4)}, ` +
                     `asset_type=${asset.assetType}, media=${asset.mediaType}, ` +
                     `codec=${asset.codec || 'unknown'}, lang=${asset.language || 'und'}` +
                     (asset.assetGroupId !== undefined ? `, asset_group=${asset.assetGroupId}` : '') +
                     (asset.assetSelectionLevel !== undefined ? `, selection_level=${asset.assetSelectionLevel}` : '') +
-                    this.formatAssetConditionalAccessInfo(asset) +
-                    (asset.mediaType === 'video' ? `, resolution=${this.videoResolutionLabel(asset)}` : '')
+                    formatAssetConditionalAccessInfo(asset) +
+                    (asset.mediaType === 'video' ? `, resolution=${videoResolutionLabel(asset)}` : '')
                 );
             }
 
@@ -407,7 +442,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        if (!this.video_init_segment_dispatched_ || !this.isH265VclNalu(naluType)) {
+        if (!this.video_init_segment_dispatched_ || !isH265VclNalu(naluType)) {
             if (this.video_init_segment_dispatched_ &&
                 !this.video_waiting_random_access_ &&
                 fragment.sampleNumber !== undefined) {
@@ -425,7 +460,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        const keyframe = this.isH265IrapNalu(naluType) || randomAccess;
+        const keyframe = isH265IrapNalu(naluType) || randomAccess;
         if (this.video_waiting_random_access_) {
             if (!keyframe) {
                 const droppedTimestamp = this.dropVideoTimestampOnce(packetId, mpuSequenceNumber, fragment.sampleNumber);
@@ -441,7 +476,7 @@ class MMTSDemuxer extends BaseDemuxer {
             this.dropped_video_timestamp_keys_ = {};
             Log.v(
                 this.TAG,
-                `Resume MMTS video after random access packet_id=${this.formatHex(packetId, 4)}, ` +
+                `Resume MMTS video after random access packet_id=${formatHex(packetId, 4)}, ` +
                 `mpu_seq=${mpuSequenceNumber}, type=${naluType}`
             );
         }
@@ -585,7 +620,7 @@ class MMTSDemuxer extends BaseDemuxer {
             this.updateAudioTrackInfoFromFrame(packetId, aacFrame);
             const appendCurrentFrame = appendSamples &&
                 packetId === this.primary_audio_packet_id_ &&
-                this.isSupportedAACChannelConfig(aacFrame.channel_config);
+                isSupportedAACChannelConfig(aacFrame.channel_config);
 
             if (appendCurrentFrame && !this.audio_init_segment_dispatched_) {
                 this.audio_metadata_ = state.metadata;
@@ -718,8 +753,8 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         const dataSize = lengthExtFlag
-            ? this.readU32(unit, offset)
-            : this.readU16(unit, offset);
+            ? readU32(unit, offset)
+            : readU16(unit, offset);
         offset += dataSizeLength;
 
         if (subsampleNumber === 0 && lastSubsampleNumber > 0 && subsampleInfoListFlag) {
@@ -891,13 +926,13 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (this.video_drop_leading_rasl_) {
-            if (this.hasH265RaslNalu(units)) {
+            if (hasH265RaslNalu(units)) {
                 const droppedTimestamp = this.dropVideoTimestamp(packetId, mpuSequenceNumber);
                 this.dropped_video_sample_count_++;
                 this.logDroppedVideoSample(packetId, mpuSequenceNumber, units, droppedTimestamp, 'leading-rasl-after-cra');
                 return;
             }
-            if (this.hasH265PostCraTrailingVclNalu(units)) {
+            if (hasH265PostCraTrailingVclNalu(units)) {
                 this.video_drop_leading_rasl_ = false;
             }
         }
@@ -910,7 +945,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 return;
             }
             this.video_started_ = true;
-            this.video_drop_leading_rasl_ = this.hasH265CraNalu(units) && !this.hasH265IdrNalu(units);
+            this.video_drop_leading_rasl_ = hasH265CraNalu(units) && !hasH265IdrNalu(units);
         }
 
         const videoTimestamp = this.consumeVideoTimestamp(packetId, mpuSequenceNumber);
@@ -963,7 +998,7 @@ class MMTSDemuxer extends BaseDemuxer {
         Log.v(
             this.TAG,
             `MMTS video nalu #${this.logged_video_nalu_count_}, ` +
-            `packet_id=${this.formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
+            `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
             `sample=${fragment.sampleNumber !== undefined ? fragment.sampleNumber : 'n/a'}, ` +
             `offset=${fragment.offset !== undefined ? fragment.offset : 'n/a'}, ` +
             `frag=${fragment.fragmentationIndicator}, rap=${randomAccess ? 1 : 0}, type=${naluType}, len=${unitLength}`
@@ -983,12 +1018,12 @@ class MMTSDemuxer extends BaseDemuxer {
         Log.v(
             this.TAG,
             `Drop MMTS video sample before keyframe #${this.logged_dropped_video_sample_count_}, ` +
-            `packet_id=${this.formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
-            `asset_dts=${timestamp !== null ? this.formatMsTimestamp(timestamp.dts, timestamp.timescale) : 'n/a'}, ` +
-            `asset_pts=${timestamp !== null ? this.formatMsTimestamp(timestamp.pts, timestamp.timescale) : 'n/a'}, ` +
-            `raw_dts=${timestamp !== null ? this.formatMsTimestamp(timestamp.rawDts, timestamp.timescale) : 'n/a'}, ` +
-            `raw_pts=${timestamp !== null ? this.formatMsTimestamp(timestamp.rawPts, timestamp.timescale) : 'n/a'}, ` +
-            `reason=${reason}, nal_types=${this.formatH265NaluTypes(units)}`
+            `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
+            `asset_dts=${timestamp !== null ? formatMsTimestamp(timestamp.dts, timestamp.timescale) : 'n/a'}, ` +
+            `asset_pts=${timestamp !== null ? formatMsTimestamp(timestamp.pts, timestamp.timescale) : 'n/a'}, ` +
+            `raw_dts=${timestamp !== null ? formatMsTimestamp(timestamp.rawDts, timestamp.timescale) : 'n/a'}, ` +
+            `raw_pts=${timestamp !== null ? formatMsTimestamp(timestamp.rawPts, timestamp.timescale) : 'n/a'}, ` +
+            `reason=${reason}, nal_types=${formatH265NaluTypes(units)}`
         );
     }
 
@@ -999,7 +1034,7 @@ class MMTSDemuxer extends BaseDemuxer {
             this.video_metadata_.pps
         ].filter((unit) => unit !== undefined) as H265NaluHVC1[];
 
-        if (parameterSets.length === 0 || this.hasVideoParameterSets(units)) {
+        if (parameterSets.length === 0 || hasVideoParameterSets(units)) {
             return {units, length};
         }
 
@@ -1036,7 +1071,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
     private hasH265PostCraTrailingVclNalu(units: H265NaluHVC1[]): boolean {
         return units.some((unit) => {
-            return this.isH265VclNalu(unit.type) &&
+            return isH265VclNalu(unit.type) &&
                 unit.type !== H265NaluType.kSliceCRA_NUT &&
                 unit.type !== H265NaluType.kSliceRASL_N &&
                 unit.type !== H265NaluType.kSliceRASL_R;
@@ -1058,14 +1093,14 @@ class MMTSDemuxer extends BaseDemuxer {
         Log.v(
             this.TAG,
             `MMTS video sample #${this.logged_video_sample_count_}, ` +
-            `packet_id=${this.formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
+            `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
             `keyframe=${keyframe ? 1 : 0}, media_dts=${dts}, media_pts=${pts}, ` +
             `asset_dts=${timestamp.dts}, asset_pts=${timestamp.pts}, ` +
             `raw_dts=${timestamp.rawDts !== undefined ? timestamp.rawDts : 'n/a'}, ` +
             `raw_pts=${timestamp.rawPts !== undefined ? timestamp.rawPts : 'n/a'}, ` +
             `raw_base=${this.output_video_raw_dts_base_ >= 0 ? this.output_video_raw_dts_base_ : 'n/a'}, ` +
             `source=${timestamp.source}, ` +
-            `nal_types=${this.formatH265NaluTypes(units)}`
+            `nal_types=${formatH265NaluTypes(units)}`
         );
     }
 
@@ -1111,7 +1146,7 @@ class MMTSDemuxer extends BaseDemuxer {
         Log.v(
             this.TAG,
             `MMTS video packet discontinuity #${this.logged_video_discontinuity_count_}, ` +
-            `packet_id=${this.formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}; wait random access`
+            `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}; wait random access`
         );
     }
 
@@ -1206,7 +1241,7 @@ class MMTSDemuxer extends BaseDemuxer {
             Log.v(
                 this.TAG,
                 `Fallback MMTS AAC timestamp #${this.logged_audio_timestamp_fallback_count_}, ` +
-                `packet_id=${this.formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}`
+                `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}`
             );
         }
         return undefined;
@@ -1234,17 +1269,17 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        if (!this.isMMTSAudioTrackSelectable(info)) {
+        if (!isMMTSAudioTrackSelectable(info)) {
             this.logUnsupportedMMTSAudioTrack(asset.packetId, info);
             return;
         }
 
-        if (!this.hasKnownMMTSAudioSupport(info)) {
+        if (!hasKnownMMTSAudioSupport(info)) {
             return;
         }
 
         this.primary_audio_packet_id_ = asset.packetId;
-        Log.v(this.TAG, `Select primary MMTS audio packet_id=${this.formatHex(asset.packetId, 4)}`);
+        Log.v(this.TAG, `Select primary MMTS audio packet_id=${formatHex(asset.packetId, 4)}`);
         this.dispatchAudioTracksIfChanged();
     }
 
@@ -1269,7 +1304,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.manually_selected_audio_packet_id_ = manual ? packetId : -1;
         this.audio_init_segment_dispatched_ = false;
         this.audio_last_sample_pts_ = fallbackTimelineSeed;
-        delete this.audio_timestamp_offsets_by_packet_id_[packetId];
+        this.audio_timeline_.clearPacket(packetId);
         this.seedAudioParseState(packetId, fallbackTimelineSeed);
         this.audio_track_ = {
             type: 'audio',
@@ -1278,7 +1313,7 @@ class MMTSDemuxer extends BaseDemuxer {
             samples: [],
             length: 0
         };
-        Log.v(this.TAG, `Select MMTS audio packet_id=${this.formatHex(packetId, 4)}`);
+        Log.v(this.TAG, `Select MMTS audio packet_id=${formatHex(packetId, 4)}`);
         this.dispatchAudioTracksIfChanged(true);
         return true;
     }
@@ -1299,15 +1334,15 @@ class MMTSDemuxer extends BaseDemuxer {
         const state = this.getAudioParseState(packetId);
         if (fallbackTimelineSeed === undefined) {
             state.lastSamplePts = undefined;
-            delete this.pending_audio_timeline_seeds_by_packet_id_[packetId];
+            this.audio_timeline_.clearPendingSeed(packetId);
             return;
         }
 
         state.lastSamplePts = fallbackTimelineSeed;
-        this.pending_audio_timeline_seeds_by_packet_id_[packetId] = fallbackTimelineSeed;
+        this.audio_timeline_.seed(packetId, fallbackTimelineSeed);
         Log.v(
             this.TAG,
-            `Seed MMTS audio packet_id=${this.formatHex(packetId, 4)} fallback timeline pts=${Math.floor(fallbackTimelineSeed)}`
+            `Seed MMTS audio packet_id=${formatHex(packetId, 4)} fallback timeline pts=${Math.floor(fallbackTimelineSeed)}`
         );
     }
 
@@ -1317,7 +1352,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         this.audio_last_sample_pts_ = videoDts;
-        delete this.audio_timestamp_offsets_by_packet_id_[this.primary_audio_packet_id_];
+        this.audio_timeline_.clearPacket(this.primary_audio_packet_id_);
         this.seedAudioParseState(this.primary_audio_packet_id_, videoDts);
     }
 
@@ -1331,26 +1366,18 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private alignAudioTimestampToTimeline(packetId: number, pts: number, refSampleDuration: number): number {
-        const pendingSeed = this.pending_audio_timeline_seeds_by_packet_id_[packetId];
-        if (pendingSeed !== undefined) {
-            const offset = pendingSeed + refSampleDuration - pts;
-            this.audio_timestamp_offsets_by_packet_id_[packetId] = offset;
-            delete this.pending_audio_timeline_seeds_by_packet_id_[packetId];
-
-            if (this.logged_audio_timestamp_alignment_count_ < 8) {
-                this.logged_audio_timestamp_alignment_count_++;
-                Log.v(
-                    this.TAG,
-                    `Align MMTS audio packet_id=${this.formatHex(packetId, 4)} timestamp ` +
-                    `raw_pts=${Math.floor(pts)}, offset=${Math.floor(offset)}, ` +
-                    `mapped_pts=${Math.floor(pts + offset)}`
-                );
-            }
-            return pts + offset;
+        const mapping = this.audio_timeline_.mapTimestamp(packetId, pts, refSampleDuration);
+        if (mapping.alignment !== undefined && this.logged_audio_timestamp_alignment_count_ < 8) {
+            this.logged_audio_timestamp_alignment_count_++;
+            Log.v(
+                this.TAG,
+                `Align MMTS audio packet_id=${formatHex(packetId, 4)} timestamp ` +
+                `raw_pts=${Math.floor(mapping.alignment.rawPts)}, ` +
+                `offset=${Math.floor(mapping.alignment.offset)}, ` +
+                `mapped_pts=${Math.floor(mapping.alignment.mappedPts)}`
+            );
         }
-
-        const offset = this.audio_timestamp_offsets_by_packet_id_[packetId];
-        return offset !== undefined ? pts + offset : pts;
+        return mapping.pts;
     }
 
     public selectVideoTrack(packetId: number): boolean {
@@ -1365,7 +1392,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         this.beginVideoTrackSwitch(packetId);
-        Log.v(this.TAG, `Select MMTS video packet_id=${this.formatHex(packetId, 4)}`);
+        Log.v(this.TAG, `Select MMTS video packet_id=${formatHex(packetId, 4)}`);
         this.dispatchVideoTracksIfChanged(true);
         return true;
     }
@@ -1404,7 +1431,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        const selectableTracks = tracks.filter((track) => this.isMMTSAudioTrackSelectable(track));
+        const selectableTracks = tracks.filter((track) => isMMTSAudioTrackSelectable(track));
         if (selectableTracks.length === 0) {
             return;
         }
@@ -1440,8 +1467,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.primary_video_packet_id_ = asset.packetId;
         Log.v(
             this.TAG,
-            `Select primary MMTS video packet_id=${this.formatHex(asset.packetId, 4)}, ` +
-            `score=${score}, resolution=${this.videoResolutionLabel(asset)}` +
+            `Select primary MMTS video packet_id=${formatHex(asset.packetId, 4)}, ` +
+            `score=${score}, resolution=${videoResolutionLabel(asset)}` +
             `${asset.assetGroupId !== undefined ? `, asset_group=${asset.assetGroupId}` : ''}` +
             `${asset.assetSelectionLevel !== undefined ? `, selection_level=${asset.assetSelectionLevel}` : ''}` +
             `${asset.hierarchyChannel !== undefined ? `, hierarchy_channel=${asset.hierarchyChannel}` : ''}` +
@@ -1498,10 +1525,10 @@ class MMTSDemuxer extends BaseDemuxer {
 
         Log.v(
             this.TAG,
-            `Waiting for forced MMTS video packet_id=${this.formatHex(forcedPacketId, 4)}, ` +
+            `Waiting for forced MMTS video packet_id=${formatHex(forcedPacketId, 4)}, ` +
             `seen_mpu=${this.mmtp_mpu_counts_by_packet_id_[forcedPacketId] || 0}, ` +
             `parsed_packets=${this.parsed_mmtp_count_}, ` +
-            `seen_packet_ids=${this.formatPacketCounts(this.mmtp_mpu_counts_by_packet_id_)}` +
+            `seen_packet_ids=${formatPacketCounts(this.mmtp_mpu_counts_by_packet_id_)}` +
             `${immediate ? ', reason=inactive-selected' : ''}`
         );
     }
@@ -1527,7 +1554,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
         let score = 0;
         for (const pendingUnit of pending) {
-            const naluType = this.readH265NaluType(pendingUnit.unit);
+            const naluType = readH265NaluType(pendingUnit.unit);
             switch (naluType) {
                 case H265NaluType.kSliceVPS:
                     score += 100;
@@ -1544,9 +1571,9 @@ class MMTSDemuxer extends BaseDemuxer {
                     score += 1;
                     break;
                 default:
-                    if (this.isH265IrapNalu(naluType)) {
+                    if (isH265IrapNalu(naluType)) {
                         score += 1000;
-                    } else if (this.isH265VclNalu(naluType)) {
+                    } else if (isH265VclNalu(naluType)) {
                         score += 2;
                     }
                     break;
@@ -1652,7 +1679,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 messageAuthenticationLayerType: asset.messageAuthenticationLayerType,
                 messageAuthenticationSystemId: asset.messageAuthenticationSystemId,
                 resolution: asset.videoResolution,
-                resolutionLabel: this.videoResolutionLabel(asset),
+                resolutionLabel: videoResolutionLabel(asset),
                 frameRateCode: asset.videoFrameRate,
                 hierarchyType: asset.hierarchyType,
                 hierarchyLayerIndex: asset.hierarchyLayerIndex,
@@ -1692,9 +1719,9 @@ class MMTSDemuxer extends BaseDemuxer {
                 mainComponent: asset.audioMainComponent,
                 qualityIndicator: asset.audioQualityIndicator,
                 samplingRateCode: asset.audioSamplingRateCode,
-                audioSampleRate: this.audioSampleRateFromCode(asset.audioSamplingRateCode),
-                channelLayout: this.audioLayoutFromComponentType(asset.audioComponentType),
-                channelCount: this.audioChannelCountFromComponentType(asset.audioComponentType),
+                audioSampleRate: audioSampleRateFromCode(asset.audioSamplingRateCode),
+                channelLayout: audioLayoutFromComponentType(asset.audioComponentType),
+                channelCount: audioChannelCountFromComponentType(asset.audioComponentType),
                 selected: asset.packetId === this.primary_audio_packet_id_
             };
             this.dispatchAudioTracksIfChanged();
@@ -1746,12 +1773,12 @@ class MMTSDemuxer extends BaseDemuxer {
             assetType: prev ? prev.assetType : 'mp4a',
             codec: prev && prev.codec ? prev.codec : 'aac-latm',
             channelConfig: frame.channel_config,
-            channelCount: this.audioChannelCountFromAacConfig(frame.channel_config) ||
+            channelCount: audioChannelCountFromAacConfig(frame.channel_config) ||
                 (prev && prev.channelCount) ||
-                this.audioChannelCountFromComponentType(prev && prev.componentType),
-            channelLayout: this.audioLayoutFromAacConfig(frame.channel_config) ||
+                audioChannelCountFromComponentType(prev && prev.componentType),
+            channelLayout: audioLayoutFromAacConfig(frame.channel_config) ||
                 (prev && prev.channelLayout) ||
-                this.audioLayoutFromComponentType(prev && prev.componentType),
+                audioLayoutFromComponentType(prev && prev.componentType),
             audioSampleRate: frame.sampling_frequency,
             selected: packetId === this.primary_audio_packet_id_
         };
@@ -1766,7 +1793,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         const info = this.audio_track_infos_by_packet_id_[packetId];
-        if (!this.isMMTSAudioTrackSelectable(info)) {
+        if (!isMMTSAudioTrackSelectable(info)) {
             if (this.primary_audio_packet_id_ === packetId && !this.audio_init_segment_dispatched_) {
                 this.primary_audio_packet_id_ = -1;
                 if (this.manually_selected_audio_packet_id_ === packetId) {
@@ -1778,7 +1805,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
-        if (!this.hasKnownMMTSAudioSupport(info)) {
+        if (!hasKnownMMTSAudioSupport(info)) {
             return;
         }
 
@@ -1796,27 +1823,27 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         this.primary_audio_packet_id_ = primary.packetId;
-        Log.v(this.TAG, `Select primary MMTS audio packet_id=${this.formatHex(primary.packetId, 4)}`);
+        Log.v(this.TAG, `Select primary MMTS audio packet_id=${formatHex(primary.packetId, 4)}`);
         this.dispatchAudioTracksIfChanged(true);
     }
 
     private findPreferredAudioTrack(requireKnownSupport: boolean): MMTSAudioTrackInfo | undefined {
         const tracks = this.getSortedAudioTrackInfos().filter((track) => {
-            return this.isMMTSAudioTrackSelectable(track) &&
-                (!requireKnownSupport || this.hasKnownMMTSAudioSupport(track));
+            return isMMTSAudioTrackSelectable(track) &&
+                (!requireKnownSupport || hasKnownMMTSAudioSupport(track));
         });
         if (tracks.length === 0) {
             return undefined;
         }
 
         return tracks.reduce((best, track) => {
-            return this.scoreAudioTrack(track) > this.scoreAudioTrack(best) ? track : best;
+            return scoreAudioTrack(track) > scoreAudioTrack(best) ? track : best;
         }, tracks[0]);
     }
 
     private scoreAudioTrack(track: MMTSAudioTrackInfo): number {
         const channelCount = track.channelCount || 0;
-        const knownSupport = this.hasKnownMMTSAudioSupport(track) ? 10000 : 0;
+        const knownSupport = hasKnownMMTSAudioSupport(track) ? 10000 : 0;
         const main = track.mainComponent ? 100 : 0;
         const quality = track.qualityIndicator !== undefined ? track.qualityIndicator : 0;
         return knownSupport + channelCount * 1000 + main + quality;
@@ -1825,7 +1852,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private hasKnownMMTSAudioSupport(info: MMTSAudioTrackInfo | undefined): boolean {
         return info !== undefined &&
             info.channelConfig !== undefined &&
-            this.isSupportedAACChannelConfig(info.channelConfig);
+            isSupportedAACChannelConfig(info.channelConfig);
     }
 
     private isMMTSAudioTrackSelectable(info: MMTSAudioTrackInfo | undefined): boolean {
@@ -1834,7 +1861,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (info.channelConfig !== undefined) {
-            return this.isSupportedAACChannelConfig(info.channelConfig);
+            return isSupportedAACChannelConfig(info.channelConfig);
         }
 
         if (info.channelCount !== undefined && info.channelCount > 8) {
@@ -1854,7 +1881,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         this.logged_unsupported_audio_packet_ids_[packetId] = true;
 
-        const parts: string[] = [`packet_id=${this.formatHex(packetId, 4)}`];
+        const parts: string[] = [`packet_id=${formatHex(packetId, 4)}`];
         if (info && info.channelConfig !== undefined) {
             parts.push(`channel_config=${info.channelConfig}`);
         }
@@ -1978,17 +2005,17 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         Log.v(this.TAG, `MMTS subtitle tracks: ${JSON.stringify(tracks.map((track) => {
             return {
-                packetId: this.formatHex(track.packetId, 4),
+                packetId: formatHex(track.packetId, 4),
                 assetType: track.assetType,
                 codec: track.codec || 'unknown',
                 language: track.language || 'und',
-                componentTag: track.componentTag !== undefined ? this.formatHex(track.componentTag, 4) : undefined,
-                dataComponentId: track.dataComponentId !== undefined ? this.formatHex(track.dataComponentId, 4) : undefined,
-                dataComponentInfo: track.dataComponentInfo ? this.toHex(track.dataComponentInfo) : undefined,
+                componentTag: track.componentTag !== undefined ? formatHex(track.componentTag, 4) : undefined,
+                dataComponentId: track.dataComponentId !== undefined ? formatHex(track.dataComponentId, 4) : undefined,
+                dataComponentInfo: track.dataComponentInfo ? toHex(track.dataComponentInfo) : undefined,
                 accessControlCaSystemId: track.accessControlCaSystemId !== undefined ?
-                    this.formatHex(track.accessControlCaSystemId, 4) : undefined,
+                    formatHex(track.accessControlCaSystemId, 4) : undefined,
                 accessControlPacketId: track.accessControlPacketId !== undefined ?
-                    this.formatHex(track.accessControlPacketId, 4) : undefined,
+                    formatHex(track.accessControlPacketId, 4) : undefined,
                 scramblerLayerType: track.scramblerLayerType,
                 scrambleSystemId: track.scrambleSystemId,
                 messageAuthenticationLayerType: track.messageAuthenticationLayerType,
@@ -2260,7 +2287,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private logSubtitleData(subtitle: MMTSSubtitleData): void {
         Log.v(
             this.TAG,
-            `MMTS subtitle packet_id=${this.formatHex(subtitle.packetId, 4)}, ` +
+            `MMTS subtitle packet_id=${formatHex(subtitle.packetId, 4)}, ` +
             `asset=${subtitle.assetType}, codec=${subtitle.codec || 'unknown'}, ` +
             `lang=${subtitle.language || 'und'}, mpu_seq=${subtitle.mpuSequenceNumber}, ` +
             `sample=${subtitle.sampleNumber !== undefined ? subtitle.sampleNumber : 'n/a'}, ` +
@@ -2347,7 +2374,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         const naluType = (unit[4] >> 1) & 0x3f;
-        if (!this.isH265VclNalu(naluType) &&
+        if (!isH265VclNalu(naluType) &&
             naluType !== H265NaluType.kSliceVPS &&
             naluType !== H265NaluType.kSliceSPS &&
             naluType !== H265NaluType.kSlicePPS &&
@@ -2393,7 +2420,7 @@ class MMTSDemuxer extends BaseDemuxer {
         delete this.pending_mfu_units_by_packet_id_[asset.packetId];
         Log.v(
             this.TAG,
-            `Replay ${pending.length} pending MFU units for packet_id=${this.formatHex(asset.packetId, 4)}, ` +
+            `Replay ${pending.length} pending MFU units for packet_id=${formatHex(asset.packetId, 4)}, ` +
             `asset=${asset.assetType}`
         );
 
@@ -2606,20 +2633,20 @@ class MMTSDemuxer extends BaseDemuxer {
         });
         entries.sort((a, b) => b.count - a.count);
         return entries.slice(0, 12).map((entry) => {
-            return `${this.formatHex(entry.packetId, 4)}:${entry.count}`;
+            return `${formatHex(entry.packetId, 4)}:${entry.count}`;
         }).join(',');
     }
 
     private formatAssetConditionalAccessInfo(asset: MMTAsset): string {
         const parts: string[] = [];
         if (asset.accessControlCaSystemId !== undefined) {
-            parts.push(`ca_system=${this.formatHex(asset.accessControlCaSystemId, 4)}`);
+            parts.push(`ca_system=${formatHex(asset.accessControlCaSystemId, 4)}`);
         }
         if (asset.accessControlLocationType !== undefined) {
             parts.push(`ca_location=${this.mmtLocationTypeName(asset.accessControlLocationType)}`);
         }
         if (asset.accessControlPacketId !== undefined) {
-            parts.push(`ca_packet=${this.formatHex(asset.accessControlPacketId, 4)}`);
+            parts.push(`ca_packet=${formatHex(asset.accessControlPacketId, 4)}`);
         }
         if (asset.accessControlPrivateData !== undefined && asset.accessControlPrivateData.byteLength > 0) {
             parts.push(`ca_private=${asset.accessControlPrivateData.byteLength}B`);
@@ -2636,7 +2663,7 @@ class MMTSDemuxer extends BaseDemuxer {
         if (asset.messageAuthenticationSystemId !== undefined) {
             parts.push(
                 `auth=${this.layerTypeName(asset.messageAuthenticationLayerType)}/` +
-                `${this.formatHex(asset.messageAuthenticationSystemId, 2)}`
+                `${formatHex(asset.messageAuthenticationSystemId, 2)}`
             );
         }
         if (asset.messageAuthenticationPrivateData !== undefined &&
@@ -2686,7 +2713,7 @@ class MMTSDemuxer extends BaseDemuxer {
             case 0x02:
                 return 'camellia-128';
             default:
-                return this.formatHex(systemId, 2);
+                return formatHex(systemId, 2);
         }
     }
 
