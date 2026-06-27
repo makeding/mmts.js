@@ -31,6 +31,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private last_video_pts_;
     private last_video_duration_;
     private output_video_dts_base_;
+    private output_video_raw_dts_base_;
     private primary_video_packet_id_;
     private primary_audio_packet_id_;
     private manually_selected_audio_packet_id_;
@@ -66,6 +67,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private extractSubtitleMfuPayload;
     private getSubtitleMpuState;
     private dispatchSubtitleMpu;
+    private alignSubtitleTimestampToVideoTimeline;
+    private flushSubtitleMpuStates;
     private isSubtitleMpuComplete;
     private pruneSubtitleMpuStates;
     private subtitleMpuStateKey;
