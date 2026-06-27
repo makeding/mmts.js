@@ -13,12 +13,15 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_;
     private logged_video_timestamp_correction_count_;
     private logged_audio_timestamp_fallback_count_;
+    private logged_audio_timestamp_alignment_count_;
     private logged_unsupported_audio_packet_ids_;
     private audio_track_infos_by_packet_id_;
     private video_track_infos_by_packet_id_;
     private subtitle_track_infos_by_packet_id_;
     private subtitle_mpu_states_;
     private audio_parse_states_by_packet_id_;
+    private audio_timestamp_offsets_by_packet_id_;
+    private pending_audio_timeline_seeds_by_packet_id_;
     private audio_tracks_signature_;
     private video_tracks_signature_;
     private subtitle_tracks_signature_;
@@ -64,6 +67,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private processAudioMfuUnit;
     private wrapLatmPayloadWithLoasHeader;
     private parseMMTSLOASAACPayload;
+    private shouldHoldAudioUntilVideoRandomAccess;
     private processSubtitleMfuUnit;
     private extractSubtitleMfuPayload;
     private getSubtitleMpuState;
@@ -94,6 +98,9 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private maybeSelectPrimaryAudioAsset;
     selectAudioTrack(packetId: number): boolean;
     private selectAudioTrackInternal;
+    private getAudioFallbackTimelineSeed;
+    private seedAudioParseState;
+    private alignAudioTimestampToTimeline;
     selectVideoTrack(packetId: number): boolean;
     selectPrimaryAudioTrack(): void;
     selectSecondaryAudioTrack(): void;

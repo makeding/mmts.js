@@ -100,12 +100,15 @@ class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_: number = 0;
     private logged_video_timestamp_correction_count_: number = 0;
     private logged_audio_timestamp_fallback_count_: number = 0;
+    private logged_audio_timestamp_alignment_count_: number = 0;
     private logged_unsupported_audio_packet_ids_: {[packetId: number]: boolean} = {};
     private audio_track_infos_by_packet_id_: {[packetId: number]: MMTSAudioTrackInfo} = {};
     private video_track_infos_by_packet_id_: {[packetId: number]: MMTSVideoTrackInfo} = {};
     private subtitle_track_infos_by_packet_id_: {[packetId: number]: MMTSSubtitleTrackInfo} = {};
     private subtitle_mpu_states_: {[key: string]: SubtitleMpuState} = {};
     private audio_parse_states_by_packet_id_: {[packetId: number]: AudioParseState} = {};
+    private audio_timestamp_offsets_by_packet_id_: {[packetId: number]: number} = {};
+    private pending_audio_timeline_seeds_by_packet_id_: {[packetId: number]: number} = {};
     private audio_tracks_signature_: string = '';
     private video_tracks_signature_: string = '';
     private subtitle_tracks_signature_: string = '';
@@ -171,6 +174,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.subtitle_track_infos_by_packet_id_ = null;
         this.subtitle_mpu_states_ = null;
         this.audio_parse_states_by_packet_id_ = null;
+        this.audio_timestamp_offsets_by_packet_id_ = null;
+        this.pending_audio_timeline_seeds_by_packet_id_ = null;
         this.media_info_ = null;
         this.audio_metadata_ = null;
         this.video_metadata_ = null;
@@ -521,6 +526,11 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        if (this.shouldHoldAudioUntilVideoRandomAccess()) {
+            this.parseMMTSLOASAACPayload(packetId, loas, undefined, false, state);
+            return;
+        }
+
         this.parseMMTSLOASAACPayload(packetId, loas, this.consumeAudioTimestamp(packetId, mpuSequenceNumber), true, state);
 
         if (this.audio_track_.samples.length >= 16) {
@@ -587,6 +597,10 @@ class MMTSDemuxer extends BaseDemuxer {
                 continue;
             }
 
+            if (samplePts !== undefined) {
+                samplePts = this.alignAudioTimestampToTimeline(packetId, samplePts, refSampleDuration);
+            }
+
             if (samplePts === undefined) {
                 samplePts = state.lastSamplePts !== undefined
                     ? state.lastSamplePts + refSampleDuration
@@ -616,6 +630,11 @@ class MMTSDemuxer extends BaseDemuxer {
             state.lastSamplePts = lastSamplePts;
             this.audio_last_sample_pts_ = lastSamplePts;
         }
+    }
+
+    private shouldHoldAudioUntilVideoRandomAccess(): boolean {
+        return this.primary_video_packet_id_ >= 0 &&
+            (!this.video_started_ || this.video_waiting_random_access_);
     }
 
     private processSubtitleMfuUnit(packetId: number,
@@ -1071,6 +1090,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         this.dispatchVideoMediaSegment();
+        this.onDiscontinuity && this.onDiscontinuity();
         this.current_video_access_unit_ = null;
         this.video_waiting_random_access_ = true;
         this.video_drop_leading_rasl_ = false;
@@ -1236,11 +1256,14 @@ class MMTSDemuxer extends BaseDemuxer {
             return true;
         }
 
+        const fallbackTimelineSeed = this.getAudioFallbackTimelineSeed();
         this.dispatchAudioMediaSegment(true);
         this.primary_audio_packet_id_ = packetId;
         this.manually_selected_audio_packet_id_ = manual ? packetId : -1;
         this.audio_init_segment_dispatched_ = false;
-        this.audio_last_sample_pts_ = undefined;
+        this.audio_last_sample_pts_ = fallbackTimelineSeed;
+        delete this.audio_timestamp_offsets_by_packet_id_[packetId];
+        this.seedAudioParseState(packetId, fallbackTimelineSeed);
         this.audio_track_ = {
             type: 'audio',
             id: 2,
@@ -1251,6 +1274,57 @@ class MMTSDemuxer extends BaseDemuxer {
         Log.v(this.TAG, `Select MMTS audio packet_id=${this.formatHex(packetId, 4)}`);
         this.dispatchAudioTracksIfChanged(true);
         return true;
+    }
+
+    private getAudioFallbackTimelineSeed(): number | undefined {
+        if (this.audio_last_sample_pts_ !== undefined) {
+            return this.audio_last_sample_pts_;
+        }
+
+        if (this.last_video_dts_ >= 0 && this.output_video_dts_base_ >= 0) {
+            return this.last_video_dts_ - this.output_video_dts_base_;
+        }
+
+        return undefined;
+    }
+
+    private seedAudioParseState(packetId: number, fallbackTimelineSeed: number | undefined): void {
+        const state = this.getAudioParseState(packetId);
+        if (fallbackTimelineSeed === undefined) {
+            state.lastSamplePts = undefined;
+            delete this.pending_audio_timeline_seeds_by_packet_id_[packetId];
+            return;
+        }
+
+        state.lastSamplePts = fallbackTimelineSeed;
+        this.pending_audio_timeline_seeds_by_packet_id_[packetId] = fallbackTimelineSeed;
+        Log.v(
+            this.TAG,
+            `Seed MMTS audio packet_id=${this.formatHex(packetId, 4)} fallback timeline pts=${Math.floor(fallbackTimelineSeed)}`
+        );
+    }
+
+    private alignAudioTimestampToTimeline(packetId: number, pts: number, refSampleDuration: number): number {
+        const pendingSeed = this.pending_audio_timeline_seeds_by_packet_id_[packetId];
+        if (pendingSeed !== undefined) {
+            const offset = pendingSeed + refSampleDuration - pts;
+            this.audio_timestamp_offsets_by_packet_id_[packetId] = offset;
+            delete this.pending_audio_timeline_seeds_by_packet_id_[packetId];
+
+            if (this.logged_audio_timestamp_alignment_count_ < 8) {
+                this.logged_audio_timestamp_alignment_count_++;
+                Log.v(
+                    this.TAG,
+                    `Align MMTS audio packet_id=${this.formatHex(packetId, 4)} timestamp ` +
+                    `raw_pts=${Math.floor(pts)}, offset=${Math.floor(offset)}, ` +
+                    `mapped_pts=${Math.floor(pts + offset)}`
+                );
+            }
+            return pts + offset;
+        }
+
+        const offset = this.audio_timestamp_offsets_by_packet_id_[packetId];
+        return offset !== undefined ? pts + offset : pts;
     }
 
     public selectVideoTrack(packetId: number): boolean {
