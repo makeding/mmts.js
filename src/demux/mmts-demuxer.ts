@@ -146,6 +146,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private video_sample_index_: number = 0;
     private video_started_: boolean = false;
     private video_waiting_random_access_: boolean = false;
+    private video_drop_leading_rasl_: boolean = false;
     private dropped_video_timestamp_keys_: {[key: string]: boolean} = {};
     private current_video_access_unit_: VideoAccessUnitState = null;
     private pre_init_video_units_: PendingMFUUnit[] = [];
@@ -426,6 +427,9 @@ class MMTSDemuxer extends BaseDemuxer {
                 return;
             }
             this.video_waiting_random_access_ = false;
+            if (naluType === H265NaluType.kSliceCRA_NUT) {
+                this.video_drop_leading_rasl_ = true;
+            }
             this.dropped_video_timestamp_keys_ = {};
             Log.v(
                 this.TAG,
@@ -459,12 +463,6 @@ class MMTSDemuxer extends BaseDemuxer {
                                        keyframe: boolean,
                                        randomAccess: boolean,
                                        isVcl: boolean): void {
-        if (offset === 0 &&
-            this.current_video_access_unit_ !== null &&
-            this.current_video_access_unit_.hasVcl) {
-            this.flushCurrentVideoAccessUnit();
-        }
-
         if (nalu.type === H265NaluType.kSliceAUD &&
             this.current_video_access_unit_ !== null) {
             if (this.current_video_access_unit_.hasVcl) {
@@ -870,6 +868,18 @@ class MMTSDemuxer extends BaseDemuxer {
             length = result.length;
         }
 
+        if (this.video_drop_leading_rasl_) {
+            if (this.hasH265RaslNalu(units)) {
+                const droppedTimestamp = this.dropVideoTimestamp(packetId, mpuSequenceNumber);
+                this.dropped_video_sample_count_++;
+                this.logDroppedVideoSample(packetId, mpuSequenceNumber, units, droppedTimestamp, 'leading-rasl-after-cra');
+                return;
+            }
+            if (this.hasH265PostCraTrailingVclNalu(units)) {
+                this.video_drop_leading_rasl_ = false;
+            }
+        }
+
         if (!this.video_started_) {
             if (!keyframe) {
                 const droppedTimestamp = this.dropVideoTimestamp(packetId, mpuSequenceNumber);
@@ -878,6 +888,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 return;
             }
             this.video_started_ = true;
+            this.video_drop_leading_rasl_ = this.hasH265CraNalu(units) && !this.hasH265IdrNalu(units);
         }
 
         const videoTimestamp = this.consumeVideoTimestamp(packetId, mpuSequenceNumber);
@@ -980,6 +991,33 @@ class MMTSDemuxer extends BaseDemuxer {
         });
     }
 
+    private hasH265CraNalu(units: H265NaluHVC1[]): boolean {
+        return units.some((unit) => unit.type === H265NaluType.kSliceCRA_NUT);
+    }
+
+    private hasH265IdrNalu(units: H265NaluHVC1[]): boolean {
+        return units.some((unit) => {
+            return unit.type === H265NaluType.kSliceIDR_W_RADL ||
+                unit.type === H265NaluType.kSliceIDR_N_LP;
+        });
+    }
+
+    private hasH265RaslNalu(units: H265NaluHVC1[]): boolean {
+        return units.some((unit) => {
+            return unit.type === H265NaluType.kSliceRASL_N ||
+                unit.type === H265NaluType.kSliceRASL_R;
+        });
+    }
+
+    private hasH265PostCraTrailingVclNalu(units: H265NaluHVC1[]): boolean {
+        return units.some((unit) => {
+            return this.isH265VclNalu(unit.type) &&
+                unit.type !== H265NaluType.kSliceCRA_NUT &&
+                unit.type !== H265NaluType.kSliceRASL_N &&
+                unit.type !== H265NaluType.kSliceRASL_R;
+        });
+    }
+
     private logVideoSample(packetId: number,
                            mpuSequenceNumber: number,
                            units: H265NaluHVC1[],
@@ -1032,8 +1070,10 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
 
+        this.dispatchVideoMediaSegment();
         this.current_video_access_unit_ = null;
         this.video_waiting_random_access_ = true;
+        this.video_drop_leading_rasl_ = false;
         this.dropped_video_timestamp_keys_ = {};
 
         if (this.logged_video_discontinuity_count_ >= 8) {
@@ -1463,6 +1503,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.logged_video_sample_count_ = 0;
         this.current_video_access_unit_ = null;
         this.video_waiting_random_access_ = false;
+        this.video_drop_leading_rasl_ = false;
         this.dropped_video_timestamp_keys_ = {};
         this.pre_init_video_units_ = [];
 

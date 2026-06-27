@@ -48,6 +48,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private video_sample_index_;
     private video_started_;
     private video_waiting_random_access_;
+    private video_drop_leading_rasl_;
     private dropped_video_timestamp_keys_;
     private current_video_access_unit_;
     private pre_init_video_units_;
@@ -78,6 +79,10 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logDroppedVideoSample;
     private prependVideoParameterSets;
     private hasVideoParameterSets;
+    private hasH265CraNalu;
+    private hasH265IdrNalu;
+    private hasH265RaslNalu;
+    private hasH265PostCraTrailingVclNalu;
     private logVideoSample;
     private dropVideoTimestamp;
     private dropVideoTimestampOnce;

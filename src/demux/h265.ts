@@ -1,6 +1,8 @@
 import Log from "../utils/logger";
 
 export enum H265NaluType {
+    kSliceRASL_N = 8,
+    kSliceRASL_R = 9,
     kSliceIDR_W_RADL = 19,
     kSliceIDR_N_LP = 20,
     kSliceCRA_NUT = 21,

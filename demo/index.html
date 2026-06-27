@@ -408,6 +408,10 @@
             data = data || {};
             return 'pkt_rel pts/dts=' + formatMsSeconds(data.pts) + '/' + formatMsSeconds(data.dts) +
                 ' pkt_abs rawPts/rawDts=' + formatMsSeconds(data.rawPts) + '/' + formatMsSeconds(data.rawDts) +
+                ' tmd=' + (data.subtitleTimingMode !== undefined ? data.subtitleTimingMode : 'n/a') +
+                ' ref_start=' + formatMsSeconds(data.subtitleReferenceStartTime) +
+                ' ref_media=' + formatMsSeconds(data.subtitleReferenceStartMediaTime) +
+                ' video_media dts/pts=' + formatMsSeconds(data.videoMediaDts) + '/' + formatMsSeconds(data.videoMediaPts) +
                 ' video_base raw/dts=' + formatMsSeconds(data.videoRawDtsBase) + '/' + formatMsSeconds(data.videoDtsBase) +
                 ' video_samples=' + (data.videoSampleIndex !== undefined ? data.videoSampleIndex : 'n/a') +
                 ' dropped_video=' + (data.droppedVideoSampleCount !== undefined ? data.droppedVideoSampleCount : 'n/a');
@@ -618,6 +622,15 @@
             if (track.componentTag !== undefined) {
                 parts.push('component=0x' + Number(track.componentTag).toString(16));
             }
+            if (track.subtitleOperationMode !== undefined) {
+                parts.push('opm=' + track.subtitleOperationMode);
+            }
+            if (track.subtitleTimingMode !== undefined) {
+                parts.push('tmd=' + track.subtitleTimingMode);
+            }
+            if (track.subtitleReferenceStartTime !== undefined) {
+                parts.push('ref=' + formatMsSeconds(track.subtitleReferenceStartTime));
+            }
             appendMMTSAssetControlInfo(parts, track);
             return parts.join(' ');
         }
@@ -732,6 +745,11 @@
             result.dts = data && data.dts;
             result.rawPts = data && data.rawPts;
             result.rawDts = data && data.rawDts;
+            result.subtitleTimingMode = data && data.subtitleTimingMode;
+            result.subtitleReferenceStartTime = data && data.subtitleReferenceStartTime;
+            result.subtitleReferenceStartMediaTime = data && data.subtitleReferenceStartMediaTime;
+            result.videoMediaDts = data && data.videoMediaDts;
+            result.videoMediaPts = data && data.videoMediaPts;
             result.videoRawDtsBase = data && data.videoRawDtsBase;
             result.videoDtsBase = data && data.videoDtsBase;
             result.videoSampleIndex = data && data.videoSampleIndex;
@@ -976,6 +994,10 @@
             if (status.timelineDebug) {
                 parts.push('pkt_rel=' + formatMsSeconds(status.pts) + '/' + formatMsSeconds(status.dts));
                 parts.push('pkt_abs=' + formatMsSeconds(status.rawPts) + '/' + formatMsSeconds(status.rawDts));
+                parts.push('tmd=' + (status.subtitleTimingMode !== undefined ? status.subtitleTimingMode : 'n/a'));
+                parts.push('ref_start=' + formatMsSeconds(status.subtitleReferenceStartTime));
+                parts.push('ref_media=' + formatMsSeconds(status.subtitleReferenceStartMediaTime));
+                parts.push('video_media=' + formatMsSeconds(status.videoMediaDts) + '/' + formatMsSeconds(status.videoMediaPts));
                 parts.push('video_base=' + formatMsSeconds(status.videoRawDtsBase) + '/' + formatMsSeconds(status.videoDtsBase));
                 parts.push('video_samples=' + (status.videoSampleIndex !== undefined ? status.videoSampleIndex : 'n/a'));
                 parts.push('dropped_video=' + (status.droppedVideoSampleCount !== undefined ? status.droppedVideoSampleCount : 'n/a'));
