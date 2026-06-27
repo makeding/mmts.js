@@ -149,7 +149,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private video_sample_index_: number = 0;
     private video_started_: boolean = false;
     private video_waiting_random_access_: boolean = false;
-    private preserve_audio_during_video_bootstrap_: boolean = false;
+    private seed_audio_after_video_bootstrap_: boolean = false;
     private video_drop_leading_rasl_: boolean = false;
     private video_force_next_sample_dispatch_: boolean = false;
     private dropped_video_timestamp_keys_: {[key: string]: boolean} = {};
@@ -525,10 +525,8 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (!this.video_init_segment_dispatched_) {
-            if (!this.preserve_audio_during_video_bootstrap_) {
-                this.parseMMTSLOASAACPayload(packetId, loas, undefined, false, state);
-                return;
-            }
+            this.parseMMTSLOASAACPayload(packetId, loas, undefined, false, state);
+            return;
         }
 
         if (this.shouldHoldAudioUntilVideoRandomAccess()) {
@@ -638,10 +636,6 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private shouldHoldAudioUntilVideoRandomAccess(): boolean {
-        if (this.preserve_audio_during_video_bootstrap_) {
-            return false;
-        }
-
         return this.primary_video_packet_id_ >= 0 &&
             (!this.video_started_ || this.video_waiting_random_access_);
     }
@@ -916,7 +910,6 @@ class MMTSDemuxer extends BaseDemuxer {
                 return;
             }
             this.video_started_ = true;
-            this.preserve_audio_during_video_bootstrap_ = false;
             this.video_drop_leading_rasl_ = this.hasH265CraNalu(units) && !this.hasH265IdrNalu(units);
         }
 
@@ -946,6 +939,7 @@ class MMTSDemuxer extends BaseDemuxer {
             file_position: 0
         });
         this.video_track_.length += length;
+        this.maybeSeedAudioAfterVideoBootstrap(dts);
         this.logVideoSample(packetId, mpuSequenceNumber, units, keyframe, dts, pts, videoTimestamp);
 
         const forceDispatch = this.video_force_next_sample_dispatch_;
@@ -1317,6 +1311,25 @@ class MMTSDemuxer extends BaseDemuxer {
         );
     }
 
+    private seedCurrentAudioTimelineAfterVideoSwitch(videoDts: number): void {
+        if (this.primary_audio_packet_id_ < 0) {
+            return;
+        }
+
+        this.audio_last_sample_pts_ = videoDts;
+        delete this.audio_timestamp_offsets_by_packet_id_[this.primary_audio_packet_id_];
+        this.seedAudioParseState(this.primary_audio_packet_id_, videoDts);
+    }
+
+    private maybeSeedAudioAfterVideoBootstrap(videoDts: number): void {
+        if (!this.seed_audio_after_video_bootstrap_) {
+            return;
+        }
+
+        this.seed_audio_after_video_bootstrap_ = false;
+        this.seedCurrentAudioTimelineAfterVideoSwitch(videoDts);
+    }
+
     private alignAudioTimestampToTimeline(packetId: number, pts: number, refSampleDuration: number): number {
         const pendingSeed = this.pending_audio_timeline_seeds_by_packet_id_[packetId];
         if (pendingSeed !== undefined) {
@@ -1351,7 +1364,14 @@ class MMTSDemuxer extends BaseDemuxer {
             return true;
         }
 
-        const preserveAudioDuringBootstrap = this.video_started_ && this.audio_init_segment_dispatched_;
+        this.beginVideoTrackSwitch(packetId);
+        Log.v(this.TAG, `Select MMTS video packet_id=${this.formatHex(packetId, 4)}`);
+        this.dispatchVideoTracksIfChanged(true);
+        return true;
+    }
+
+    private beginVideoTrackSwitch(packetId: number): void {
+        const seedAudioAfterBootstrap = this.shouldSeedAudioAfterVideoBootstrap();
         this.flushCurrentVideoAccessUnit();
         this.dispatchVideoMediaSegment();
         this.dispatchAudioMediaSegment(true);
@@ -1361,10 +1381,14 @@ class MMTSDemuxer extends BaseDemuxer {
             this.config_.mmtsVideoPacketId = packetId;
         }
         this.program_.resetMpuPacketState(packetId);
-        this.resetVideoBootstrapState(true, preserveAudioDuringBootstrap);
-        Log.v(this.TAG, `Select MMTS video packet_id=${this.formatHex(packetId, 4)}`);
-        this.dispatchVideoTracksIfChanged(true);
-        return true;
+        this.resetVideoBootstrapState(true);
+        this.seed_audio_after_video_bootstrap_ = seedAudioAfterBootstrap;
+    }
+
+    private shouldSeedAudioAfterVideoBootstrap(): boolean {
+        return this.video_started_ &&
+            this.audio_init_segment_dispatched_ &&
+            this.primary_audio_packet_id_ >= 0;
     }
 
     public selectPrimaryAudioTrack(): void {
@@ -1564,8 +1588,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
     }
 
-    private resetVideoBootstrapState(preserveTimeline: boolean = false,
-                                     preserveAudioDuringBootstrap: boolean = false): void {
+    private resetVideoBootstrapState(preserveTimeline: boolean = false): void {
         const videoSampleIndex = this.video_sample_index_;
         const lastVideoDts = this.last_video_dts_;
         const lastVideoPts = this.last_video_pts_;
@@ -1594,7 +1617,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.logged_video_sample_count_ = 0;
         this.current_video_access_unit_ = null;
         this.video_waiting_random_access_ = false;
-        this.preserve_audio_during_video_bootstrap_ = preserveAudioDuringBootstrap;
+        this.seed_audio_after_video_bootstrap_ = false;
         this.video_drop_leading_rasl_ = false;
         this.video_force_next_sample_dispatch_ = false;
         this.dropped_video_timestamp_keys_ = {};

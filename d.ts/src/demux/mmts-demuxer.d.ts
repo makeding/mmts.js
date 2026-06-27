@@ -51,7 +51,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private video_sample_index_;
     private video_started_;
     private video_waiting_random_access_;
-    private preserve_audio_during_video_bootstrap_;
+    private seed_audio_after_video_bootstrap_;
     private video_drop_leading_rasl_;
     private video_force_next_sample_dispatch_;
     private dropped_video_timestamp_keys_;
@@ -102,8 +102,12 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private selectAudioTrackInternal;
     private getAudioFallbackTimelineSeed;
     private seedAudioParseState;
+    private seedCurrentAudioTimelineAfterVideoSwitch;
+    private maybeSeedAudioAfterVideoBootstrap;
     private alignAudioTimestampToTimeline;
     selectVideoTrack(packetId: number): boolean;
+    private beginVideoTrackSwitch;
+    private shouldSeedAudioAfterVideoBootstrap;
     selectPrimaryAudioTrack(): void;
     selectSecondaryAudioTrack(): void;
     private maybeSelectPrimaryVideoAsset;
