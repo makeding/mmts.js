@@ -104,6 +104,13 @@ declare namespace Mpegts {
         mmtsVideoPacketId?: number;
 
         /**
+         * @desc Defer the MMTS HEVC video SourceBuffer initialization until audio initialization arrives.
+         *       This avoids startup races on browsers that reject adding the audio SourceBuffer after HEVC video.
+         * @defaultvalue true for `type: 'mmts'`, false otherwise
+         */
+        mmtsDeferHevcVideoInitUntilAudio?: boolean;
+
+        /**
          * @desc Chasing the live stream latency caused by the internal buffer in HTMLMediaElement
          *       by changing the playbackRate. `isLive` should also be set to `true`
          * @defaultvalue false

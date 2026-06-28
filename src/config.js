@@ -50,6 +50,7 @@ export const defaultConfig = {
     fixAudioTimestampGap: true,
 
     mmtsVideoPacketId: undefined,
+    mmtsDeferHevcVideoInitUntilAudio: false,
 
     accurateSeek: false,
     seekType: 'range',  // [range, param, custom]

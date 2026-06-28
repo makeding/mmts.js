@@ -632,6 +632,14 @@ class MMTSDemuxer extends BaseDemuxer {
             }
 
             if (samplePts !== undefined) {
+                if (samplePts < 0 &&
+                    this.output_video_raw_dts_base_ >= 0 &&
+                    !this.audio_timeline_.hasMapping(packetId)) {
+                    const seed = state.lastSamplePts !== undefined ?
+                        state.lastSamplePts :
+                        this.getAudioFallbackTimelineSeed() ?? 0;
+                    this.audio_timeline_.seed(packetId, seed);
+                }
                 samplePts = this.alignAudioTimestampToTimeline(packetId, samplePts, refSampleDuration);
             }
 

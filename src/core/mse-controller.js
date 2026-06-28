@@ -309,6 +309,9 @@ class MSEController {
         if (!codec.startsWith('hvc1.')) {
             return false;
         }
+        if (this._config.mmtsDeferHevcVideoInitUntilAudio) {
+            return true;
+        }
 
         let level = /\.L(\d+)/.exec(codec);
         return level !== null && parseInt(level[1], 10) >= 180;

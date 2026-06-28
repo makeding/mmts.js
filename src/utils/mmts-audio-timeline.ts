@@ -50,6 +50,11 @@ export default class MMTSAudioTimeline {
         this.pending_seeds_by_packet_id_[packetId] = timelinePts;
     }
 
+    public hasMapping(packetId: number): boolean {
+        return this.timestamp_offsets_by_packet_id_[packetId] !== undefined ||
+            this.pending_seeds_by_packet_id_[packetId] !== undefined;
+    }
+
     public mapTimestamp(packetId: number, pts: number, refSampleDuration: number): MMTSAudioTimelineMapping {
         const pendingSeed = this.pending_seeds_by_packet_id_[packetId];
         if (pendingSeed !== undefined) {

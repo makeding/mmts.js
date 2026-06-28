@@ -76,6 +76,9 @@ class PlayerEngineMainThread implements PlayerEngine {
         if (mediaDataSource.isLive === true) {
             this._config.isLive = true;
         }
+        if (mediaDataSource.type === 'mmts' && config?.mmtsDeferHevcVideoInitUntilAudio === undefined) {
+            this._config.mmtsDeferHevcVideoInitUntilAudio = true;
+        }
 
         this.e = {
             onMediaLoadedMetadata: this._onMediaLoadedMetadata.bind(this),

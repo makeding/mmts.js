@@ -112,6 +112,9 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
         if (mediaDataSource.isLive === true) {
             this._config.isLive = true;
         }
+        if (mediaDataSource.type === 'mmts' && config?.mmtsDeferHevcVideoInitUntilAudio === undefined) {
+            this._config.mmtsDeferHevcVideoInitUntilAudio = true;
+        }
 
         this.e = {
             onLoggingConfigChanged: this._onLoggingConfigChanged.bind(this),
