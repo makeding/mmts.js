@@ -1,9 +1,13 @@
 {
-  "name": "mpegts.js",
+  "name": "mmts.js",
   "version": "1.8.0",
-  "description": "HTML5 MPEG2-TS Stream Player",
+  "description": "HTML5 MPEG2-TS / MMTS / FLV Stream Player",
   "main": "./dist/mpegts.js",
   "types": "./d.ts/mpegts.d.ts",
+  "files": [
+    "d.ts/mpegts.d.ts",
+    "dist/"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/xqq/mpegts.js"
