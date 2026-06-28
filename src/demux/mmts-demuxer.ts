@@ -852,6 +852,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         this.dispatchVideoMediaSegment(true);
+        this.dispatchAudioMediaSegment(true);
         this.onDiscontinuity && this.onDiscontinuity();
         this.current_video_access_unit_ = null;
         this.video_waiting_random_access_ = true;

@@ -466,6 +466,10 @@ class MMTSProgram {
                 return null;
             case FragmentationIndicator.MiddleFragment:
                 if (state.state !== 'in-fragment') {
+                    state.data = [];
+                    state.firstFragment = undefined;
+                    state.randomAccess = false;
+                    state.state = 'skip';
                     return null;
                 }
                 state.randomAccess = state.randomAccess || packet.rapFlag;
@@ -473,6 +477,10 @@ class MMTSProgram {
                 return null;
             case FragmentationIndicator.LastFragment:
                 if (state.state !== 'in-fragment') {
+                    state.data = [];
+                    state.firstFragment = undefined;
+                    state.randomAccess = false;
+                    state.state = 'skip';
                     return null;
                 }
                 state.randomAccess = state.randomAccess || packet.rapFlag;
