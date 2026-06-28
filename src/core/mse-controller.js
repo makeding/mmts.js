@@ -63,6 +63,7 @@ class MSEController {
         this._pendingMediaDuration = 0;
 
         this._pendingSourceBufferInit = [];
+        this._deferredHevcVideoInitSegment = null;
         this._mimeTypes = {
             video: null,
             audio: null
@@ -173,6 +174,7 @@ class MSEController {
                 ms.removeEventListener('qualitychange', this.e.onQualityChange);
             }
             this._pendingSourceBufferInit = [];
+            this._deferredHevcVideoInitSegment = null;
             this._isBufferFull = false;
             this._hasFatalMediaError = false;
             this._mediaSource = null;
@@ -237,6 +239,16 @@ class MSEController {
         let firstInitSegment = false;
 
         Log.v(this.TAG, 'Received Initialization Segment, mimeType: ' + mimeType);
+
+        if (this._shouldDeferHevcVideoInitSegment(is)) {
+            Log.v(this.TAG, `Defer ${is.type} SourceBuffer init until audio init, mimeType: ${mimeType}`);
+            this._deferredHevcVideoInitSegment = is;
+            if (!deferred) {
+                this._pendingSegments[is.type].push(is);
+            }
+            return;
+        }
+
         this._lastInitSegments[is.type] = is;
 
         if (mimeType !== this._mimeTypes[is.type]) {
@@ -261,6 +273,15 @@ class MSEController {
             // deferred means this InitSegment has been pushed to pendingSegments queue
             this._pendingSegments[is.type].push(is);
         }
+
+        if (is.type === 'audio' && this._deferredHevcVideoInitSegment) {
+            let audioSb = this._sourceBuffers.audio;
+            if (audioSb && !audioSb.updating && this._pendingSegments.audio.length > 0) {
+                this._doAppendSegments();
+            }
+            this._releaseDeferredHevcVideoInitSegment();
+        }
+
         if (!firstInitSegment) {  // append immediately only if init segment in subsequence
             if (this._sourceBuffers[is.type] && !this._sourceBuffers[is.type].updating) {
                 this._doAppendSegments();
@@ -273,6 +294,35 @@ class MSEController {
             this._pendingMediaDuration = is.mediaDuration / 1000;  // in seconds
             this._updateMediaSourceDuration();
         }
+    }
+
+    _shouldDeferHevcVideoInitSegment(initSegment) {
+        if (this._deferredHevcVideoInitSegment || this._sourceBuffers.video || this._mimeTypes.audio) {
+            return false;
+        }
+
+        if (initSegment.type !== 'video' || initSegment.container !== 'video/mp4') {
+            return false;
+        }
+
+        let codec = initSegment.codec || '';
+        if (!codec.startsWith('hvc1.')) {
+            return false;
+        }
+
+        let level = /\.L(\d+)/.exec(codec);
+        return level !== null && parseInt(level[1], 10) >= 180;
+    }
+
+    _releaseDeferredHevcVideoInitSegment() {
+        let initSegment = this._deferredHevcVideoInitSegment;
+        if (!initSegment) {
+            return;
+        }
+
+        this._deferredHevcVideoInitSegment = null;
+        Log.v(this.TAG, 'Release deferred HEVC video SourceBuffer init after audio init');
+        this.appendInitSegment(initSegment, true);
     }
 
     appendMediaSegment(mediaSegment) {

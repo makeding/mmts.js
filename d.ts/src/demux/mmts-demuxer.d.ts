@@ -73,7 +73,6 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private appendStandaloneVideoSample;
     private logVideoNalu;
     private logDroppedVideoSample;
-    private prependVideoParameterSets;
     private logVideoSample;
     private dropVideoTimestamp;
     private dropVideoTimestampOnce;
