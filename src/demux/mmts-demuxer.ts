@@ -118,6 +118,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_: number = 0;
     private logged_video_timestamp_correction_count_: number = 0;
     private logged_audio_timestamp_fallback_count_: number = 0;
+    private logged_audio_timestamp_mapping_count_: number = 0;
     private logged_audio_timestamp_alignment_count_: number = 0;
     private logged_unsupported_audio_packet_ids_: {[packetId: number]: boolean} = {};
     private audio_track_infos_by_packet_id_: {[packetId: number]: MMTSAudioTrackInfo} = {};
@@ -637,7 +638,7 @@ class MMTSDemuxer extends BaseDemuxer {
             if (samplePts === undefined) {
                 samplePts = state.lastSamplePts !== undefined
                     ? state.lastSamplePts + refSampleDuration
-                    : 0;
+                    : this.getAudioFallbackTimelineSeed() ?? 0;
             }
 
             lastSamplePts = samplePts;
@@ -953,7 +954,24 @@ class MMTSDemuxer extends BaseDemuxer {
     private consumeAudioTimestamp(packetId: number, mpuSequenceNumber: number): number | undefined {
         const timestamp = this.program_.nextTimestamp(packetId, mpuSequenceNumber);
         if (timestamp !== null) {
-            return Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+            const pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+            const rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
+            if (this.output_video_raw_dts_base_ >= 0) {
+                const mediaPts = rawPts - this.output_video_raw_dts_base_;
+                if (this.logged_audio_timestamp_mapping_count_ < 8) {
+                    this.logged_audio_timestamp_mapping_count_++;
+                    Log.v(
+                        this.TAG,
+                        `Map MMTS audio timestamp #${this.logged_audio_timestamp_mapping_count_}, ` +
+                        `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
+                        `raw_pts=${rawPts}, video_raw_base=${this.output_video_raw_dts_base_}, ` +
+                        `media_pts=${mediaPts}`
+                    );
+                }
+                return mediaPts;
+            }
+
+            return pts;
         }
 
         if (this.logged_audio_timestamp_fallback_count_ < 4) {

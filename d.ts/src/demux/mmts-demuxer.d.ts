@@ -13,6 +13,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_video_timestamp_fallback_count_;
     private logged_video_timestamp_correction_count_;
     private logged_audio_timestamp_fallback_count_;
+    private logged_audio_timestamp_mapping_count_;
     private logged_audio_timestamp_alignment_count_;
     private logged_unsupported_audio_packet_ids_;
     private audio_track_infos_by_packet_id_;
