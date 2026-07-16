@@ -62,6 +62,14 @@ export interface MMTAsset {
     audioMainComponent?: boolean;
     audioQualityIndicator?: number;
     audioSamplingRateCode?: number;
+    mpeg4AudioProfileLevel?: number;
+    audioSpecificConfig?: Uint8Array;
+    hevcProfileSpace?: number;
+    hevcTierFlag?: boolean;
+    hevcProfileIdc?: number;
+    hevcProfileCompatibility?: number;
+    hevcLevelIdc?: number;
+    hevcHdrWcgIdc?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
     subtitleTag?: number;
@@ -89,8 +97,20 @@ export interface MMTMpuTimestampDescriptor {
 export interface MMTMpuExtendedTimestampDescriptor {
     mpuSequenceNumber: number;
     timescale?: number;
+    ptsOffsetType: number;
+    defaultPtsOffset: number;
     decodingTimeOffset: number;
+    presentationTimeLeapIndicator: number;
     au: MMTMpuTimestampOffset[];
+}
+
+export interface MMTParsedPackageTable {
+    tableId: number;
+    version: number;
+    mode: number;
+    packageId: string;
+    assets: MMTAsset[];
+    conditionalAccessInfos: MMTConditionalAccessInfo[];
 }
 
 export interface MMTMpuTimestampOffset {
@@ -103,6 +123,7 @@ export interface MMTSIResult {
     conditionalAccessInfos: MMTConditionalAccessInfo[];
     messages: number[];
     tables: number[];
+    mptTables: MMTParsedPackageTable[];
 }
 
 export interface SignalingFragmentState {
@@ -124,6 +145,9 @@ const MESSAGE_AUTHENTICATION_METHOD_DESCRIPTOR = 0x8006;
 const VIDEO_COMPONENT_DESCRIPTOR = 0x8010;
 const MH_STREAM_IDENTIFICATION_DESCRIPTOR = 0x8011;
 const MH_AUDIO_COMPONENT_DESCRIPTOR = 0x8014;
+const MH_MPEG4_AUDIO_DESCRIPTOR = 0x8008;
+const MH_MPEG4_AUDIO_EXTENSION_DESCRIPTOR = 0x8009;
+const MH_HEVC_DESCRIPTOR = 0x800a;
 const MH_DATA_COMPONENT_DESCRIPTOR = 0x8020;
 const MPU_EXTENDED_TIMESTAMP_DESCRIPTOR = 0x8026;
 const MH_HIERARCHY_DESCRIPTOR = 0x8037;
@@ -133,7 +157,7 @@ export default class MMTSI {
     public static parseSignalingPayload(payload: Uint8Array,
                                         packetSequenceNumber: number,
                                         fragmentState: SignalingFragmentState): MMTSIResult {
-        const result: MMTSIResult = {assets: [], conditionalAccessInfos: [], messages: [], tables: []};
+        const result: MMTSIResult = {assets: [], conditionalAccessInfos: [], messages: [], tables: [], mptTables: []};
         const reader = new ByteReader(payload);
         if (!reader.canRead(2)) {
             return result;
@@ -327,6 +351,21 @@ export default class MMTSI {
 
         switch (tableId) {
             case MMTTableId.MmtPackageTable:
+            case 0x11:
+            case 0x12:
+            case 0x13:
+            case 0x14:
+            case 0x15:
+            case 0x16:
+            case 0x17:
+            case 0x18:
+            case 0x19:
+            case 0x1a:
+            case 0x1b:
+            case 0x1c:
+            case 0x1d:
+            case 0x1e:
+            case 0x1f:
                 return MMTSI.parseMpt(reader, result);
             case MMTTableId.MhCat:
                 return MMTSI.parseCat(reader, result);
@@ -337,10 +376,14 @@ export default class MMTSI {
     }
 
     private static parseMpt(reader: ByteReader, result: MMTSIResult): boolean {
-        if (!reader.canRead(4) || reader.readU8() !== MMTTableId.MmtPackageTable) {
+        if (!reader.canRead(4)) {
             return false;
         }
-        reader.skip(1); // version
+        const tableId = reader.readU8();
+        if (tableId !== MMTTableId.MmtPackageTable && (tableId < 0x11 || tableId > 0x1f)) {
+            return false;
+        }
+        const version = reader.readU8();
         const length = reader.readU16();
         if (!reader.canRead(length)) {
             return false;
@@ -351,36 +394,38 @@ export default class MMTSI {
             return false;
         }
 
-        payload.skip(1); // MPT_mode and reserved bits
+        const mode = payload.readU8() >> 6;
         const packageIdLength = payload.readU8();
         if (!payload.canRead(packageIdLength + 2)) {
             return false;
         }
-        payload.skip(packageIdLength);
+        const packageId = MMTSI.bytesToKey(payload.readBytes(packageIdLength));
 
         const descriptorsLength = payload.readU16();
         if (!payload.canRead(descriptorsLength + 1)) {
             return false;
         }
+        const conditionalAccessInfos: MMTConditionalAccessInfo[] = [];
         if (descriptorsLength > 0) {
             const info: MMTConditionalAccessInfo = {};
             MMTSI.parseConditionalAccessDescriptors(info, new ByteReader(payload.readBytes(descriptorsLength)));
             if (MMTSI.hasConditionalAccessInfo(info)) {
-                result.conditionalAccessInfos.push(info);
+                conditionalAccessInfos.push(info);
             }
-        } else {
-            payload.skip(descriptorsLength);
         }
 
         const assetCount = payload.readU8();
+        const assets: MMTAsset[] = [];
         for (let i = 0; i < assetCount; i++) {
             const asset = MMTSI.parseMptAsset(payload);
             if (asset !== null) {
-                result.assets.push(asset);
+                assets.push(asset);
             } else {
                 return false;
             }
         }
+
+        result.mptTables.push({tableId, version, mode, packageId, assets, conditionalAccessInfos});
 
         return true;
     }
@@ -499,6 +544,7 @@ export default class MMTSI {
 
     private static assetFromType(assetType: string, packetId: number): MMTAsset {
         switch (assetType) {
+            case 'hvc1':
             case 'hev1':
                 return {packetId, assetType, mediaType: 'video', codec: 'hevc'};
             case 'mp4a':
@@ -539,6 +585,15 @@ export default class MMTSI {
                     break;
                 case MH_AUDIO_COMPONENT_DESCRIPTOR:
                     MMTSI.parseAudioComponentDescriptor(asset, reader);
+                    break;
+                case MH_MPEG4_AUDIO_DESCRIPTOR:
+                    MMTSI.parseMpeg4AudioDescriptor(asset, reader);
+                    break;
+                case MH_MPEG4_AUDIO_EXTENSION_DESCRIPTOR:
+                    MMTSI.parseMpeg4AudioExtensionDescriptor(asset, reader);
+                    break;
+                case MH_HEVC_DESCRIPTOR:
+                    MMTSI.parseHevcDescriptor(asset, reader);
                     break;
                 case MH_DATA_COMPONENT_DESCRIPTOR:
                     MMTSI.parseDataComponentDescriptor(asset, reader);
@@ -743,7 +798,7 @@ export default class MMTSI {
             }
 
             const mpuSequenceNumber = descriptor.readU32();
-            descriptor.skip(1); // leap_indicator + reserved
+            const leapIndicator = descriptor.readU8() >> 6;
             const decodingTimeOffset = descriptor.readU16();
             const auCount = descriptor.readU8();
             const au: MMTMpuTimestampOffset[] = [];
@@ -768,7 +823,10 @@ export default class MMTSI {
             extended.push({
                 mpuSequenceNumber,
                 timescale,
+                ptsOffsetType,
+                defaultPtsOffset,
                 decodingTimeOffset,
+                presentationTimeLeapIndicator: leapIndicator,
                 au
             });
         }
@@ -833,6 +891,55 @@ export default class MMTSI {
         } else if (streamContent === 0x04) {
             asset.codec = 'mp4als';
         }
+    }
+
+    private static parseMpeg4AudioDescriptor(asset: MMTAsset, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, MH_MPEG4_AUDIO_DESCRIPTOR);
+        if (length < 1 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        asset.mpeg4AudioProfileLevel = descriptor.readU8();
+    }
+
+    private static parseMpeg4AudioExtensionDescriptor(asset: MMTAsset, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, MH_MPEG4_AUDIO_EXTENSION_DESCRIPTOR);
+        if (length < 1 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        const flags = descriptor.readU8();
+        const ascFlag = (flags & 0x80) !== 0;
+        const profileCount = flags & 0x0f;
+        if (!descriptor.canRead(profileCount)) {
+            return;
+        }
+        descriptor.skip(profileCount);
+        if (!ascFlag || !descriptor.canRead(1)) {
+            return;
+        }
+        const ascSize = descriptor.readU8();
+        if (!descriptor.canRead(ascSize)) {
+            return;
+        }
+        asset.audioSpecificConfig = descriptor.readBytes(ascSize);
+    }
+
+    private static parseHevcDescriptor(asset: MMTAsset, reader: ByteReader): void {
+        const length = MMTSI.readShortDescriptorHeader(reader, MH_HEVC_DESCRIPTOR);
+        if (length < 13 || !reader.canRead(length)) {
+            return;
+        }
+        const descriptor = new ByteReader(reader.readBytes(length));
+        const profile = descriptor.readU8();
+        asset.hevcProfileSpace = profile >> 6;
+        asset.hevcTierFlag = ((profile >> 5) & 0x01) !== 0;
+        asset.hevcProfileIdc = profile & 0x1f;
+        asset.hevcProfileCompatibility = descriptor.readU32();
+        descriptor.skip(6); // constraint flags and copied_44bits
+        asset.hevcLevelIdc = descriptor.readU8();
+        const flags = descriptor.readU8();
+        asset.hevcHdrWcgIdc = flags & 0x03;
     }
 
     private static parseStreamIdentificationDescriptor(asset: MMTAsset, reader: ByteReader): void {
@@ -974,7 +1081,18 @@ export default class MMTSI {
     private static readNtpTimestampUs(reader: ByteReader): number {
         const seconds = reader.readU32();
         const fraction = reader.readU32();
-        return (seconds - 2208988800) * 1000000 + Math.round(fraction * 1000000 / 0x100000000);
+        // NTP seconds wrapped in 2036. Broadcast timestamps before the wrap
+        // have the high bit set; current-era timestamps after it do not.
+        const eraAdjustedSeconds = seconds < 0x80000000 ? seconds + 0x100000000 : seconds;
+        return (eraAdjustedSeconds - 2208988800) * 1000000 + Math.round(fraction * 1000000 / 0x100000000);
+    }
+
+    private static bytesToKey(data: Uint8Array): string {
+        let key = '';
+        for (let i = 0; i < data.byteLength; i++) {
+            key += data[i].toString(16).padStart(2, '0');
+        }
+        return key;
     }
 
 }

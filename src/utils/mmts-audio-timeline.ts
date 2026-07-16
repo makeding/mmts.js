@@ -50,6 +50,11 @@ export default class MMTSAudioTimeline {
         this.pending_seeds_by_packet_id_[packetId] = timelinePts;
     }
 
+    public setMapping(packetId: number, rawPts: number, mappedPts: number): void {
+        this.timestamp_offsets_by_packet_id_[packetId] = mappedPts - rawPts;
+        delete this.pending_seeds_by_packet_id_[packetId];
+    }
+
     public hasMapping(packetId: number): boolean {
         return this.timestamp_offsets_by_packet_id_[packetId] !== undefined ||
             this.pending_seeds_by_packet_id_[packetId] !== undefined;
@@ -58,7 +63,8 @@ export default class MMTSAudioTimeline {
     public mapTimestamp(packetId: number, pts: number, refSampleDuration: number): MMTSAudioTimelineMapping {
         const pendingSeed = this.pending_seeds_by_packet_id_[packetId];
         if (pendingSeed !== undefined) {
-            const offset = pendingSeed + refSampleDuration - pts;
+            const targetPts = pts < pendingSeed ? pendingSeed + refSampleDuration : pts;
+            const offset = targetPts - pts;
             const mappedPts = pts + offset;
             this.timestamp_offsets_by_packet_id_[packetId] = offset;
             delete this.pending_seeds_by_packet_id_[packetId];

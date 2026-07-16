@@ -24,7 +24,7 @@ class MP4 {
         MP4.types = {
             avc1: [], avcC: [], btrt: [], dinf: [],
             dref: [], esds: [], ftyp: [], hdlr: [],
-            hvc1: [], hvcC: [], av01: [], av1C: [],
+            hvc1: [], hev1: [], hvcC: [], av01: [], av1C: [],
             mdat: [], mdhd: [], mdia: [], mfhd: [],
             minf: [], moof: [], moov: [], mp4a: [],
             mvex: [], mvhd: [], sdtp: [], stbl: [],
@@ -57,7 +57,20 @@ class MP4 {
             0x69, 0x73, 0x6F, 0x6D,  // isom
             0x61, 0x76, 0x63, 0x31   // avc1
         ]);
-
+        constants.FTYP_HEVC_HVC1 = new Uint8Array([
+            0x69, 0x73, 0x6F, 0x6D,  // major_brand: isom
+            0x0,  0x0,  0x0,  0x1,   // minor_version: 0x01
+            0x69, 0x73, 0x6F, 0x36,  // iso6
+            0x6D, 0x70, 0x34, 0x31,  // mp41
+            0x68, 0x76, 0x63, 0x31   // hvc1
+        ]);
+        constants.FTYP_HEVC_HEV1 = new Uint8Array([
+            0x69, 0x73, 0x6F, 0x6D,
+            0x0,  0x0,  0x0,  0x1,
+            0x69, 0x73, 0x6F, 0x36,
+            0x6D, 0x70, 0x34, 0x31,
+            0x68, 0x65, 0x76, 0x31
+        ]);
         constants.STSD_PREFIX = new Uint8Array([
             0x00, 0x00, 0x00, 0x00,  // version(0) + flags
             0x00, 0x00, 0x00, 0x01   // entry_count
@@ -153,13 +166,23 @@ class MP4 {
 
     // emit ftyp & moov
     static generateInitSegment(meta) {
-        let ftyp = MP4.box(MP4.types.ftyp, MP4.constants.FTYP);
+        let ftyp = MP4.box(MP4.types.ftyp, MP4.ftyp(meta));
         let moov = MP4.moov(meta);
 
         let result = new Uint8Array(ftyp.byteLength + moov.byteLength);
         result.set(ftyp, 0);
         result.set(moov, ftyp.byteLength);
         return result;
+    }
+
+    static ftyp(meta) {
+        if (meta && meta.type === 'video' && meta.codec && meta.codec.startsWith('hvc1')) {
+            return MP4.constants.FTYP_HEVC_HVC1;
+        }
+        if (meta && meta.type === 'video' && meta.codec && meta.codec.startsWith('hev1')) {
+            return MP4.constants.FTYP_HEVC_HEV1;
+        }
+        return MP4.constants.FTYP;
     }
 
     // Movie metadata box
@@ -338,7 +361,8 @@ class MP4 {
             }
             // else: aac -> mp4a
             return MP4.box(MP4.types.stsd, MP4.constants.STSD_PREFIX, MP4.mp4a(meta));
-        } else if (meta.type === 'video' && meta.codec.startsWith('hvc1')) {
+        } else if (meta.type === 'video' &&
+            (meta.codec.startsWith('hvc1') || meta.codec.startsWith('hev1'))) {
             return MP4.box(MP4.types.stsd, MP4.constants.STSD_PREFIX, MP4.hvc1(meta));
         } else if (meta.type === 'video' && meta.codec.startsWith('av01')) {
             return MP4.box(MP4.types.stsd, MP4.constants.STSD_PREFIX, MP4.av01(meta));
@@ -692,7 +716,8 @@ class MP4 {
             0x00, 0x18,              // depth
             0xFF, 0xFF               // pre_defined = -1
         ]);
-        return MP4.box(MP4.types.hvc1, data, MP4.box(MP4.types.hvcC, hvcc));
+        const sampleEntry = meta.codec.startsWith('hev1') ? MP4.types.hev1 : MP4.types.hvc1;
+        return MP4.box(sampleEntry, data, MP4.box(MP4.types.hvcC, hvcc));
     }
 
     static av01(meta) {

@@ -20,6 +20,67 @@ import ExpGolomb from './exp-golomb.js';
 
 class H265NaluParser {
 
+    static parseNaluHeader(uint8array) {
+        if (!(uint8array instanceof Uint8Array) || uint8array.byteLength < 2) {
+            return null;
+        }
+        const forbiddenZeroBit = (uint8array[0] >>> 7) & 0x01;
+        const nalUnitType = (uint8array[0] >>> 1) & 0x3f;
+        const nuhLayerId = ((uint8array[0] & 0x01) << 5) | (uint8array[1] >>> 3);
+        const temporalIdPlus1 = uint8array[1] & 0x07;
+        if (forbiddenZeroBit !== 0 || temporalIdPlus1 === 0) {
+            return null;
+        }
+        return {
+            forbidden_zero_bit: forbiddenZeroBit,
+            nal_unit_type: nalUnitType,
+            nuh_layer_id: nuhLayerId,
+            nuh_temporal_id_plus1: temporalIdPlus1,
+            temporal_id: temporalIdPlus1 - 1
+        };
+    }
+
+    static _ceilLog2(value) {
+        if (!Number.isFinite(value) || value <= 1) {
+            return 0;
+        }
+        return Math.ceil(Math.log(value) / Math.LN2);
+    }
+
+    static _isIrapNaluType(naluType) {
+        return naluType >= 16 && naluType <= 23;
+    }
+
+    static _isIdrNaluType(naluType) {
+        return naluType === 19 || naluType === 20;
+    }
+
+    static _getCodecString(profileSpace, profileIdc, profileCompatibilityFlags, tierFlag, levelIdc, constraintIndicatorFlags) {
+        const profileSpacePrefix = ['', 'A', 'B', 'C'][profileSpace];
+        let profileCompatibility = 0;
+
+        for (let byteIndex = 0; byteIndex < profileCompatibilityFlags.length; byteIndex++) {
+            let byte = profileCompatibilityFlags[byteIndex];
+            let reversedByte = 0;
+            // SPS writes compatibility flag 0 first (as the MSB), while the codec string represents it as bit 0.
+            for (let bitIndex = 0; bitIndex < 8; bitIndex++) {
+                reversedByte |= ((byte >> (7 - bitIndex)) & 1) << bitIndex;
+            }
+            profileCompatibility = (profileCompatibility | (reversedByte << (byteIndex * 8))) >>> 0;
+        }
+
+        let codec = `hvc1.${profileSpacePrefix}${profileIdc}.${profileCompatibility.toString(16).toUpperCase()}.${tierFlag ? 'H' : 'L'}${levelIdc}`;
+        let lastConstraintByte = constraintIndicatorFlags.length - 1;
+        while (lastConstraintByte >= 0 && constraintIndicatorFlags[lastConstraintByte] === 0) {
+            lastConstraintByte--;
+        }
+        for (let i = 0; i <= lastConstraintByte; i++) {
+            codec += `.${constraintIndicatorFlags[i].toString(16).padStart(2, '0').toUpperCase()}`;
+        }
+
+        return codec;
+    }
+
     static _ebsp2rbsp(uint8array) {
         let src = uint8array;
         let src_length = src.byteLength;
@@ -41,6 +102,10 @@ class H265NaluParser {
     }
 
     static parseVPS(uint8array) {
+        const header = H265NaluParser.parseNaluHeader(uint8array);
+        if (header === null || header.nal_unit_type !== 32 || header.nuh_layer_id !== 0 || header.temporal_id !== 0) {
+            throw new Error('Invalid HEVC VPS NAL unit');
+        }
         let rbsp = H265NaluParser._ebsp2rbsp(uint8array);
         let gb = new ExpGolomb(rbsp);
 
@@ -54,15 +119,27 @@ class H265NaluParser {
         let max_layers_minus1 = gb.readBits(6);
         let max_sub_layers_minus1 = gb.readBits(3);
         let temporal_id_nesting_flag = gb.readBool();
+        if (video_parameter_set_id < 0 || video_parameter_set_id > 15 ||
+            max_layers_minus1 !== 0 || max_sub_layers_minus1 > 6) {
+            throw new Error('Unsupported HEVC VPS parameters');
+        }
         // and more ...
 
         return {
+            video_parameter_set_id,
+            max_layers_minus1,
+            max_sub_layers_minus1,
             num_temporal_layers: max_sub_layers_minus1 + 1,
-            temporal_id_nested: temporal_id_nesting_flag
+            temporal_id_nested: temporal_id_nesting_flag,
+            nalu_header: header
         }
     }
 
     static parseSPS(uint8array) {
+        const header = H265NaluParser.parseNaluHeader(uint8array);
+        if (header === null || header.nal_unit_type !== 33 || header.nuh_layer_id !== 0 || header.temporal_id !== 0) {
+            throw new Error('Invalid HEVC SPS NAL unit');
+        }
         let rbsp = H265NaluParser._ebsp2rbsp(uint8array);
         let gb = new ExpGolomb(rbsp);
 
@@ -76,6 +153,9 @@ class H265NaluParser {
         let video_paramter_set_id = gb.readBits(4);
         let max_sub_layers_minus1 = gb.readBits(3);
         let temporal_id_nesting_flag = gb.readBool();
+        if (video_paramter_set_id > 15 || max_sub_layers_minus1 > 6) {
+            throw new Error('Unsupported HEVC SPS temporal-layer configuration');
+        }
 
         // profile_tier_level begin
         let general_profile_space = gb.readBits(2);
@@ -114,9 +194,16 @@ class H265NaluParser {
         // profile_tier_level end
 
         let seq_parameter_set_id = gb.readUEG();
+        if (seq_parameter_set_id > 15) {
+            throw new Error('HEVC SPS id exceeds the normative range');
+        }
         let chroma_format_idc = gb.readUEG();
+        if (chroma_format_idc > 3) {
+            throw new Error('Invalid HEVC chroma_format_idc');
+        }
+        let separate_colour_plane_flag = false;
         if (chroma_format_idc == 3) {
-            gb.readBits(1);  // separate_colour_plane_flag
+            separate_colour_plane_flag = gb.readBool();
         }
         let pic_width_in_luma_samples = gb.readUEG();
         let pic_height_in_luma_samples = gb.readUEG();
@@ -130,14 +217,41 @@ class H265NaluParser {
         let bit_depth_luma_minus8 = gb.readUEG();
         let bit_depth_chroma_minus8 = gb.readUEG();
         let log2_max_pic_order_cnt_lsb_minus4 = gb.readUEG();
+        if (log2_max_pic_order_cnt_lsb_minus4 > 12) {
+            throw new Error('Invalid HEVC POC LSB bit width');
+        }
         let sub_layer_ordering_info_present_flag = gb.readBool();
+        let sps_max_dec_pic_buffering_minus1 = new Array(max_sub_layers_minus1 + 1);
+        let sps_max_num_reorder_pics = new Array(max_sub_layers_minus1 + 1);
+        let sps_max_latency_increase_plus1 = new Array(max_sub_layers_minus1 + 1);
         for (let i = sub_layer_ordering_info_present_flag ? 0 : max_sub_layers_minus1; i <= max_sub_layers_minus1; i++) {
-            gb.readUEG(); // max_dec_pic_buffering_minus1[i]
-            gb.readUEG(); // max_num_reorder_pics[i]
-            gb.readUEG(); // max_latency_increase_plus1[i]
+            sps_max_dec_pic_buffering_minus1[i] = gb.readUEG();
+            sps_max_num_reorder_pics[i] = gb.readUEG();
+            sps_max_latency_increase_plus1[i] = gb.readUEG();
+            if (sps_max_num_reorder_pics[i] > sps_max_dec_pic_buffering_minus1[i]) {
+                throw new Error('Invalid HEVC sub-layer ordering constraints');
+            }
+        }
+        if (!sub_layer_ordering_info_present_flag) {
+            for (let i = 0; i < max_sub_layers_minus1; i++) {
+                sps_max_dec_pic_buffering_minus1[i] = sps_max_dec_pic_buffering_minus1[max_sub_layers_minus1];
+                sps_max_num_reorder_pics[i] = sps_max_num_reorder_pics[max_sub_layers_minus1];
+                sps_max_latency_increase_plus1[i] = sps_max_latency_increase_plus1[max_sub_layers_minus1];
+            }
         }
         let log2_min_luma_coding_block_size_minus3 = gb.readUEG();
         let log2_diff_max_min_luma_coding_block_size = gb.readUEG();
+        const ctbLog2SizeY = log2_min_luma_coding_block_size_minus3 + 3 +
+            log2_diff_max_min_luma_coding_block_size;
+        if (ctbLog2SizeY < 4 || ctbLog2SizeY > 6 ||
+            pic_width_in_luma_samples <= 0 || pic_height_in_luma_samples <= 0) {
+            throw new Error('Invalid HEVC coding tree block geometry');
+        }
+        const ctbSizeY = Math.pow(2, ctbLog2SizeY);
+        const picWidthInCtbsY = Math.ceil(pic_width_in_luma_samples / ctbSizeY);
+        const picHeightInCtbsY = Math.ceil(pic_height_in_luma_samples / ctbSizeY);
+        const picSizeInCtbsY = picWidthInCtbsY * picHeightInCtbsY;
+        const sliceSegmentAddressBits = H265NaluParser._ceilLog2(picSizeInCtbsY);
         let log2_min_transform_block_size_minus2 = gb.readUEG();
         let log2_diff_max_min_transform_block_size = gb.readUEG();
         let max_transform_hierarchy_depth_inter = gb.readUEG();
@@ -358,7 +472,26 @@ class H265NaluParser {
         let sps_extension_flag = gb.readBool(); // ignore...
 
         // for meta data
-        let codec_mimetype = `hvc1.${general_profile_idc}.1.L${general_level_idc}.B0`;
+        let codec_mimetype = H265NaluParser._getCodecString(
+            general_profile_space,
+            general_profile_idc,
+            [
+                general_profile_compatibility_flags_1,
+                general_profile_compatibility_flags_2,
+                general_profile_compatibility_flags_3,
+                general_profile_compatibility_flags_4
+            ],
+            general_tier_flag,
+            general_level_idc,
+            [
+                general_constraint_indicator_flags_1,
+                general_constraint_indicator_flags_2,
+                general_constraint_indicator_flags_3,
+                general_constraint_indicator_flags_4,
+                general_constraint_indicator_flags_5,
+                general_constraint_indicator_flags_6
+            ]
+        );
 
         let sub_wc = (chroma_format_idc === 1 || chroma_format_idc === 2) ? 2 : 1;
         let sub_hc = (chroma_format_idc === 1) ? 2 : 1;
@@ -374,6 +507,23 @@ class H265NaluParser {
 
         return {
             codec_mimetype,
+            video_parameter_set_id: video_paramter_set_id,
+            seq_parameter_set_id,
+            max_sub_layers_minus1,
+            num_temporal_layers: max_sub_layers_minus1 + 1,
+            temporal_id_nested: temporal_id_nesting_flag,
+            separate_colour_plane_flag,
+            log2_max_pic_order_cnt_lsb: log2_max_pic_order_cnt_lsb_minus4 + 4,
+            pic_width_in_luma_samples,
+            pic_height_in_luma_samples,
+            ctb_log2_size_y: ctbLog2SizeY,
+            pic_width_in_ctbs_y: picWidthInCtbsY,
+            pic_height_in_ctbs_y: picHeightInCtbsY,
+            pic_size_in_ctbs_y: picSizeInCtbsY,
+            slice_segment_address_bits: sliceSegmentAddressBits,
+            sps_max_dec_pic_buffering_minus1,
+            sps_max_num_reorder_pics,
+            sps_max_latency_increase_plus1,
             profile_string: H265NaluParser.getProfileString(general_profile_idc),
             level_string: H265NaluParser.getLevelString(general_level_idc),
             profile_idc: general_profile_idc,
@@ -426,11 +576,18 @@ class H265NaluParser {
             present_size: {
                 width: codec_width * sar_scale,
                 height: codec_height
-            }
+            },
+            nalu_header: header
         };
     }
 
     static parsePPS(uint8array) {
+        const header = H265NaluParser.parseNaluHeader(uint8array);
+        if (header === null || header.nal_unit_type !== 34 || header.nuh_layer_id !== 0) {
+            const details = header === null ? 'invalid header' :
+                `type=${header.nal_unit_type}, layer=${header.nuh_layer_id}, temporal_id=${header.temporal_id}`;
+            throw new Error(`Invalid HEVC PPS NAL unit (${details})`);
+        }
         let rbsp = H265NaluParser._ebsp2rbsp(uint8array);
         let gb = new ExpGolomb(rbsp);
 
@@ -440,6 +597,9 @@ class H265NaluParser {
 
         let pic_parameter_set_id = gb.readUEG();
         let seq_parameter_set_id = gb.readUEG();
+        if (pic_parameter_set_id > 63 || seq_parameter_set_id > 15) {
+            throw new Error('HEVC PPS/SPS id exceeds the normative range');
+        }
         let dependent_slice_segments_enabled_flag = gb.readBool();
         let output_flag_present_flag = gb.readBool();
         let num_extra_slice_header_bits = gb.readBits(3);
@@ -475,8 +635,145 @@ class H265NaluParser {
         }
 
         return {
-            parallelismType
+            pic_parameter_set_id,
+            seq_parameter_set_id,
+            dependent_slice_segments_enabled_flag,
+            output_flag_present_flag,
+            num_extra_slice_header_bits,
+            parallelismType,
+            nalu_header: header
         }
+    }
+
+    static parseSliceHeader(uint8array, ppsDetails, spsDetails) {
+        if (!ppsDetails || !spsDetails || uint8array.byteLength < 3) {
+            return null;
+        }
+        try {
+            const header = H265NaluParser.parseNaluHeader(uint8array);
+            if (header === null || header.nal_unit_type > 31 || header.nuh_layer_id !== 0) {
+                return null;
+            }
+            if (!Number.isInteger(spsDetails.max_sub_layers_minus1) ||
+                header.temporal_id > spsDetails.max_sub_layers_minus1) {
+                return null;
+            }
+            if (H265NaluParser._isIrapNaluType(header.nal_unit_type) && header.temporal_id !== 0) {
+                return null;
+            }
+
+            const rbsp = H265NaluParser._ebsp2rbsp(uint8array);
+            const gb = new ExpGolomb(rbsp);
+            gb.readByte();
+            gb.readByte();
+            const firstSliceSegmentInPicFlag = gb.readBool();
+            let noOutputOfPriorPicsFlag = false;
+            if (H265NaluParser._isIrapNaluType(header.nal_unit_type)) {
+                noOutputOfPriorPicsFlag = gb.readBool();
+            }
+            const slicePicParameterSetId = gb.readUEG();
+            if (slicePicParameterSetId !== ppsDetails.pic_parameter_set_id) {
+                return null;
+            }
+
+            let dependentSliceSegmentFlag = false;
+            let sliceSegmentAddress = 0;
+            if (!firstSliceSegmentInPicFlag) {
+                if (ppsDetails.dependent_slice_segments_enabled_flag) {
+                    dependentSliceSegmentFlag = gb.readBool();
+                }
+                const addressBits = spsDetails.slice_segment_address_bits || 0;
+                if (addressBits > 0) {
+                    sliceSegmentAddress = gb.readBits(addressBits);
+                }
+                if (!Number.isInteger(sliceSegmentAddress) ||
+                    sliceSegmentAddress <= 0 ||
+                    sliceSegmentAddress >= spsDetails.pic_size_in_ctbs_y) {
+                    return null;
+                }
+            }
+
+            const result = {
+                nalu_header: header,
+                first_slice_segment_in_pic_flag: firstSliceSegmentInPicFlag,
+                no_output_of_prior_pics_flag: noOutputOfPriorPicsFlag,
+                slice_pic_parameter_set_id: slicePicParameterSetId,
+                dependent_slice_segment_flag: dependentSliceSegmentFlag,
+                slice_segment_address: sliceSegmentAddress,
+                slice_type: undefined,
+                pic_output_flag: true,
+                slice_pic_order_cnt_lsb: undefined
+            };
+            if (dependentSliceSegmentFlag) {
+                return result;
+            }
+
+            const extraHeaderBits = ppsDetails.num_extra_slice_header_bits || 0;
+            if (extraHeaderBits > 0) {
+                gb.readBits(extraHeaderBits);
+            }
+            const sliceType = gb.readUEG();
+            if (sliceType > 2) {
+                return null;
+            }
+            result.slice_type = sliceType;
+            if (ppsDetails.output_flag_present_flag) {
+                result.pic_output_flag = gb.readBool();
+            }
+            if (spsDetails.separate_colour_plane_flag) {
+                gb.readBits(2);
+            }
+            if (H265NaluParser._isIdrNaluType(header.nal_unit_type)) {
+                result.slice_pic_order_cnt_lsb = 0;
+            } else {
+                const pocBits = spsDetails.log2_max_pic_order_cnt_lsb;
+                if (!Number.isInteger(pocBits) || pocBits < 4 || pocBits > 16) {
+                    return null;
+                }
+                result.slice_pic_order_cnt_lsb = gb.readBits(pocBits);
+            }
+            return result;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    static parseSliceHeaderPrefix(uint8array) {
+        try {
+            const header = H265NaluParser.parseNaluHeader(uint8array);
+            if (header === null || header.nal_unit_type > 31 || header.nuh_layer_id !== 0) {
+                return null;
+            }
+            const rbsp = H265NaluParser._ebsp2rbsp(uint8array);
+            const gb = new ExpGolomb(rbsp);
+            gb.readByte();
+            gb.readByte();
+            const firstSliceSegmentInPicFlag = gb.readBool();
+            let noOutputOfPriorPicsFlag = false;
+            if (H265NaluParser._isIrapNaluType(header.nal_unit_type)) {
+                noOutputOfPriorPicsFlag = gb.readBool();
+            }
+            const slicePicParameterSetId = gb.readUEG();
+            if (slicePicParameterSetId > 63) {
+                return null;
+            }
+            return {
+                nalu_header: header,
+                first_slice_segment_in_pic_flag: firstSliceSegmentInPicFlag,
+                no_output_of_prior_pics_flag: noOutputOfPriorPicsFlag,
+                slice_pic_parameter_set_id: slicePicParameterSetId
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    static parseSlicePictureOrderCount(uint8array, details) {
+        const parsed = H265NaluParser.parseSliceHeader(uint8array, details, details);
+        if (parsed === null || !parsed.first_slice_segment_in_pic_flag) {
+            return null;
+        }
+        return parsed.slice_pic_order_cnt_lsb;
     }
 
     static getChromaFormatString(chroma_idc) {

@@ -1,15 +1,37 @@
 import Log from "../utils/logger";
 
 export enum H265NaluType {
+    kSliceTRAIL_N = 0,
+    kSliceTRAIL_R = 1,
+    kSliceTSA_N = 2,
+    kSliceTSA_R = 3,
+    kSliceSTSA_N = 4,
+    kSliceSTSA_R = 5,
+    kSliceRADL_N = 6,
+    kSliceRADL_R = 7,
     kSliceRASL_N = 8,
     kSliceRASL_R = 9,
+    kSliceRSV_VCL_N10 = 10,
+    kSliceRSV_VCL_R11 = 11,
+    kSliceRSV_VCL_N12 = 12,
+    kSliceRSV_VCL_R13 = 13,
+    kSliceRSV_VCL_N14 = 14,
+    kSliceRSV_VCL_R15 = 15,
+    kSliceBLA_W_LP = 16,
+    kSliceBLA_W_RADL = 17,
+    kSliceBLA_N_LP = 18,
     kSliceIDR_W_RADL = 19,
     kSliceIDR_N_LP = 20,
     kSliceCRA_NUT = 21,
+    kSliceRSV_IRAP_VCL22 = 22,
+    kSliceRSV_IRAP_VCL23 = 23,
     kSliceVPS = 32,
     kSliceSPS = 33,
     kSlicePPS = 34,
     kSliceAUD = 35,
+    kSliceEOS = 36,
+    kSliceEOB = 37,
+    kSliceFD = 38,
     kSliceSEI = 39,
     kSliceSEISuffix = 40,
 }
@@ -162,7 +184,11 @@ export class HEVCDecoderConfigurationRecord {
     private data: Uint8Array;
 
     // sps, pps: require Nalu without 4 byte length-header
-    public constructor(vps: Uint8Array, sps: Uint8Array, pps: Uint8Array, detail: HEVCDecoderConfigurationRecordType) {
+    public constructor(vps: Uint8Array,
+                       sps: Uint8Array,
+                       pps: Uint8Array,
+                       detail: HEVCDecoderConfigurationRecordType,
+                       arrayCompleteness: boolean = true) {
         let length = 23 + (3 + 2 + vps.byteLength) + (3 + 2 + sps.byteLength) + (3 + 2 + pps.byteLength);
         let data = this.data = new Uint8Array(length);
 
@@ -189,19 +215,20 @@ export class HEVCDecoderConfigurationRecord {
         data[20] = 0;
         data[21] = ((detail.constant_frame_rate & 0x03) << 6) | ((detail.num_temporal_layers & 0x07) << 3) | ((detail.temporal_id_nested ? 1 : 0) << 2) | 3;
         data[22] = 3;
-        data[23 + 0 + 0] = 0x80 | H265NaluType.kSliceVPS;
+        const completeness = arrayCompleteness ? 0x80 : 0;
+        data[23 + 0 + 0] = completeness | H265NaluType.kSliceVPS;
         data[23 + 0 + 1] = 0;
         data[23 + 0 + 2] = 1;
         data[23 + 0 + 3] = (vps.byteLength & 0xFF00) >> 8;
         data[23 + 0 + 4] = (vps.byteLength & 0x00FF) >> 0;
         data.set(vps, 23 + 0 + 5);
-        data[23 + (5 + vps.byteLength) + 0] = 0x80 | H265NaluType.kSliceSPS;
+        data[23 + (5 + vps.byteLength) + 0] = completeness | H265NaluType.kSliceSPS;
         data[23 + (5 + vps.byteLength) + 1] = 0;
         data[23 + (5 + vps.byteLength) + 2] = 1;
         data[23 + (5 + vps.byteLength) + 3] = (sps.byteLength & 0xFF00) >> 8;
         data[23 + (5 + vps.byteLength) + 4] = (sps.byteLength & 0x00FF) >> 0;
         data.set(sps, 23 + (5 + vps.byteLength) + 5);
-        data[23 + (5 + vps.byteLength + 5 + sps.byteLength) + 0] = 0x80 | H265NaluType.kSlicePPS;
+        data[23 + (5 + vps.byteLength + 5 + sps.byteLength) + 0] = completeness | H265NaluType.kSlicePPS;
         data[23 + (5 + vps.byteLength + 5 + sps.byteLength) + 1] = 0;
         data[23 + (5 + vps.byteLength + 5 + sps.byteLength) + 2] = 1;
         data[23 + (5 + vps.byteLength + 5 + sps.byteLength) + 3] = (pps.byteLength & 0xFF00) >> 8;

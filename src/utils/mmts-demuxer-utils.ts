@@ -31,14 +31,6 @@ export function isH265IrapNalu(naluType: number): boolean {
     return naluType >= 16 && naluType <= 23;
 }
 
-export function hasVideoParameterSets(units: H265NaluHVC1[]): boolean {
-    return units.some((unit) => {
-        return unit.type === H265NaluType.kSliceVPS ||
-            unit.type === H265NaluType.kSliceSPS ||
-            unit.type === H265NaluType.kSlicePPS;
-    });
-}
-
 export function hasH265CraNalu(units: H265NaluHVC1[]): boolean {
     return units.some((unit) => unit.type === H265NaluType.kSliceCRA_NUT);
 }
@@ -334,6 +326,10 @@ export function isMMTSAudioTrackSelectable(info: MMTSAudioTrackInfo | undefined)
         return false;
     }
 
+    if (info.supported === false) {
+        return false;
+    }
+
     if (info.channelConfig !== undefined) {
         return isSupportedAACChannelConfig(info.channelConfig);
     }
@@ -353,6 +349,13 @@ export function scoreAudioTrack(track: MMTSAudioTrackInfo): number {
     return knownSupport + channelCount * 1000 + main + quality;
 }
 
+export function scoreDeclaredAudioTrack(track: MMTSAudioTrackInfo): number {
+    const channelCount = track.channelCount || 0;
+    const main = track.mainComponent ? 100 : 0;
+    const quality = track.qualityIndicator !== undefined ? track.qualityIndicator : 0;
+    return channelCount * 1000 + main + quality;
+}
+
 export function findPreferredAudioTrack(tracks: MMTSAudioTrackInfo[],
                                         requireKnownSupport: boolean): MMTSAudioTrackInfo | undefined {
     const candidates = tracks.filter((track) => {
@@ -365,6 +368,19 @@ export function findPreferredAudioTrack(tracks: MMTSAudioTrackInfo[],
 
     return candidates.reduce((best, track) => {
         return scoreAudioTrack(track) > scoreAudioTrack(best) ? track : best;
+    }, candidates[0]);
+}
+
+export function findPreferredDeclaredAudioTrack(tracks: MMTSAudioTrackInfo[]): MMTSAudioTrackInfo | undefined {
+    const candidates = tracks.filter((track) => {
+        return isMMTSAudioTrackSelectable(track);
+    });
+    if (candidates.length === 0) {
+        return undefined;
+    }
+
+    return candidates.reduce((best, track) => {
+        return scoreDeclaredAudioTrack(track) > scoreDeclaredAudioTrack(best) ? track : best;
     }, candidates[0]);
 }
 
@@ -449,6 +465,8 @@ export function createMMTSAudioTrackInfo(asset: MMTAsset,
         audioSampleRate: audioSampleRateFromCode(asset.audioSamplingRateCode),
         channelLayout: audioLayoutFromComponentType(asset.audioComponentType),
         channelCount: audioChannelCountFromComponentType(asset.audioComponentType),
+        supported: asset.codec !== 'mp4als',
+        unsupportedReason: asset.codec === 'mp4als' ? 'als' : undefined,
         selected
     };
 }
@@ -483,6 +501,9 @@ export function createMMTSSubtitleTrackInfo(asset: MMTAsset,
         subtitleDisplayMode: asset.subtitleDisplayMode,
         subtitleResolution: asset.subtitleResolution,
         subtitleCompressionType: asset.subtitleCompressionType,
+        supported: asset.subtitleCompressionType === undefined || asset.subtitleCompressionType === 0,
+        unsupportedReason: asset.subtitleCompressionType !== undefined && asset.subtitleCompressionType !== 0 ?
+            'exi' : undefined,
         subtitleReferenceStartTime: asset.subtitleReferenceStartTimeUs !== undefined
             ? Math.floor(asset.subtitleReferenceStartTimeUs / 1000)
             : undefined

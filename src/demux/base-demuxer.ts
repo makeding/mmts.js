@@ -13,6 +13,7 @@ type OnMetaDataArrivedCallback = (metadata: any) => void;
 type OnTrackMetadataCallback = (type: string, metadata: any) => void;
 type OnDataAvailableCallback = (audioTrack: any, videoTrack: any, force?: boolean) => void;
 type OnDiscontinuityCallback = () => void;
+type OnVideoDiscontinuityCallback = () => void;
 type OnTimedID3MetadataCallback = (timed_id3_data: PESPrivateData) => void;
 type onPGSSubitleDataCallback = (pgs_data: PGSData) => void;
 type OnSynchronousKLVMetadataCallback = (synchronous_klv_data: KLVData) => void;
@@ -35,6 +36,7 @@ export default abstract class BaseDemuxer {
     public onTrackMetadata: OnTrackMetadataCallback;
     public onDataAvailable: OnDataAvailableCallback;
     public onDiscontinuity: OnDiscontinuityCallback;
+    public onVideoDiscontinuity: OnVideoDiscontinuityCallback;
     public onTimedID3Metadata: OnTimedID3MetadataCallback;
     public onPGSSubtitleData: onPGSSubitleDataCallback;
     public onSynchronousKLVMetadata: OnSynchronousKLVMetadataCallback
@@ -58,6 +60,7 @@ export default abstract class BaseDemuxer {
         this.onTrackMetadata = null;
         this.onDataAvailable = null;
         this.onDiscontinuity = null;
+        this.onVideoDiscontinuity = null;
         this.onTimedID3Metadata = null;
         this.onPGSSubtitleData = null;
         this.onSynchronousKLVMetadata = null;

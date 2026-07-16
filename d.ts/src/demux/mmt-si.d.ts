@@ -84,6 +84,8 @@ export interface MMTMpuTimestampDescriptor {
 export interface MMTMpuExtendedTimestampDescriptor {
     mpuSequenceNumber: number;
     timescale?: number;
+    ptsOffsetType: number;
+    defaultPtsOffset: number;
     decodingTimeOffset: number;
     au: MMTMpuTimestampOffset[];
 }
