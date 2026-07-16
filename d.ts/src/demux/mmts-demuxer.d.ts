@@ -1,4 +1,5 @@
 import BaseDemuxer from './base-demuxer';
+import { type PlaybackSwitchIdentity } from '../core/playback-operation';
 export type MMTSAudioTrackSelectionReason = 'selected' | 'already-selected' | 'unknown-track' | 'unsupported-track' | 'invalid-timeline';
 export interface MMTSAudioTrackSelectionResult {
     accepted: boolean;
@@ -8,6 +9,10 @@ export interface MMTSAudioTrackSelectionResult {
     reason: MMTSAudioTrackSelectionReason;
     transactionId?: number;
     attempt?: number;
+    scopeId?: string;
+    transactionKey?: string;
+    attemptKey?: string;
+    kind?: 'audio-switch';
 }
 export type MMTSVideoTrackSelectionReason = 'selected' | 'already-selected' | 'unknown-track' | 'invalid-identity';
 export interface MMTSVideoTrackSelectionResult {
@@ -18,6 +23,10 @@ export interface MMTSVideoTrackSelectionResult {
     reason: MMTSVideoTrackSelectionReason;
     transactionId?: number;
     attempt?: number;
+    scopeId?: string;
+    transactionKey?: string;
+    attemptKey?: string;
+    kind?: 'video-switch';
 }
 declare class MMTSDemuxer extends BaseDemuxer {
     private readonly TAG;
@@ -36,6 +45,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_audio_timestamp_mapping_count_;
     private logged_audio_timestamp_alignment_count_;
     private logged_unsupported_audio_packet_ids_;
+    private logged_unsupported_subtitle_packet_ids_;
     private audio_track_infos_by_packet_id_;
     private video_track_infos_by_packet_id_;
     private subtitle_track_infos_by_packet_id_;
@@ -67,7 +77,6 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private last_video_source_info_;
     private output_video_dts_base_;
     private output_video_raw_dts_base_;
-    private output_video_dts_compression_;
     private primary_video_packet_id_;
     private primary_audio_packet_id_;
     private manually_selected_audio_packet_id_;
@@ -85,6 +94,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private audio_init_segment_dispatched_;
     private audio_init_segment_pending_;
     private video_init_segment_dispatched_;
+    private video_sample_entry_type_;
     private audio_last_sample_pts_;
     private aac_last_incomplete_data_;
     private loas_previous_frame_;
@@ -94,13 +104,20 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private video_recovery_gap_pending_;
     private seed_audio_after_video_bootstrap_;
     private audio_switch_video_bootstrap_pending_;
-    private video_drop_leading_rasl_;
-    private pending_video_leading_rasl_drop_;
     private video_random_access_safe_pending_;
     private dropped_video_timestamp_keys_;
     private video_mpu_assembler_;
     private pending_video_discontinuity_;
     private pre_init_video_units_;
+    private pending_video_access_units_;
+    private pending_video_mpu_sequence_number_;
+    private video_parameter_sets_;
+    private video_parameter_set_versions_;
+    private video_parameter_set_chains_by_nalu_;
+    private next_video_parameter_set_generation_;
+    private active_video_parameter_set_signature_;
+    private hevc_poc_recovery_;
+    private rejected_video_mpus_;
     constructor(probeData: any, config: any);
     destroy(): void;
     static probe(buffer: ArrayBuffer): import("./tlv").TLVProbeResult;
@@ -114,18 +131,32 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private parseSignalingMessages;
     private parseMpu;
     private processCompleteMfuUnit;
+    private processVideoMpuMetadata;
+    private findHvcCBox;
+    private parseAndUpdateVideoParameterSet;
+    private updateVideoParameterSet;
+    private equalUint8Arrays;
+    private tryActivateLatestCompleteParameterSet;
+    private resolveVideoParameterSetChain;
+    private bindVideoNaluParameterSetChain;
+    private activateVideoParameterSetChain;
+    private hasCriticalVideoMetadataChange;
     private appendH265NaluToAccessUnit;
     private processAudioMfuUnit;
     private wrapLatmPayloadWithLoasHeader;
+    private wrapRawAacPayloadWithLoasHeader;
     private parseMMTSLOASAACPayload;
     private shouldHoldAudioUntilVideoRandomAccess;
     private flushCurrentVideoAccessUnit;
     private appendVideoAccessUnit;
-    private bindVideoAccessUnitTimestamp;
+    private flushPendingVideoAccessUnits;
+    private parseHEVCVideoAccessUnit;
+    private validateVideoMpuTimestamps;
+    private mapVideoDescriptorTimestamp;
+    private rejectVideoMpu;
+    private videoMpuKey;
     private takePendingVideoRecoveryGap;
     private appendTimedVideoAccessUnit;
-    private noteDroppedLeadingRasl;
-    private completeLeadingRaslDrop;
     private initializeVideoOutputBases;
     private updateVodMediaInfoIndex;
     private applyPlaybackModeMediaInfo;
@@ -159,15 +190,18 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private getAudioAccessUnitIndex;
     private recordAudioTimestampCursor;
     private maybeSelectPrimaryAudioAsset;
-    selectAudioTrack(packetId: number, timelineSeed?: number, onSwitchBoundary?: () => void, rebuildFromSeek?: boolean, switchIdentity?: {
-        id: number;
-        attempt: number;
-    }): MMTSAudioTrackSelectionResult;
+    selectAudioTrack(packetId: number, timelineSeed?: number, onSwitchBoundary?: () => void, rebuildFromSeek?: boolean, switchIdentity?: PlaybackSwitchIdentity): MMTSAudioTrackSelectionResult;
     getPendingAudioTrackSwitch(): {
+        scopeId?: string;
+        transactionKey?: string;
+        attemptKey?: string;
+        kind?: 'audio-switch';
         id: number;
+        transactionId: number;
         attempt: number;
         packetId: number;
         requestedStart: number;
+        requestedStartMicroseconds: number;
     } | null;
     private withAudioTrackSelectionIdentity;
     private selectAudioTrackInternal;
@@ -185,20 +219,11 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private hasCompleteAudioMetadata;
     private isSameAudioMetadata;
     private appendCachedAudioSwitchSamples;
-    selectVideoTrack(packetId: number, switchIdentity?: {
-        id: number;
-        attempt: number;
-    }): MMTSVideoTrackSelectionResult;
+    selectVideoTrack(packetId: number, switchIdentity?: PlaybackSwitchIdentity): MMTSVideoTrackSelectionResult;
     private beginVideoTrackSwitch;
     private shouldSeedAudioAfterVideoBootstrap;
-    selectPrimaryAudioTrack(timelineSeed?: number, onSwitchBoundary?: () => void, rebuildFromSeek?: boolean, switchIdentity?: {
-        id: number;
-        attempt: number;
-    }): MMTSAudioTrackSelectionResult;
-    selectSecondaryAudioTrack(timelineSeed?: number, onSwitchBoundary?: () => void, rebuildFromSeek?: boolean, switchIdentity?: {
-        id: number;
-        attempt: number;
-    }): MMTSAudioTrackSelectionResult;
+    selectPrimaryAudioTrack(timelineSeed?: number, onSwitchBoundary?: () => void, rebuildFromSeek?: boolean, switchIdentity?: PlaybackSwitchIdentity): MMTSAudioTrackSelectionResult;
+    selectSecondaryAudioTrack(timelineSeed?: number, onSwitchBoundary?: () => void, rebuildFromSeek?: boolean, switchIdentity?: PlaybackSwitchIdentity): MMTSAudioTrackSelectionResult;
     private maybeSelectPrimaryVideoAsset;
     private countMmtpPacket;
     private logForcedVideoWaitIfNeeded;
@@ -213,6 +238,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private findPreferredAudioTrack;
     private findPreferredDeclaredAudioTrack;
     private logUnsupportedMMTSAudioTrack;
+    private logUnsupportedMMTSSubtitleTrack;
     private getAudioParseState;
     private dispatchAudioTracksIfChanged;
     private dispatchVideoTracksIfChanged;

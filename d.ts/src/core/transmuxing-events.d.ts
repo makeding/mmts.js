@@ -5,6 +5,8 @@ declare enum TransmuxingEvents {
     MEDIA_SEGMENT = "media_segment",
     STARTUP_GROUP = "startup_group",
     STARTUP_GROUP_FAILED = "startup_group_failed",
+    PLAYBACK_OPERATION_RETRY_REQUIRED = "playback_operation_retry_required",
+    PLAYBACK_OPERATION_RETRY_REJECTED = "playback_operation_retry_rejected",
     LOADING_COMPLETE = "loading_complete",
     RECOVERED_EARLY_EOF = "recovered_early_eof",
     MEDIA_INFO = "media_info",

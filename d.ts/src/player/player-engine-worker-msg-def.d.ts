@@ -3,7 +3,8 @@ import PlayerEvents from './player-events';
 import TransmuxingEvents from '../core/transmuxing-events';
 import type { ForwardBufferInfo } from './loading-controller';
 import type { PlaybackOperation } from '../core/playback-operation';
-export type WorkerMessageType = 'destroyed' | 'mse_init' | 'mse_event' | 'player_event' | 'transmuxing_event' | 'buffered_position_changed' | 'startup_group_appended' | 'controlled_seek' | 'playback_operation_started' | 'audio_switch_reservations_released' | 'video_switch_reservations_released' | 'logcat_callback';
+import type { PlaybackOperationEvent } from './playback-operation-result';
+export type WorkerMessageType = 'destroyed' | 'mse_init' | 'mse_event' | 'player_event' | 'transmuxing_event' | 'buffered_position_changed' | 'startup_group_appended' | 'controlled_seek' | 'playback_operation_started' | 'playback_operation_event' | 'audio_switch_reservations_released' | 'video_switch_reservations_released' | 'logcat_callback';
 export type WorkerMessagePacket = {
     msg: WorkerMessageType;
     playback_operation?: PlaybackOperation;
@@ -64,13 +65,22 @@ export type WorkerMessagePacketControlledSeek = WorkerMessagePacket & {
     reason: string;
     playback_operation?: PlaybackOperation;
 };
+export type WorkerMessagePacketPlaybackOperationEvent = WorkerMessagePacket & {
+    msg: 'playback_operation_event';
+    event: PlaybackOperationEvent;
+    playback_operation: PlaybackOperation;
+};
 export type WorkerMessagePacketAudioSwitchReservationsReleased = WorkerMessagePacket & {
     msg: 'audio_switch_reservations_released';
-    transaction_ids: number[];
+    transaction_keys: string[];
+    /** @deprecated Kept only for compatibility with older hosts. */
+    transaction_ids?: number[];
 };
 export type WorkerMessagePacketVideoSwitchReservationsReleased = WorkerMessagePacket & {
     msg: 'video_switch_reservations_released';
-    transaction_ids: number[];
+    transaction_keys: string[];
+    /** @deprecated Kept only for compatibility with older hosts. */
+    transaction_ids?: number[];
 };
 export type WorkerMessagePacketLogcatCallback = WorkerMessagePacket & {
     msg: 'logcat_callback';

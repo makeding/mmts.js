@@ -1,4 +1,5 @@
 import MediaInfo from '../core/media-info';
+import type { PlaybackOperationResult } from './playback-operation-result';
 declare class MSEPlayer {
     private readonly TAG;
     private _type;
@@ -14,10 +15,11 @@ declare class MSEPlayer {
     unload(): void;
     play(): Promise<void>;
     pause(): void;
-    switchPrimaryAudio(): void;
-    switchSecondaryAudio(): void;
-    selectAudioTrack(packetId: number): void;
-    selectVideoTrack(packetId: number): void;
+    seek(seconds: number): Promise<PlaybackOperationResult>;
+    switchPrimaryAudio(): Promise<PlaybackOperationResult>;
+    switchSecondaryAudio(): Promise<PlaybackOperationResult>;
+    selectAudioTrack(packetId: number): Promise<PlaybackOperationResult>;
+    selectVideoTrack(packetId: number): Promise<PlaybackOperationResult>;
     get type(): string;
     get buffered(): TimeRanges;
     get duration(): number;

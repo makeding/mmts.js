@@ -60,6 +60,7 @@ export default class MMTSVideoTrackSwitchCoordinator {
     };
     setConfirmedTrackData(operation: PlaybackOperation, data: any): boolean;
     setPendingMediaInfo(operation: PlaybackOperation, data: any): boolean;
+    canAdoptAttempt(operation: PlaybackOperation): boolean;
     adoptAttempt(operation: PlaybackOperation): MMTSVideoTrackSwitchTransaction | null;
     commit(operation: PlaybackOperation): MMTSVideoTrackSwitchTransaction | null;
     abort(operation: PlaybackOperation): MMTSVideoTrackSwitchTransaction | null;

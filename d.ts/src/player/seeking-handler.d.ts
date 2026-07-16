@@ -20,6 +20,7 @@ declare class SeekingHandler {
     private _applyMediaSeeking;
     private _shouldCoalesceControlledMediaSeek;
     private _scheduleControlledMediaSeek;
+    private _getControlledSeekDebounceInterval;
     private _cancelControlledMediaSeek;
     private _pollAndApplyUnbufferedSeek;
     private _applyUnbufferedSeek;

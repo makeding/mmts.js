@@ -79,6 +79,9 @@ export type MSEAudioTrackSwitchRebuildPlan = {
 export type MSETrackSwitchFailurePhase = 'plan-validation' | 'rebuild-media-source' | 'reset-parser-state' | 'append-init' | 'append-media' | 'mse-fatal';
 export type MSETrackSwitchFailure = {
     kind: 'audio-switch' | 'video-switch';
+    operation: PlaybackOperation;
+    transactionKey: string;
+    attemptKey: string;
     transactionId: number;
     phase: MSETrackSwitchFailurePhase;
     error: any;
@@ -94,12 +97,16 @@ export type MSEBufferStateMachineOutput = {
     flushPending: (type?: MSEBufferTrackType) => void;
     emitFatal: (error: any) => void;
     onStartupGroupAppended?: (startupGroup: MSEStartupGroup) => void;
-    onAudioTrackSwitchRebuildComplete?: (transactionId: number) => void;
+    onAudioTrackSwitchRebuildComplete?: (operation: PlaybackOperation) => void;
     onAudioTrackSwitchRebuildFailed?: (failure: MSETrackSwitchFailure) => void;
-    onVideoTrackSwitchComplete?: (transactionId: number) => void;
+    onVideoTrackSwitchComplete?: (operation: PlaybackOperation) => void;
     onVideoTrackSwitchFailed?: (failure: MSETrackSwitchFailure) => void;
+    onPlaybackOperationComplete?: (operation: PlaybackOperation, details?: {
+        committedTimeMilliseconds?: number;
+    }) => void;
+    onPlaybackOperationFailed?: (operation: PlaybackOperation, error: any) => void;
     seekMedia?: (targetTime: number, reason: string) => void;
-    seekTransmuxer?: (milliseconds: number, reason: string) => void;
+    seekTransmuxer?: (milliseconds: number, reason: string, operation?: PlaybackOperation) => void;
     endOfStream?: () => MSEBufferOperationResult;
     getMediaSourceState?: () => MSEBufferMediaSourceState;
     getForwardBufferInfo?: (currentTime: number) => MSEBufferForwardInfo;
@@ -136,7 +143,7 @@ declare class MSEBufferStateMachine {
     private _track_switch_needs_data;
     private _live_audio_track_switch_collection_hold;
     private _pending_audio_rebuild_plan;
-    private _pending_audio_rebuild_transaction_id;
+    private _pending_audio_rebuild_operation;
     private _track_switch_transaction;
     private _failed_track_switch_transactions;
     private _last_failed_track_switch;
@@ -150,6 +157,7 @@ declare class MSEBufferStateMachine {
     constructor(config: any, output: MSEBufferStateMachineOutput);
     destroy(): void;
     onSourceOpen(): void;
+    canSetPlaybackOperation(operation: PlaybackOperation): boolean;
     setPlaybackOperation(operation: PlaybackOperation): boolean;
     onInitSegment(type: MSEBufferTrackType, segment: any): void;
     onMediaSegment(type: MSEBufferTrackType, segment: any): void;
@@ -170,7 +178,7 @@ declare class MSEBufferStateMachine {
     private _beginTimelineSeek;
     onAudioTrackSwitch(request: any): boolean;
     onVideoTrackSwitch(request: any): boolean;
-    cancelVideoTrackSwitch(transactionId: number): boolean;
+    cancelVideoTrackSwitch(operation: PlaybackOperation): boolean;
     private _getVideoTrackSwitch;
     private _queueVideoTrackSwitchCommit;
     private _doesVideoSwitchMatchMediaWindow;
@@ -285,7 +293,8 @@ declare class MSEBufferStateMachine {
     private _expectsVideo;
     private _hasAudioSourceOrPending;
     private _getSeekPrerollKeepDuration;
-    private _isMediaSourceOpen;
+    private _isMediaSourceOperational;
+    private _isOperationalMediaSourceState;
     private _hasFatalMediaError;
     private _canOperateOnType;
     private _canAppendMediaToType;
