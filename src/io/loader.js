@@ -81,6 +81,24 @@ export class BaseLoader {
         return this._needStash;
     }
 
+    _getThrottleDelay(byteLength) {
+        let throttleKBps = this._config ? this._config.loaderThrottleKBps : 0;
+        if (typeof throttleKBps !== 'number' || !isFinite(throttleKBps) || throttleKBps <= 0) {
+            return 0;
+        }
+
+        return Math.ceil(byteLength * 1000 / (throttleKBps * 1024));
+    }
+
+    _waitForThrottle(byteLength, callback) {
+        let delay = this._getThrottleDelay(byteLength);
+        if (delay > 0) {
+            self.setTimeout(callback, delay);
+        } else {
+            callback();
+        }
+    }
+
     get onContentLengthKnown() {
         return this._onContentLengthKnown;
     }

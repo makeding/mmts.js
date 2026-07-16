@@ -118,6 +118,8 @@ class FetchStreamLoader extends BaseLoader {
             params.referrerPolicy = dataSource.referrerPolicy;
         }
 
+        let requireRangeResponse = this._shouldRequireRangeResponse(headers, this._range);
+
         if (self.AbortController) {
             this._abortController = new self.AbortController();
             params.signal = this._abortController.signal;
@@ -131,6 +133,20 @@ class FetchStreamLoader extends BaseLoader {
                 return;
             }
             if (res.ok && (res.status >= 200 && res.status <= 299)) {
+                if (requireRangeResponse && res.status !== 206) {
+                    this._status = LoaderStatus.kError;
+                    if (res.body) {
+                        res.body.cancel().catch(() => {});
+                    }
+                    if (this._onError) {
+                        this._onError(LoaderErrors.HTTP_STATUS_CODE_INVALID, {
+                            code: res.status,
+                            msg: `Range request not honored, status = ${res.status}`
+                        });
+                    }
+                    return;
+                }
+
                 if (res.url !== seekConfig.url) {
                     if (this._onURLRedirect) {
                         let redirectedURL = this._seekHandler.removeURLParameters(res.url);
@@ -139,12 +155,20 @@ class FetchStreamLoader extends BaseLoader {
                 }
 
                 let lengthHeader = res.headers.get('Content-Length');
+                let totalLength = this._parseContentRangeTotal(res.headers.get('Content-Range'));
                 if (lengthHeader != null) {
                     this._contentLength = parseInt(lengthHeader);
-                    if (this._contentLength !== 0) {
-                        if (this._onContentLengthKnown) {
-                            this._onContentLengthKnown(this._contentLength);
-                        }
+                    if (this._contentLength !== 0 && this._onContentLengthKnown) {
+                        this._onContentLengthKnown(this._contentLength, totalLength);
+                    }
+                } else if (totalLength !== null && this._onContentLengthKnown) {
+                    this._onContentLengthKnown(null, totalLength);
+                }
+                if (totalLength !== null) {
+                    if (this._range.to === -1) {
+                        this._contentLength = totalLength - this._range.from;
+                    } else {
+                        this._contentLength = this._range.to - this._range.from + 1;
                     }
                 }
 
@@ -224,7 +248,14 @@ class FetchStreamLoader extends BaseLoader {
                     this._onDataArrival(chunk, byteStart, this._receivedLength);
                 }
 
-                this._pump(reader);
+                this._waitForThrottle(chunk.byteLength, () => {
+                    if (this._requestAbort === true) {
+                        this._status = LoaderStatus.kComplete;
+                        reader.cancel();
+                        return;
+                    }
+                    this._pump(reader);
+                });
             }
         }).catch((e) => {
             if (this._abortController && this._abortController.signal.aborted) {
@@ -259,6 +290,28 @@ class FetchStreamLoader extends BaseLoader {
                 throw new RuntimeException(info.msg);
             }
         });
+    }
+
+    _shouldRequireRangeResponse(headers, range) {
+        return !!(range &&
+            (range.from !== 0 || range.to !== -1) &&
+            headers &&
+            typeof headers.has === 'function' &&
+            headers.has('Range'));
+    }
+
+    _parseContentRangeTotal(contentRange) {
+        if (contentRange == null) {
+            return null;
+        }
+
+        let match = /\/(\d+)$/.exec(contentRange);
+        if (match === null) {
+            return null;
+        }
+
+        let total = parseInt(match[1]);
+        return isNaN(total) || total <= 0 ? null : total;
     }
 
 }

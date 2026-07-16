@@ -90,6 +90,7 @@ class IOController {
         this._onComplete = null;
         this._onRedirect = null;
         this._onRecoveredEarlyEof = null;
+        this._onContentLengthKnownCallback = null;
 
         this._selectSeekHandler();
         this._selectLoader();
@@ -117,6 +118,7 @@ class IOController {
         this._onComplete = null;
         this._onRedirect = null;
         this._onRecoveredEarlyEof = null;
+        this._onContentLengthKnownCallback = null;
 
         this._extraData = null;
     }
@@ -189,6 +191,14 @@ class IOController {
 
     set onRecoveredEarlyEof(callback) {
         this._onRecoveredEarlyEof = callback;
+    }
+
+    get onContentLengthKnown() {
+        return this._onContentLengthKnownCallback;
+    }
+
+    set onContentLengthKnown(callback) {
+        this._onContentLengthKnownCallback = callback;
     }
 
     get currentURL() {
@@ -308,7 +318,7 @@ class IOController {
             this._paused = false;
             let bytes = this._resumeFrom;
             this._resumeFrom = 0;
-            this._internalSeek(bytes, true);
+            this._internalSeek(bytes, false, false);
         }
     }
 
@@ -325,7 +335,7 @@ class IOController {
      *
      * @dropUnconsumed: Ignore and discard all unconsumed data in stash buffer
      */
-    _internalSeek(bytes, dropUnconsumed) {
+    _internalSeek(bytes, dropUnconsumed, notifySeeked = true) {
         if (this._loader.isWorking()) {
             this._loader.abort();
         }
@@ -344,7 +354,7 @@ class IOController {
         this._createLoader();
         this._loader.open(this._dataSource, requestRange);
 
-        if (this._onSeeked) {
+        if (notifySeeked && this._onSeeked) {
             this._onSeeked();
         }
     }
@@ -445,9 +455,23 @@ class IOController {
         }
     }
 
-    _onContentLengthKnown(contentLength) {
-        if (contentLength && this._fullRequestFlag) {
-            this._totalLength = contentLength;
+    _onContentLengthKnown(contentLength, totalLength) {
+        let knownTotalLength = null;
+        if (totalLength && totalLength > 0) {
+            knownTotalLength = totalLength;
+        } else if (contentLength && this._fullRequestFlag) {
+            knownTotalLength = contentLength;
+        }
+
+        if (knownTotalLength !== null) {
+            this._totalLength = knownTotalLength;
+            this._dataSource.filesize = knownTotalLength;
+            if (this._onContentLengthKnownCallback) {
+                this._onContentLengthKnownCallback(knownTotalLength, this._extraData);
+            }
+        }
+
+        if ((contentLength || knownTotalLength !== null) && this._fullRequestFlag) {
             this._fullRequestFlag = false;
         }
     }
@@ -618,7 +642,7 @@ class IOController {
                         if (nextFrom < this._totalLength) {
                             Log.w(this.TAG, 'Connection lost, trying reconnect...');
                             this._isEarlyEofReconnecting = true;
-                            this._internalSeek(nextFrom, false);
+                            this._internalSeek(nextFrom, false, false);
                         }
                         return;
                     }
