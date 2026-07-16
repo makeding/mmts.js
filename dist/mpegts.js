@@ -2691,6 +2691,14 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "createMMTSStartupGroupFailure", function() { return createMMTSStartupGroupFailure; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "isMMTSStartupGroupFailure", function() { return isMMTSStartupGroupFailure; });
 /* harmony import */ var _playback_operation__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./playback-operation */ "./src/core/playback-operation.ts");
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 
 var DEFAULT_MMTS_STARTUP_GROUP_TIMEOUT = 45000;
 function resolveMMTSStartupGroupTimeout(config) {
@@ -3847,6 +3855,14 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "createPlaybackSwitchIdentity", function() { return createPlaybackSwitchIdentity; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "isPlaybackSwitchIdentity", function() { return isPlaybackSwitchIdentity; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "doesPlaybackSwitchIdentityMatchOperation", function() { return doesPlaybackSwitchIdentityMatchOperation; });
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 var playbackScopeSequence = 0;
 function isNonEmptyString(value) {
     return typeof value === 'string' && value.length > 0;
@@ -24510,6 +24526,14 @@ var LoadingController = /** @class */ (function () {
 "use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _core_playback_operation__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../core/playback-operation */ "./src/core/playback-operation.ts");
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 
 var TERMINAL_STAGES = new Set(['committed', 'aborted']);
 var ALLOWED_TRANSITIONS = {
@@ -24853,6 +24877,14 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "selectMMTSTrackSwitchSegmentPrefix", function() { return selectMMTSTrackSwitchSegmentPrefix; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "validateMMTSTrackSwitchSegmentPrefix", function() { return validateMMTSTrackSwitchSegmentPrefix; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "canAppendMMTSLiveVideoContinuation", function() { return canAppendMMTSLiveVideoContinuation; });
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 var MMTS_TRACK_SWITCH_MAX_DECODE_GAP = 0.1;
 var MMTS_TRACK_SWITCH_TIMESTAMP_TOLERANCE = 0.001;
 var MMTS_TRACK_SWITCH_COMPARISON_EPSILON = 0.000001;
@@ -24999,6 +25031,14 @@ function canAppendMMTSLiveVideoContinuation(previousSegment, nextSegment) {
 "use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _core_playback_operation__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../core/playback-operation */ "./src/core/playback-operation.ts");
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 
 var TERMINAL_STAGES = new Set(['committed', 'aborted']);
 var ALLOWED_TRANSITIONS = {
@@ -29072,6 +29112,14 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "isPlaybackOperationEvent", function() { return isPlaybackOperationEvent; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "createPlaybackOperationEvent", function() { return createPlaybackOperationEvent; });
 /* harmony import */ var _core_playback_operation__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../core/playback-operation */ "./src/core/playback-operation.ts");
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 
 function isPlaybackOperationTerminalStatus(status) {
     return status === 'committed' || status === 'no-op' || status === 'cancelled' ||
@@ -29318,6 +29366,14 @@ var PlaybackOperationResultRegistry = /** @class */ (function () {
 "use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _core_playback_operation__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../core/playback-operation */ "./src/core/playback-operation.ts");
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 
 /**
  * One owner for user-visible timeline mutations.
@@ -40235,6 +40291,14 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _demux_compressed_ip__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ../demux/compressed-ip */ "./src/demux/compressed-ip.ts");
 /* harmony import */ var _demux_mmtp__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../demux/mmtp */ "./src/demux/mmtp.ts");
 /* harmony import */ var _demux_mmts_program__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ../demux/mmts-program */ "./src/demux/mmts-program.ts");
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
 
 
 

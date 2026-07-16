@@ -1,3 +1,12 @@
+/*
+ * Copyright (C) 2026 SoraneOumi. All Rights Reserved.
+ *
+ * @author SoraneOumi <22672990+soraneoumi@users.noreply.github.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
+
 import TLV from '../demux/tlv';
 import CompressedIP from '../demux/compressed-ip';
 import MMTP, {MMTPPayloadType} from '../demux/mmtp';
