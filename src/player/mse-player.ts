@@ -22,6 +22,7 @@ import PlayerEngine from './player-engine';
 import PlayerEngineMainThread from './player-engine-main-thread';
 import PlayerEngineDedicatedThread from './player-engine-dedicated-thread';
 import {InvalidArgumentException} from '../utils/exception';
+import type {PlaybackOperationResult} from './playback-operation-result';
 
 class MSEPlayer {
 
@@ -95,20 +96,24 @@ class MSEPlayer {
         this._player_engine.pause();
     }
 
-    public switchPrimaryAudio(): void {
-        this._player_engine.switchPrimaryAudio();
+    public seek(seconds: number): Promise<PlaybackOperationResult> {
+        return this._player_engine.seek(seconds);
     }
 
-    public switchSecondaryAudio(): void {
-        this._player_engine.switchSecondaryAudio();
+    public switchPrimaryAudio(): Promise<PlaybackOperationResult> {
+        return this._player_engine.switchPrimaryAudio();
     }
 
-    public selectAudioTrack(packetId: number): void {
-        this._player_engine.selectAudioTrack(packetId);
+    public switchSecondaryAudio(): Promise<PlaybackOperationResult> {
+        return this._player_engine.switchSecondaryAudio();
     }
 
-    public selectVideoTrack(packetId: number): void {
-        this._player_engine.selectVideoTrack(packetId);
+    public selectAudioTrack(packetId: number): Promise<PlaybackOperationResult> {
+        return this._player_engine.selectAudioTrack(packetId);
+    }
+
+    public selectVideoTrack(packetId: number): Promise<PlaybackOperationResult> {
+        return this._player_engine.selectVideoTrack(packetId);
     }
 
     public get type(): string {
@@ -147,7 +152,7 @@ class MSEPlayer {
     }
 
     public set currentTime(seconds: number) {
-        this._player_engine.seek(seconds);
+        void this._player_engine.seek(seconds);
     }
 
     public get mediaInfo(): MediaInfo {

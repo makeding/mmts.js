@@ -34,6 +34,8 @@ enum PlayerEvents {
     PES_PRIVATE_DATA_ARRIVED = 'pes_private_data_arrived',
     MMTS_AUDIO_TRACKS = 'mmts_audio_tracks',
     MMTS_VIDEO_TRACKS = 'mmts_video_tracks',
+    MMTS_OPERATION_STATE = 'mmts_operation_state',
+    MMTS_OPERATION_RESULT = 'mmts_operation_result',
     MMTS_SUBTITLE_TRACKS = 'mmts_subtitle_tracks',
     MMTS_SUBTITLE_DATA_ARRIVED = 'mmts_subtitle_data_arrived',
     STATISTICS_INFO = 'statistics_info',

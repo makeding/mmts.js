@@ -19,6 +19,9 @@
 import MSEEvents from '../core/mse-events';
 import PlayerEvents from './player-events';
 import TransmuxingEvents from '../core/transmuxing-events';
+import type { ForwardBufferInfo } from './loading-controller';
+import type {PlaybackOperation} from '../core/playback-operation';
+import type {PlaybackOperationEvent} from './playback-operation-result';
 
 export type WorkerMessageType =
     | 'destroyed'
@@ -27,20 +30,30 @@ export type WorkerMessageType =
     | 'player_event'
     | 'transmuxing_event'
     | 'buffered_position_changed'
+    | 'startup_group_appended'
+    | 'controlled_seek'
+    | 'playback_operation_started'
+    | 'playback_operation_event'
+    | 'audio_switch_reservations_released'
+    | 'video_switch_reservations_released'
     | 'logcat_callback';
 
 export type WorkerMessagePacket = {
     msg: WorkerMessageType,
+    playback_operation?: PlaybackOperation,
 };
 
 export type WorkerMessagePacketMSEInit = WorkerMessagePacket & {
     msg: 'mse_init',
     handle: any,
+    rebuild: boolean,
+    playback_operation?: PlaybackOperation,
 };
 
 export type WorkerMessagePacketMSEEvent = WorkerMessagePacket & {
     msg: 'mse_event',
     event: MSEEvents,
+    forward_buffer_info?: ForwardBufferInfo,
 };
 
 export type WorkerMessagePacketPlayerEvent = WorkerMessagePacket & {
@@ -97,6 +110,40 @@ export type WorkerMessagePacketTransmuxingEventRecommendSeekpoint = WorkerMessag
 export type WorkerMessagePacketBufferedPositionChanged = WorkerMessagePacket & {
     msg: 'buffered_position_changed',
     buffered_position_milliseconds: number,
+    forward_buffer_info?: ForwardBufferInfo,
+};
+
+export type WorkerMessagePacketStartupGroupAppended = WorkerMessagePacket & {
+    msg: 'startup_group_appended',
+    startup_time: number,
+};
+
+export type WorkerMessagePacketControlledSeek = WorkerMessagePacket & {
+    msg: 'controlled_seek',
+    target_time: number,
+    reason: string,
+    playback_operation?: PlaybackOperation,
+};
+
+
+export type WorkerMessagePacketPlaybackOperationEvent = WorkerMessagePacket & {
+    msg: 'playback_operation_event',
+    event: PlaybackOperationEvent,
+    playback_operation: PlaybackOperation,
+};
+
+export type WorkerMessagePacketAudioSwitchReservationsReleased = WorkerMessagePacket & {
+    msg: 'audio_switch_reservations_released',
+    transaction_keys: string[],
+    /** @deprecated Kept only for compatibility with older hosts. */
+    transaction_ids?: number[],
+};
+
+export type WorkerMessagePacketVideoSwitchReservationsReleased = WorkerMessagePacket & {
+    msg: 'video_switch_reservations_released',
+    transaction_keys: string[],
+    /** @deprecated Kept only for compatibility with older hosts. */
+    transaction_ids?: number[],
 };
 
 export type WorkerMessagePacketLogcatCallback = WorkerMessagePacket & {
