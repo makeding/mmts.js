@@ -2,6 +2,7 @@
  * Copyright (C) 2016 Bilibili. All Rights Reserved.
  *
  * @author zheng qian <xqq@xqq.im>
+ * @author SoraneOumi
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -760,7 +761,13 @@ class TransmuxingController {
                 this._remuxer.seek(keyframe.milliseconds);
                 this._replaceIOProducerForCurrentOperation();
                 this._ioctl.seek(keyframe.fileposition);
-                this._setPendingSeekPoint(keyframe, targetSegmentIndex, segmentInfo, this._mediaDataSource.segments[targetSegmentIndex]);
+                this._setPendingSeekPoint(
+                    keyframe,
+                    targetSegmentIndex,
+                    segmentInfo,
+                    this._mediaDataSource.segments[targetSegmentIndex],
+                    milliseconds
+                );
             }
         } else {
             // cross-segment seeking
@@ -791,7 +798,13 @@ class TransmuxingController {
                 this._demuxer.timestampBase = this._mediaDataSource.segments[targetSegmentIndex].timestampBase;
                 this._prepareDemuxerForSeek(keyframe.milliseconds);
                 this._loadSegment(targetSegmentIndex, keyframe.fileposition);
-                this._setPendingSeekPoint(keyframe, targetSegmentIndex, targetSegmentInfo, this._mediaDataSource.segments[targetSegmentIndex]);
+                this._setPendingSeekPoint(
+                    keyframe,
+                    targetSegmentIndex,
+                    targetSegmentInfo,
+                    this._mediaDataSource.segments[targetSegmentIndex],
+                    milliseconds
+                );
                 this._reportSegmentMediaInfo(targetSegmentIndex);
             }
         }
@@ -799,7 +812,14 @@ class TransmuxingController {
         this._enableStatisticsReporter();
     }
 
-    _resolveSeekPoint(segmentInfo, segment, milliseconds, estimatedLookback) {
+    _resolveSeekPoint(
+        segmentInfo,
+        segment,
+        milliseconds,
+        estimatedLookback,
+        ignoreKeyframeIndex = false,
+        estimatedPositionOverride
+    ) {
         const isMMTS = this._demuxer instanceof MMTSDemuxer;
         const canEstimateMMTSPosition = isMMTS &&
             segment &&
@@ -811,7 +831,7 @@ class TransmuxingController {
             segmentInfo.duration > 0 &&
             isFinite(segmentInfo.duration);
 
-        if (segmentInfo && segmentInfo.isSeekable()) {
+        if (!ignoreKeyframeIndex && segmentInfo && segmentInfo.isSeekable()) {
             const nearest = segmentInfo.getNearestKeyframe(milliseconds);
             if (!isMMTS) {
                 return nearest;
@@ -844,7 +864,11 @@ class TransmuxingController {
         }
 
         if (canEstimateMMTSPosition) {
-            let estimatedPosition = Math.floor(milliseconds * segment.filesize / segmentInfo.duration);
+            let estimatedPosition = estimatedPositionOverride;
+            if (typeof estimatedPosition !== 'number' || !isFinite(estimatedPosition) ||
+                estimatedPosition < 0) {
+                estimatedPosition = Math.floor(milliseconds * segment.filesize / segmentInfo.duration);
+            }
             let lookback = estimatedLookback;
             if (typeof lookback !== 'number' || !isFinite(lookback) || lookback < 0) {
                 lookback = this._getMMTSVodSeekInitialLookback();
@@ -862,7 +886,13 @@ class TransmuxingController {
         return null;
     }
 
-    _setPendingSeekPoint(keyframe, segmentIndex, segmentInfo, segment) {
+    _setPendingSeekPoint(
+        keyframe,
+        segmentIndex,
+        segmentInfo,
+        segment,
+        requestedMilliseconds = keyframe.milliseconds
+    ) {
         const operation = this._playbackOperation ?
             clonePlaybackOperation(this._playbackOperation) : null;
         this._pendingMMTSVodSeekRetry = null;
@@ -871,17 +901,20 @@ class TransmuxingController {
             useFirstSyncPoint: keyframe.estimated === true,
             operation: operation ? clonePlaybackOperation(operation) : null,
         };
-        if (keyframe.estimated === true && this._demuxer instanceof MMTSDemuxer) {
+        if (this._demuxer instanceof MMTSDemuxer) {
             this._pendingMMTSVodSeekAudioSegments.splice(0, this._pendingMMTSVodSeekAudioSegments.length);
             this._pendingMMTSVodSeekAudioOperation = null;
             this._pendingMMTSVodSeek = {
-                milliseconds: keyframe.milliseconds,
+                milliseconds: requestedMilliseconds,
                 segmentIndex,
                 segmentInfo,
                 segment,
-                estimatedPosition: keyframe.estimatedPosition,
-                lookback: keyframe.lookback,
+                estimatedPosition: typeof keyframe.estimatedPosition === 'number' ?
+                    keyframe.estimatedPosition : keyframe.fileposition,
+                lookback: typeof keyframe.lookback === 'number' ? keyframe.lookback : 0,
                 fileposition: keyframe.fileposition,
+                estimated: keyframe.estimated === true,
+                ignoreKeyframeIndex: keyframe.ignoreKeyframeIndex === true,
                 operation: operation ? clonePlaybackOperation(operation) : null,
             };
         } else {
@@ -940,8 +973,13 @@ class TransmuxingController {
             pending.segmentInfo,
             pending.segment,
             pending.milliseconds,
-            nextLookback
+            nextLookback,
+            true,
+            pending.estimatedPosition
         );
+        if (keyframe != null) {
+            keyframe.ignoreKeyframeIndex = true;
+        }
         if (keyframe == null || keyframe.fileposition >= pending.fileposition) {
             if (pending.fileposition === 0) {
                 this._clearPendingSeekPoint();
@@ -952,7 +990,8 @@ class TransmuxingController {
                 fileposition: 0,
                 estimatedPosition: pending.estimatedPosition,
                 lookback: pending.estimatedPosition,
-                estimated: true
+                estimated: true,
+                ignoreKeyframeIndex: true
             };
         }
 
@@ -1068,7 +1107,8 @@ class TransmuxingController {
                 plan.keyframe,
                 plan.segmentIndex,
                 plan.segmentInfo,
-                plan.segment
+                plan.segment,
+                plan.request.requestedTimeMilliseconds
             );
         });
         this._enableStatisticsReporter();
@@ -1108,7 +1148,7 @@ class TransmuxingController {
         if (pending == null || pending.segmentIndex !== segmentIndex ||
             typeof syncPointTime !== 'number' || !isFinite(syncPointTime) ||
             syncPointTime <= pending.milliseconds + 250 ||
-            pending.lookback >= this._getMMTSVodSeekMaxLookback()) {
+            pending.fileposition === 0) {
             return false;
         }
 

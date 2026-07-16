@@ -553,6 +553,151 @@ async function testVodSeekRetriesWhenEstimatedRangeStartsAfterTarget() {
     assert.strictEqual(h.controller._pendingMMTSVodSeekRetry, null);
 }
 
+async function testVodSeekRetriesWhenIndexedRangeStartsAfterTarget() {
+    const h = makeHarness();
+    const targetMilliseconds = 49188.836;
+    const operation = makePlaybackOperation('seek', 2, targetMilliseconds);
+    h.controller._playbackOperation = Object.assign({}, operation);
+    h.controller._producerPlaybackOperation = Object.assign({}, operation);
+    h.controller._demuxer = new h.MMTSDemuxer();
+    h.controller._config = {
+        isMMTS: true,
+        mmtsVodSeekLookbackBytes: 32 * 1024 * 1024,
+        mmtsVodSeekMaxLookbackBytes: 256 * 1024 * 1024,
+    };
+    const segmentInfo = makeSeekableSegmentInfo(
+        [48000, 125000],
+        [430000000, 1100000000],
+        459926
+    );
+    const segment = {filesize: 4360105984};
+    const indexedPoint = {
+        index: 0,
+        milliseconds: 48000,
+        fileposition: 430000000,
+    };
+
+    h.controller._setPendingSeekPoint(
+        indexedPoint,
+        0,
+        segmentInfo,
+        segment,
+        targetMilliseconds
+    );
+    assert(h.controller._pendingMMTSVodSeek);
+    assert.strictEqual(
+        h.controller._pendingMMTSVodSeek.milliseconds,
+        targetMilliseconds
+    );
+    h.controller._activeIOProducer = {
+        operation: Object.assign({}, operation),
+    };
+    let retries = 0;
+    h.controller._retryPendingMMTSVodSeekIfNeeded = (segmentIndex) => {
+        assert.strictEqual(segmentIndex, 0);
+        retries++;
+        return true;
+    };
+    const video = makeVideoSegment(125.625, 126.2);
+    video.info.syncPoints = [{
+        originalDts: 125625,
+        dts: 125625,
+        pts: 125625,
+    }];
+
+    h.controller._onRemuxerMediaSegmentArrival('video', video);
+    assert.strictEqual(
+        h.events.some((event) => event[0] === 'media_segment'),
+        false
+    );
+    await Promise.resolve();
+    assert.strictEqual(retries, 1);
+}
+
+function testVodIndexedSeekRetryMovesBeforeRejectedIndex() {
+    const h = makeHarness();
+    const targetMilliseconds = 49188.836;
+    const operation = makePlaybackOperation('seek', 2, targetMilliseconds);
+    h.controller._playbackOperation = Object.assign({}, operation);
+    h.controller._producerPlaybackOperation = Object.assign({}, operation);
+    h.controller._demuxer = new h.MMTSDemuxer();
+    h.controller._config = {
+        isMMTS: true,
+        mmtsVodSeekLookbackBytes: 32 * 1024 * 1024,
+        mmtsVodSeekMaxLookbackBytes: 256 * 1024 * 1024,
+    };
+    const segmentInfo = makeSeekableSegmentInfo(
+        [48000, 125000],
+        [430000000, 1100000000],
+        459926
+    );
+    const segment = {filesize: 4360105984};
+    h.controller._setPendingSeekPoint({
+        index: 0,
+        milliseconds: 48000,
+        fileposition: 430000000,
+    }, 0, segmentInfo, segment, targetMilliseconds);
+    h.controller._internalAbort = () => {};
+
+    assert.strictEqual(h.controller._retryPendingMMTSVodSeekIfNeeded(0), true);
+    const retryEvent = h.events.find((entry) =>
+        entry[0] === 'playback_operation_retry_required'
+    );
+    assert(retryEvent);
+    assert.strictEqual(
+        retryEvent[1].filePosition,
+        430000000 - 32 * 1024 * 1024
+    );
+    assert.strictEqual(retryEvent[1].estimatedPosition, 430000000);
+    assert.strictEqual(retryEvent[1].lookbackBytes, 32 * 1024 * 1024);
+    assert.strictEqual(
+        h.controller._pendingPlaybackOperationRetry.keyframe.ignoreKeyframeIndex,
+        true
+    );
+}
+
+async function testVodSeekAtMaxLookbackFallsBackToSegmentStart() {
+    const h = makeHarness();
+    const targetMilliseconds = 49188.836;
+    const operation = makePlaybackOperation('seek', 3, targetMilliseconds);
+    h.controller._playbackOperation = Object.assign({}, operation);
+    h.controller._producerPlaybackOperation = Object.assign({}, operation);
+    h.controller._demuxer = new h.MMTSDemuxer();
+    h.controller._config = {
+        isMMTS: true,
+        mmtsVodSeekLookbackBytes: 32 * 1024 * 1024,
+        mmtsVodSeekMaxLookbackBytes: 32 * 1024 * 1024,
+    };
+    const estimatedPosition = 430000000;
+    h.controller._pendingMMTSVodSeek = {
+        milliseconds: targetMilliseconds,
+        segmentIndex: 0,
+        segmentInfo: {duration: 459926},
+        segment: {filesize: 4360105984},
+        estimatedPosition,
+        lookback: 32 * 1024 * 1024,
+        fileposition: estimatedPosition - 32 * 1024 * 1024,
+        estimated: true,
+        ignoreKeyframeIndex: true,
+        operation: Object.assign({}, operation),
+    };
+    h.controller._internalAbort = () => {};
+    h.controller._activeIOProducer = {
+        operation: Object.assign({}, operation),
+    };
+
+    assert.strictEqual(
+        h.controller._schedulePendingMMTSVodSeekRetryIfNeeded(0, 125625),
+        true
+    );
+    await Promise.resolve();
+    const retryEvent = h.events.find((entry) =>
+        entry[0] === 'playback_operation_retry_required'
+    );
+    assert(retryEvent);
+    assert.strictEqual(retryEvent[1].filePosition, 0);
+}
+
 function testVodAudioSwitchIntentIsReappliedAcrossAdaptiveSeekRetry() {
     const h = makeHarness();
     const initialOperation = makePlaybackOperation(
@@ -1617,6 +1762,9 @@ async function main() {
     testStartupGroupReplaysCollectedVideoContinuations();
     testStartupGroupReplaysCollectedAudioContinuations();
     await testVodSeekRetriesWhenEstimatedRangeStartsAfterTarget();
+    await testVodSeekRetriesWhenIndexedRangeStartsAfterTarget();
+    testVodIndexedSeekRetryMovesBeforeRejectedIndex();
+    await testVodSeekAtMaxLookbackFallsBackToSegmentStart();
     testVodAudioSwitchIntentIsReappliedAcrossAdaptiveSeekRetry();
     testVodVideoSwitchIntentIsReappliedAcrossAdaptiveSeekRetry();
     testVodAudioSwitchAudioFirstSegmentUsesStartupCollector();
