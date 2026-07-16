@@ -154,6 +154,7 @@ declare class MSEBufferStateMachine {
     private _pending_startup_group_timer;
     private _startup_group_timeout;
     private _last_mmts_source_identity;
+    private _video_random_access_points;
     constructor(config: any, output: MSEBufferStateMachineOutput);
     destroy(): void;
     onSourceOpen(): void;
@@ -280,6 +281,8 @@ declare class MSEBufferStateMachine {
     private _isAudioBlockedByVideoLead;
     private _getTrackLeadReferenceEnd;
     private _getPlayableForwardDuration;
+    private _recordVideoRandomAccessPoints;
+    private _resolveBufferedVideoRandomAccessPoint;
     private _hasPlayableRangeAt;
     private _requestMediaSeekWhenPlayable;
     private _findPlayableSeekTimeAtOrAfter;

@@ -2095,9 +2095,41 @@ function testForwardDurationCanTriggerBackpressureAndRecover() {
     );
 }
 
-function testDirectSeekDoesNotInferPlayableRangeFromBuffered() {
+function testMMTSDirectSeekAlignsToBufferedVideoRandomAccessPoint() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 8, end: 14});
+    h.ranges.audio.push({start: 8, end: 14});
+    const video = makeSegment('video', 8, 14, 1024);
+    video.info.syncPoints = [
+        {dts: 9800, pts: 10000},
+        {dts: 10500, pts: 10667},
+    ];
+    h.sm.onMediaSegment('video', video);
+
+    assert.strictEqual(h.sm.onDirectSeek(10.1), true);
+    assert.strictEqual(
+        h.log.some((entry) =>
+            entry[0] === 'seekMedia' && entry[1] === 10.667 && entry[2] === 'DIRECT_SEEK'
+        ),
+        true
+    );
+}
+
+function testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.ranges.video.push({start: 8, end: 14});
+    h.ranges.audio.push({start: 8, end: 14});
+
+    assert.strictEqual(h.sm.onDirectSeek(10.1), false);
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'seekMedia'), false);
+}
+
+function testNonMMTSDirectSeekKeepsRequestedTime() {
+    const h = makeHarness();
     assert.strictEqual(h.sm.onDirectSeek(2), true);
     assert.strictEqual(
         h.log.some((entry) => entry[0] === 'seekMedia' && entry[1] === 2 && entry[2] === 'DIRECT_SEEK'),
@@ -3029,7 +3061,9 @@ testBackpressureRequiresBothTrackDataButNotPlayableIntersection();
 testPendingQueuesTriggerBackpressureBeforeMSEAppend();
 testAudioBytesTriggerBackpressureAndRecovery();
 testForwardDurationCanTriggerBackpressureAndRecover();
-testDirectSeekDoesNotInferPlayableRangeFromBuffered();
+testMMTSDirectSeekAlignsToBufferedVideoRandomAccessPoint();
+testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint();
+testNonMMTSDirectSeekKeepsRequestedTime();
 testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease();
 testOverlappingStartupAppendsKeepPerTrackCompletionIdentity();
 testStartupGroupSeeksToFirstActualTrackIntersection();

@@ -94,6 +94,11 @@ type MSEBufferOperationResult = {
     error?: any,
 };
 
+type MSEVideoRandomAccessPoint = {
+    dts: number,
+    pts: number,
+};
+
 type MSEBufferInflightOperation = {
     kind: 'init' | 'media' | 'remove',
     segment: any,
@@ -301,6 +306,7 @@ class MSEBufferStateMachine {
         video: null,
         audio: null,
     };
+    private _video_random_access_points: MSEVideoRandomAccessPoint[] = [];
 
     public constructor(config: any, output: MSEBufferStateMachineOutput) {
         this._startup_group_timeout = resolveMMTSStartupGroupTimeout(config);
@@ -403,6 +409,9 @@ class MSEBufferStateMachine {
             return;
         }
         this._recordMMTSSourceIdentity(type, segment);
+        if (type === 'video') {
+            this._recordVideoRandomAccessPoints(segment);
+        }
         if (!this._isMMTS()) {
             segment.mseBufferGeneration = this._seek_generation;
         }
@@ -439,6 +448,8 @@ class MSEBufferStateMachine {
             ));
             return;
         }
+
+        this._recordVideoRandomAccessPoints(startupGroup.videoMediaSegment);
 
         this._clearPendingStartupGroup();
         const groupId = ++this._pending_startup_group_id;
@@ -518,6 +529,13 @@ class MSEBufferStateMachine {
     public onDirectSeek(targetTime: number): boolean {
         if (typeof targetTime !== 'number' || !isFinite(targetTime) || targetTime < 0) {
             return false;
+        }
+        if (this._isMMTS() && this._expectsVideo()) {
+            const randomAccessTarget = this._resolveBufferedVideoRandomAccessPoint(targetTime);
+            if (randomAccessTarget === null) {
+                return false;
+            }
+            targetTime = randomAccessTarget;
         }
         this._live_audio_track_switch_collection_hold = false;
         this._main_state = 'SEEKING';
@@ -769,6 +787,7 @@ class MSEBufferStateMachine {
         this._pending_init_segments.audio.splice(0, this._pending_init_segments.audio.length);
         this._pending_media_segments.video.splice(0, this._pending_media_segments.video.length);
         this._pending_media_segments.audio.splice(0, this._pending_media_segments.audio.length);
+        this._video_random_access_points.splice(0, this._video_random_access_points.length);
         this._pending_remove_ranges.video.splice(0, this._pending_remove_ranges.video.length);
         this._pending_remove_ranges.audio.splice(0, this._pending_remove_ranges.audio.length);
         this._pending_full_track_flush.video = true;
@@ -1385,6 +1404,9 @@ class MSEBufferStateMachine {
             this._pending_full_track_flush[type] = false;
             this._pending_track_flush_from[type] = null;
             this._resetMMTSSourceIdentity(type);
+            if (type === 'video') {
+                this._video_random_access_points.splice(0, this._video_random_access_points.length);
+            }
             if (this._pending_media_segments.video.length === 0 && this._pending_media_segments.audio.length === 0) {
                 this._timeline_seek_target_time = null;
             }
@@ -1397,6 +1419,7 @@ class MSEBufferStateMachine {
         this._pending_init_segments.audio.splice(0, this._pending_init_segments.audio.length);
         this._pending_media_segments.video.splice(0, this._pending_media_segments.video.length);
         this._pending_media_segments.audio.splice(0, this._pending_media_segments.audio.length);
+        this._video_random_access_points.splice(0, this._video_random_access_points.length);
         this._pending_remove_ranges.video.splice(0, this._pending_remove_ranges.video.length);
         this._pending_remove_ranges.audio.splice(0, this._pending_remove_ranges.audio.length);
         this._pending_full_track_flush.video = false;
@@ -3206,6 +3229,56 @@ class MSEBufferStateMachine {
             return this._hasAudioSourceOrPending() ? audioForwardDuration : 0;
         }
         return 0;
+    }
+
+    private _recordVideoRandomAccessPoints(segment: any): void {
+        if (!this._isMMTS() || !segment || !segment.info ||
+            !Array.isArray(segment.info.syncPoints)) {
+            return;
+        }
+        for (let i = 0; i < segment.info.syncPoints.length; i++) {
+            const syncPoint = segment.info.syncPoints[i];
+            if (!syncPoint || !this._isFiniteNumber(syncPoint.dts) ||
+                !this._isFiniteNumber(syncPoint.pts) || syncPoint.pts < 0) {
+                continue;
+            }
+            const duplicate = this._video_random_access_points.some(
+                (point: MSEVideoRandomAccessPoint) =>
+                    point.dts === syncPoint.dts && point.pts === syncPoint.pts
+            );
+            if (!duplicate) {
+                this._video_random_access_points.push({
+                    dts: syncPoint.dts,
+                    pts: syncPoint.pts,
+                });
+            }
+        }
+        this._video_random_access_points.sort((a, b) => {
+            if (a.pts !== b.pts) {
+                return a.pts - b.pts;
+            }
+            return a.dts - b.dts;
+        });
+    }
+
+    private _resolveBufferedVideoRandomAccessPoint(targetTime: number): number | null {
+        const tolerance = 0.01;
+        for (let i = 0; i < this._video_random_access_points.length; i++) {
+            const point = this._video_random_access_points[i];
+            const pointTime = point.pts / 1000;
+            if (pointTime < targetTime - tolerance ||
+                !this._hasPlayableRangeAt(pointTime, 0.05)) {
+                continue;
+            }
+            if (Math.abs(pointTime - targetTime) > tolerance) {
+                Log.v(
+                    this.TAG,
+                    `Move MMTS direct seek from ${targetTime.toFixed(3)} to video RAP ${pointTime.toFixed(3)}`
+                );
+            }
+            return pointTime;
+        }
+        return null;
     }
 
     private _hasPlayableRangeAt(targetTime: number, minForwardDuration: number): boolean {
