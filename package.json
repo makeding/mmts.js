@@ -26,6 +26,7 @@
     "serve": "webpack serve --mode=development --progress",
     "test:h265-slice-parser": "node scripts/test_h265_slice_parser.js",
     "test:hevc-poc": "node scripts/test_hevc_poc.js",
+    "test:io-range-resume": "node scripts/test_io_range_resume.js",
     "test:mmts-aac-config-remux": "node scripts/test_mmts_aac_config_remux.js",
     "test:mmts-audio-track-switch-window": "node scripts/test_mmts_audio_track_switch_window.js",
     "test:mmts-demux-remux-timeline": "node scripts/test_mmts_demux_remux_timeline.js",

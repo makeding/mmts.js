@@ -147,6 +147,22 @@ class FetchStreamLoader extends BaseLoader {
                     return;
                 }
 
+                let contentRangeHeader = res.headers.get('Content-Range');
+                let contentRange = this._parseContentRange(contentRangeHeader);
+                if (res.status === 206 && !this._matchesRequestedRange(contentRange, this._range)) {
+                    this._status = LoaderStatus.kError;
+                    if (res.body) {
+                        res.body.cancel().catch(() => {});
+                    }
+                    if (this._onError) {
+                        this._onError(LoaderErrors.HTTP_STATUS_CODE_INVALID, {
+                            code: res.status,
+                            msg: `Range response mismatch, Content-Range = ${contentRangeHeader || 'missing'}`
+                        });
+                    }
+                    return;
+                }
+
                 if (res.url !== seekConfig.url) {
                     if (this._onURLRedirect) {
                         let redirectedURL = this._seekHandler.removeURLParameters(res.url);
@@ -155,7 +171,7 @@ class FetchStreamLoader extends BaseLoader {
                 }
 
                 let lengthHeader = res.headers.get('Content-Length');
-                let totalLength = this._parseContentRangeTotal(res.headers.get('Content-Range'));
+                let totalLength = contentRange !== null ? contentRange.total : null;
                 if (lengthHeader != null) {
                     this._contentLength = parseInt(lengthHeader);
                     if (this._contentLength !== 0 && this._onContentLengthKnown) {
@@ -164,12 +180,8 @@ class FetchStreamLoader extends BaseLoader {
                 } else if (totalLength !== null && this._onContentLengthKnown) {
                     this._onContentLengthKnown(null, totalLength);
                 }
-                if (totalLength !== null) {
-                    if (this._range.to === -1) {
-                        this._contentLength = totalLength - this._range.from;
-                    } else {
-                        this._contentLength = this._range.to - this._range.from + 1;
-                    }
+                if (contentRange !== null) {
+                    this._contentLength = contentRange.to - contentRange.from + 1;
                 }
 
                 return this._pump.call(this, res.body.getReader());
@@ -240,7 +252,13 @@ class FetchStreamLoader extends BaseLoader {
 
                 this._status = LoaderStatus.kBuffering;
 
-                let chunk = result.value.buffer;
+                let chunkView = result.value;
+                let chunk = chunkView.buffer;
+                if (chunkView.byteOffset !== 0 || chunkView.byteLength !== chunk.byteLength) {
+                    let chunkCopy = new Uint8Array(chunkView.byteLength);
+                    chunkCopy.set(chunkView);
+                    chunk = chunkCopy.buffer;
+                }
                 let byteStart = this._range.from + this._receivedLength;
                 this._receivedLength += chunk.byteLength;
 
@@ -301,17 +319,44 @@ class FetchStreamLoader extends BaseLoader {
     }
 
     _parseContentRangeTotal(contentRange) {
+        let parsed = this._parseContentRange(contentRange);
+        return parsed !== null ? parsed.total : null;
+    }
+
+    _parseContentRange(contentRange) {
         if (contentRange == null) {
             return null;
         }
 
-        let match = /\/(\d+)$/.exec(contentRange);
+        let match = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(contentRange.trim());
         if (match === null) {
             return null;
         }
 
-        let total = parseInt(match[1]);
-        return isNaN(total) || total <= 0 ? null : total;
+        let from = parseInt(match[1]);
+        let to = parseInt(match[2]);
+        let total = match[3] === '*' ? null : parseInt(match[3]);
+        if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) ||
+            from < 0 || to < from ||
+            (total !== null &&
+             (!Number.isSafeInteger(total) || total <= 0 || to >= total))) {
+            return null;
+        }
+        return {from, to, total};
+    }
+
+    _matchesRequestedRange(contentRange, range) {
+        if (contentRange === null || range === null || contentRange.from !== range.from) {
+            return false;
+        }
+        if (range.to !== -1) {
+            let expectedTo = range.to;
+            if (contentRange.total !== null) {
+                expectedTo = Math.min(expectedTo, contentRange.total - 1);
+            }
+            return contentRange.to === expectedTo;
+        }
+        return contentRange.total === null || contentRange.to === contentRange.total - 1;
     }
 
 }
