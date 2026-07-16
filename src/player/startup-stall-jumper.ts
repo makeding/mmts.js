@@ -17,33 +17,64 @@
  */
 
 import Log from '../utils/logger';
+import BufferWindow, {BufferWindowInfo} from './buffer-window';
 
 class StartupStallJumper {
 
     private readonly TAG: string = 'StartupStallJumper';
 
     private _media_element: HTMLMediaElement = null;
-    private _on_direct_seek: (target: number) => void = null;
+    private _on_direct_seek: (target: number) => boolean | void = null;
     private _canplay_received: boolean = false;
     private _last_jump_target: number = -1;
     private _last_jump_clock: number = 0;
     private _stall_check_timer: number | null = null;
     private _stall_check_time: number = 0;
+    private _max_jump_gap: number = 0.75;
+    private _min_jump_buffer: number = 0.05;
+    private _allow_range_gap_jump: boolean = true;
+    private _use_buffered_jump: boolean = true;
+    private _defer_stalled_jump: boolean = false;
 
     private e: any = null;
 
-    public constructor(media_element: HTMLMediaElement, on_direct_seek: (target: number) => void) {
+    public constructor(
+        media_element: HTMLMediaElement,
+        on_direct_seek: (target: number) => boolean | void,
+        max_jump_gap?: number,
+        min_jump_buffer?: number,
+        allow_range_gap_jump?: boolean,
+        use_buffered_jump?: boolean,
+        defer_stalled_jump?: boolean
+    ) {
         this._media_element = media_element;
         this._on_direct_seek = on_direct_seek;
+        if (typeof max_jump_gap === 'number' && isFinite(max_jump_gap) && max_jump_gap > 0) {
+            this._max_jump_gap = max_jump_gap;
+        }
+        if (typeof min_jump_buffer === 'number' && isFinite(min_jump_buffer) && min_jump_buffer > 0) {
+            this._min_jump_buffer = min_jump_buffer;
+        }
+        if (typeof allow_range_gap_jump === 'boolean') {
+            this._allow_range_gap_jump = allow_range_gap_jump;
+        }
+        if (typeof use_buffered_jump === 'boolean') {
+            this._use_buffered_jump = use_buffered_jump;
+        }
+        if (typeof defer_stalled_jump === 'boolean') {
+            this._defer_stalled_jump = defer_stalled_jump;
+        }
 
         this.e = {
             onMediaCanPlay: this._onMediaCanPlay.bind(this),
+            onMediaPlaying: this._onMediaPlaying.bind(this),
             onMediaStalled: this._onMediaStalled.bind(this),
             onMediaWaiting: this._onMediaWaiting.bind(this),
             onMediaProgress: this._onMediaProgress.bind(this),
         };
 
         this._media_element.addEventListener('canplay', this.e.onMediaCanPlay);
+        this._media_element.addEventListener('playing', this.e.onMediaPlaying);
         this._media_element.addEventListener('stalled', this.e.onMediaStalled);
         this._media_element.addEventListener('waiting', this.e.onMediaWaiting);
         this._media_element.addEventListener('progress', this.e.onMediaProgress);
@@ -52,6 +83,7 @@ class StartupStallJumper {
     public destroy(): void {
         this._clearStallCheckTimer();
         this._media_element.removeEventListener('canplay', this.e.onMediaCanPlay);
+        this._media_element.removeEventListener('playing', this.e.onMediaPlaying);
         this._media_element.removeEventListener('stalled', this.e.onMediaStalled);
         this._media_element.removeEventListener('waiting', this.e.onMediaWaiting);
         this._media_element.removeEventListener('progress', this.e.onMediaProgress);
@@ -65,13 +97,21 @@ class StartupStallJumper {
         this._media_element.removeEventListener('canplay', this.e.onMediaCanPlay);
     }
 
+    private _onMediaPlaying(e: Event): void {
+        this._scheduleStallCheck();
+    }
+
     private _onMediaStalled(e: Event): void {
-        this._detectAndFixStuckPlayback(true);
+        if (!this._defer_stalled_jump) {
+            this._detectAndFixStuckPlayback(true);
+        }
         this._scheduleStallCheck();
     }
 
     private _onMediaWaiting(e: Event): void {
-        this._detectAndFixStuckPlayback(true);
+        if (!this._defer_stalled_jump) {
+            this._detectAndFixStuckPlayback(true);
+        }
         this._scheduleStallCheck();
     }
 
@@ -81,16 +121,14 @@ class StartupStallJumper {
 
     private _detectAndFixStuckPlayback(is_stalled?: boolean): void {
         const media = this._media_element;
-        const buffered = media.buffered;
 
         if (is_stalled || !this._canplay_received || media.readyState < 2) {  // HAVE_CURRENT_DATA
-            const target = this._findBufferedJumpTarget(media);
+            const target = this._findJumpTarget(media, false);
             if (target != null && this._shouldJumpTo(target)) {
                 Log.w(this.TAG, `Playback seems stuck at ${media.currentTime}, seek to ${target}`);
-                this._last_jump_target = target;
-                this._last_jump_clock = StartupStallJumper._getClockTime();
-                this._on_direct_seek(target);
-                this._media_element.removeEventListener('progress', this.e.onMediaProgress);
+                if (this._requestJump(target)) {
+                    this._media_element.removeEventListener('progress', this.e.onMediaProgress);
+                }
             }
         } else {
             // Playback doesn't stuck, remove progress event listener
@@ -98,32 +136,62 @@ class StartupStallJumper {
         }
     }
 
+    private _findJumpTarget(media: HTMLMediaElement, allowSmallForwardJump: boolean): number | null {
+        if (!this._use_buffered_jump) {
+            return media.currentTime + 0.35;
+        }
+        return this._findBufferedJumpTarget(media) ||
+            (allowSmallForwardJump ? this._findSmallForwardJumpTarget(media) : null);
+    }
+
     private _findBufferedJumpTarget(media: HTMLMediaElement): number | null {
-        const buffered = media.buffered;
         const current = media.currentTime;
         const tolerance = 0.05;
-        const edge_tolerance = 0.2;
+        const window = BufferWindow.inspect(media.buffered, current, {
+            tolerance,
+            mergeGap: 0.12,
+            edgeTolerance: 0.2,
+        });
 
-        for (let i = 0; i < buffered.length; i++) {
-            const start = buffered.start(i);
-            const end = buffered.end(i);
-
-            if (current < start - tolerance) {
-                return start;
-            }
-
-            if (current >= start - tolerance && current <= end + tolerance) {
-                if (current >= end - edge_tolerance && i + 1 < buffered.length) {
-                    const next_start = buffered.start(i + 1);
-                    if (next_start > current + tolerance) {
-                        return next_start;
-                    }
+        if (window.currentRangeIndex < 0) {
+            if (window.nextRangeStart !== undefined) {
+                if (window.nextRangeStart <= tolerance) {
+                    return window.nextRangeStart;
                 }
+                if (!this._allow_range_gap_jump) {
+                    return null;
+                }
+                return this._getRangeGapJumpTarget(window);
+            }
+            return null;
+        }
+
+        if (window.atCurrentRangeEnd && window.nextRangeStart !== undefined) {
+            if (!this._allow_range_gap_jump) {
                 return null;
             }
+            return this._getRangeGapJumpTarget(window);
         }
 
         return null;
+    }
+
+    private _getRangeGapJumpTarget(window: BufferWindowInfo): number | null {
+        if (window.nextRangeStart === undefined ||
+            window.nextRangeEnd === undefined ||
+            window.nextRangeGap === undefined) {
+            return null;
+        }
+
+        if (window.nextRangeGap > this._max_jump_gap) {
+            return null;
+        }
+
+        if (window.nextRangeEnd < window.nextRangeStart + this._min_jump_buffer) {
+            return null;
+        }
+
+        return window.nextRangeStart;
     }
 
     private _scheduleStallCheck(): void {
@@ -158,15 +226,19 @@ class StartupStallJumper {
             return;
         }
 
-        const target = this._findBufferedJumpTarget(media) || this._findSmallForwardJumpTarget(media);
-        if (target == null || !this._shouldJumpTo(target)) {
+        const target = this._findJumpTarget(media, true);
+        if (target == null) {
+            this._scheduleStallCheck();
+            return;
+        }
+
+        if (!this._shouldJumpTo(target)) {
+            this._scheduleStallCheck();
             return;
         }
 
         Log.w(this.TAG, `Playback still stuck at ${media.currentTime}, fast-forward to ${target}`);
-        this._last_jump_target = target;
-        this._last_jump_clock = StartupStallJumper._getClockTime();
-        this._on_direct_seek(target);
+        this._requestJump(target);
     }
 
     private _findSmallForwardJumpTarget(media: HTMLMediaElement): number | null {
@@ -174,17 +246,14 @@ class StartupStallJumper {
         const target = current + 0.35;
         const buffered = media.buffered;
         const tolerance = 0.05;
+        const min_forward_buffer = 0.35;
 
         for (let i = 0; i < buffered.length; i++) {
             const start = buffered.start(i);
             const end = buffered.end(i);
-            if (current >= start - tolerance && current < end - tolerance) {
+            if (current >= start - tolerance && current + min_forward_buffer < end - tolerance) {
                 return Math.min(target, end - tolerance);
             }
-        }
-
-        if (buffered.length === 0 && media.readyState >= 2) {
-            return target;
         }
 
         return null;
@@ -193,6 +262,16 @@ class StartupStallJumper {
     private _shouldJumpTo(target: number): boolean {
         const now = StartupStallJumper._getClockTime();
         return Math.abs(target - this._last_jump_target) > 0.01 || now - this._last_jump_clock > 1000;
+    }
+
+    private _requestJump(target: number): boolean {
+        const accepted = this._on_direct_seek(target);
+        if (accepted === false) {
+            return false;
+        }
+        this._last_jump_target = target;
+        this._last_jump_clock = StartupStallJumper._getClockTime();
+        return true;
     }
 
     private static _getClockTime(): number {

@@ -31,9 +31,20 @@ class MSEController {
         this._config = config;
         this._emitter = new EventEmitter();
 
-        if (this._config.isLive && this._config.autoCleanupSourceBuffer == undefined) {
-            // For live stream, do auto cleanup by default
-            this._config.autoCleanupSourceBuffer = true;
+        if (this._config.isLive) {
+            const useLiveCleanupWindow =
+                this._config.autoCleanupSourceBuffer == undefined &&
+                this._config.autoCleanupMaxBackwardDuration === 3 * 60 &&
+                this._config.autoCleanupMinBackwardDuration === 2 * 60;
+
+            if (this._config.autoCleanupSourceBuffer == undefined) {
+                // For live stream, do auto cleanup by default
+                this._config.autoCleanupSourceBuffer = true;
+            }
+            if (useLiveCleanupWindow) {
+                this._config.autoCleanupMaxBackwardDuration = 30;
+                this._config.autoCleanupMinBackwardDuration = 10;
+            }
         }
 
         this.e = {
@@ -62,8 +73,6 @@ class MSEController {
         this._requireSetMediaDuration = false;
         this._pendingMediaDuration = 0;
 
-        this._pendingSourceBufferInit = [];
-        this._deferredHevcVideoInitSegment = null;
         this._mimeTypes = {
             video: null,
             audio: null
@@ -76,13 +85,17 @@ class MSEController {
             video: null,
             audio: null
         };
-        this._pendingSegments = {
+        this._bufferedSegmentRecords = {
             video: [],
             audio: []
         };
         this._pendingRemoveRanges = {
             video: [],
             audio: []
+        };
+        this._lastLiveSeekableRange = {
+            start: NaN,
+            end: NaN
         };
     }
 
@@ -133,10 +146,7 @@ class MSEController {
         if (this._mediaSource) {
             let ms = this._mediaSource;
             for (let type in this._sourceBuffers) {
-                // pending segments should be discard
-                let ps = this._pendingSegments[type];
-                ps.splice(0, ps.length);
-                this._pendingSegments[type] = null;
+                this._bufferedSegmentRecords[type] = null;
                 this._pendingRemoveRanges[type] = null;
                 this._lastInitSegments[type] = null;
 
@@ -173,12 +183,59 @@ class MSEController {
                 ms.removeEventListener('endstreaming', this.e.onEndStreaming);
                 ms.removeEventListener('qualitychange', this.e.onQualityChange);
             }
-            this._pendingSourceBufferInit = [];
-            this._deferredHevcVideoInitSegment = null;
+            this._bufferedSegmentRecords = {
+                video: [],
+                audio: []
+            };
+            this._clearLiveSeekableRange();
             this._isBufferFull = false;
             this._hasFatalMediaError = false;
             this._mediaSource = null;
         }
+    }
+
+    abandon() {
+        if (!this._mediaSource) {
+            return;
+        }
+
+        let ms = this._mediaSource;
+        for (let type in this._sourceBuffers) {
+            this._bufferedSegmentRecords[type] = null;
+            this._pendingRemoveRanges[type] = null;
+            this._lastInitSegments[type] = null;
+
+            let sb = this._sourceBuffers[type];
+            if (sb) {
+                sb.removeEventListener('error', this.e.onSourceBufferError);
+                sb.removeEventListener('updateend', this.e.onSourceBufferUpdateEnd);
+                if (ms.readyState !== 'closed') {
+                    // Release parser and decoder resources before a replacement MediaSource is attached.
+                    try {
+                        ms.removeSourceBuffer(sb);
+                    } catch (error) {
+                        Log.e(this.TAG, error.message);
+                    }
+                }
+                this._mimeTypes[type] = null;
+                this._sourceBuffers[type] = null;
+            }
+        }
+
+        this._bufferedSegmentRecords = {
+            video: [],
+            audio: []
+        };
+        this._mediaElementProxy = null;
+        ms.removeEventListener('sourceopen', this.e.onSourceOpen);
+        ms.removeEventListener('sourceended', this.e.onSourceEnded);
+        ms.removeEventListener('sourceclose', this.e.onSourceClose);
+        if (this._useManagedMediaSource) {
+            ms.removeEventListener('startstreaming', this.e.onStartStreaming);
+            ms.removeEventListener('endstreaming', this.e.onEndStreaming);
+            ms.removeEventListener('qualitychange', this.e.onQualityChange);
+        }
+        this._mediaSource = null;
     }
 
     isManagedMediaSource() {
@@ -217,139 +274,262 @@ class MSEController {
         }
     }
 
-    appendInitSegment(initSegment, deferred = undefined) {
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
-            // sourcebuffer creation requires mediaSource.readyState === 'open'
-            // so we defer the sourcebuffer creation, until sourceopen event triggered
-            this._pendingSourceBufferInit.push(initSegment);
-            // make sure that this InitSegment is in the front of pending segments queue
-            this._pendingSegments[initSegment.type].push(initSegment);
-            return;
-        }
-
-        let is = initSegment;
-        let mimeType = `${is.container}`;
-        if (is.codec && is.codec.length > 0) {
-            if (is.codec === 'opus' && Browser.safari) {
-                is.codec = 'Opus';
+    _makeMimeType(initSegment) {
+        let mimeType = `${initSegment.container}`;
+        if (initSegment.codec && initSegment.codec.length > 0) {
+            if (initSegment.codec === 'opus' && Browser.safari) {
+                initSegment.codec = 'Opus';
             }
-            mimeType += `;codecs=${is.codec}`;
+            mimeType += `;codecs=${initSegment.codec}`;
+        }
+        return mimeType;
+    }
+
+    _addSourceBuffer(type, mimeType) {
+        let sb;
+        try {
+            sb = this._mediaSource.addSourceBuffer(mimeType);
+            sb.addEventListener('error', this.e.onSourceBufferError);
+            sb.addEventListener('updateend', this.e.onSourceBufferUpdateEnd);
+        } catch (error) {
+            Log.e(this.TAG, error.message);
+            return {ok: false, error};
         }
 
-        let firstInitSegment = false;
+        this._sourceBuffers[type] = sb;
+        this._mimeTypes[type] = mimeType;
+        return {ok: true, sourceBuffer: sb};
+    }
 
+    _resetSourceBufferParserState(type, mimeType) {
+        let sb = this._sourceBuffers[type];
+        if (!this._mediaSource || !sb || sb.updating || this._mediaSource.readyState !== 'open') {
+            return {ok: false, blocked: true};
+        }
+
+        if (typeof sb.changeType !== 'function') {
+            let error = new Error(`${type} SourceBuffer.changeType is unavailable`);
+            Log.e(this.TAG, error.message);
+            return {ok: false, error};
+        }
+
+        try {
+            Log.v(this.TAG, `Reset ${type} SourceBuffer parser state, mimeType: ${mimeType}`);
+            sb.changeType(mimeType);
+            this._mimeTypes[type] = mimeType;
+            return {ok: true};
+        } catch (error) {
+            Log.w(this.TAG, `Failed to reset ${type} SourceBuffer parser state: ${error.message}`);
+            return {ok: false, error};
+        }
+    }
+
+    appendInitSegmentDirect(initSegment, resetParserState = false) {
+        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
+            return {ok: false, blocked: true};
+        }
+
+        let is = resetParserState ? Object.assign({}, initSegment) : initSegment;
+        let type = is.type;
+        let mimeType = this._makeMimeType(is);
         Log.v(this.TAG, 'Received Initialization Segment, mimeType: ' + mimeType);
 
-        if (this._shouldDeferHevcVideoInitSegment(is)) {
-            Log.v(this.TAG, `Defer ${is.type} SourceBuffer init until audio init, mimeType: ${mimeType}`);
-            this._deferredHevcVideoInitSegment = is;
-            if (!deferred) {
-                this._pendingSegments[is.type].push(is);
-            }
-            return;
+        let sb = this._sourceBuffers[type];
+        if (sb && sb.updating) {
+            return {ok: false, blocked: true};
         }
 
-        this._lastInitSegments[is.type] = is;
-
-        if (mimeType !== this._mimeTypes[is.type]) {
-            if (!this._mimeTypes[is.type]) {  // empty, first chance create sourcebuffer
-                firstInitSegment = true;
-                try {
-                    let sb = this._sourceBuffers[is.type] = this._mediaSource.addSourceBuffer(mimeType);
-                    sb.addEventListener('error', this.e.onSourceBufferError);
-                    sb.addEventListener('updateend', this.e.onSourceBufferUpdateEnd);
-                } catch (error) {
-                    Log.e(this.TAG, error.message);
-                    this._emitter.emit(MSEEvents.ERROR, {code: error.code, msg: error.message});
-                    return;
+        if (!sb) {
+            let result = this._addSourceBuffer(type, mimeType);
+            if (!result.ok) {
+                this._emitter.emit(MSEEvents.ERROR, {code: result.error.code, msg: result.error.message});
+                return result;
+            }
+            sb = result.sourceBuffer;
+        } else if (resetParserState || mimeType !== this._mimeTypes[type]) {
+            if (mimeType !== this._mimeTypes[type]) {
+                Log.v(this.TAG, `Notice: ${type} mimeType changed, origin: ${this._mimeTypes[type]}, target: ${mimeType}`);
+            }
+            let result = this._resetSourceBufferParserState(type, mimeType);
+            if (!result.ok) {
+                if (result.error) {
+                    this._emitter.emit(MSEEvents.ERROR, {code: result.error.code, msg: result.error.message});
                 }
-            } else {
-                Log.v(this.TAG, `Notice: ${is.type} mimeType changed, origin: ${this._mimeTypes[is.type]}, target: ${mimeType}`);
+                return result;
             }
-            this._mimeTypes[is.type] = mimeType;
+            sb = this._sourceBuffers[type];
         }
 
-        if (!deferred) {
-            // deferred means this InitSegment has been pushed to pendingSegments queue
-            this._pendingSegments[is.type].push(is);
+        this._lastInitSegments[type] = Object.assign({}, is);
+
+        if (!sb || sb.updating) {
+            return {ok: false, blocked: true};
         }
 
-        if (is.type === 'audio' && this._deferredHevcVideoInitSegment) {
-            let audioSb = this._sourceBuffers.audio;
-            if (audioSb && !audioSb.updating && this._pendingSegments.audio.length > 0) {
-                this._doAppendSegments();
-            }
-            this._releaseDeferredHevcVideoInitSegment();
+        if (!is.data || is.data.byteLength === 0) {
+            return {ok: true, empty: true};
         }
 
-        if (!firstInitSegment) {  // append immediately only if init segment in subsequence
-            if (this._sourceBuffers[is.type] && !this._sourceBuffers[is.type].updating) {
-                this._doAppendSegments();
+        try {
+            sb.appendBuffer(is.data);
+            this._isBufferFull = false;
+            return {ok: true};
+        } catch (error) {
+            if (error.code === 22 || error.name === 'QuotaExceededError') {
+                this._isBufferFull = true;
+                return {ok: false, quota: true, error};
             }
-        }
-        if (Browser.safari && is.container === 'audio/mpeg' && is.mediaDuration > 0) {
-            // 'audio/mpeg' track under Safari may cause MediaElement's duration to be NaN
-            // Manually correct MediaSource.duration to make progress bar seekable, and report right duration
-            this._requireSetMediaDuration = true;
-            this._pendingMediaDuration = is.mediaDuration / 1000;  // in seconds
-            this._updateMediaSourceDuration();
+            this._emitFatalMediaError(error);
+            return {ok: false, error};
         }
     }
 
-    _shouldDeferHevcVideoInitSegment(initSegment) {
-        if (this._deferredHevcVideoInitSegment || this._sourceBuffers.video || this._mimeTypes.audio) {
-            return false;
+    appendMediaSegmentDirect(mediaSegment) {
+        let type = mediaSegment.type;
+        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
+            return {ok: false, blocked: true};
+        }
+        if (this._hasFatalMediaError) {
+            return {ok: false, fatal: true};
+        }
+        let sb = this._sourceBuffers[type];
+        if (!sb || sb.updating || this._hasPendingRemoveRanges()) {
+            return {ok: false, blocked: true};
         }
 
-        if (initSegment.type !== 'video' || initSegment.container !== 'video/mp4') {
-            return false;
+        let segment = mediaSegment;
+        if (typeof segment.timestampOffset === 'number' && isFinite(segment.timestampOffset)) {
+            let currentOffset = sb.timestampOffset;
+            let targetOffset = segment.timestampOffset / 1000;
+            let delta = Math.abs(currentOffset - targetOffset);
+            if (delta > 0.1) {
+                Log.v(this.TAG, `Update MPEG audio timestampOffset from ${currentOffset} to ${targetOffset}`);
+                sb.timestampOffset = targetOffset;
+            }
+            delete segment.timestampOffset;
         }
 
-        let codec = initSegment.codec || '';
-        if (!codec.startsWith('hvc1.')) {
-            return false;
-        }
-        if (this._config.mmtsDeferHevcVideoInitUntilAudio) {
-            return true;
+        if (!segment.data || segment.data.byteLength === 0) {
+            return {ok: true, empty: true};
         }
 
-        let level = /\.L(\d+)/.exec(codec);
-        return level !== null && parseInt(level[1], 10) >= 180;
+        if (segment.resetParserState) {
+            let result = this._resetSourceBufferParserState(
+                type,
+                segment.mimeType || this._makeMimeType(segment)
+            );
+            if (!result.ok) {
+                return result;
+            }
+            sb = this._sourceBuffers[type];
+            delete segment.resetParserState;
+            delete segment.mimeType;
+        }
+
+        try {
+            sb.appendBuffer(segment.data);
+            this._recordAppendedMediaSegment(type, segment);
+            this._isBufferFull = false;
+            return {ok: true};
+        } catch (error) {
+            if (error.code === 22 || error.name === 'QuotaExceededError') {
+                this._isBufferFull = true;
+                return {ok: false, quota: true, error};
+            }
+            this._emitFatalMediaError(error);
+            return {ok: false, error};
+        }
     }
 
-    _releaseDeferredHevcVideoInitSegment() {
-        let initSegment = this._deferredHevcVideoInitSegment;
-        if (!initSegment) {
+    removeRangeDirect(type, start, end) {
+        if (!this._mediaSource || this._mediaSource.readyState !== 'open') {
+            return {ok: false, blocked: true};
+        }
+        let sb = this._sourceBuffers[type];
+        if (!sb || sb.updating || !isFinite(start) || !isFinite(end) || end <= start) {
+            return {ok: false, blocked: true};
+        }
+
+        try {
+            sb.remove(start, end);
+            return {ok: true};
+        } catch (error) {
+            this._emitFatalMediaError(error);
+            return {ok: false, error};
+        }
+    }
+
+    resetParserStateDirect(type, mimeType) {
+        let sb = this._sourceBuffers[type];
+        if (!this._mediaSource || !sb || sb.updating || this._mediaSource.readyState !== 'open') {
+            return {ok: false, blocked: true};
+        }
+        return this._resetSourceBufferParserState(type, mimeType);
+    }
+
+    getMediaSourceState() {
+        let sourceBuffers = {};
+        for (let type in this._sourceBuffers) {
+            let sb = this._sourceBuffers[type];
+            sourceBuffers[type] = {
+                exists: !!sb,
+                updating: !!(sb && sb.updating)
+            };
+        }
+        return {
+            readyState: this._mediaSource ? this._mediaSource.readyState : 'closed',
+            streaming: this._mediaSource ? this._mediaSource.streaming : undefined,
+            hasFatalMediaError: this._hasFatalMediaError,
+            hasPendingRemoveRanges: this._hasPendingRemoveRanges(),
+            sourceBuffers
+        };
+    }
+
+    getBufferedRanges(type) {
+        let sb = this._sourceBuffers[type];
+        let ranges = [];
+        if (!sb) {
+            return ranges;
+        }
+        try {
+            for (let i = 0; i < sb.buffered.length; i++) {
+                ranges.push({
+                    start: sb.buffered.start(i),
+                    end: sb.buffered.end(i)
+                });
+            }
+        } catch (error) {
+            return [];
+        }
+        return ranges;
+    }
+
+    getLastInitSegment(type) {
+        let segment = this._lastInitSegments[type];
+        return segment ? Object.assign({}, segment) : null;
+    }
+
+    setMediaDuration(duration) {
+        if (this._config.isLive || !isFinite(duration) || duration <= 0) {
             return;
         }
 
-        this._deferredHevcVideoInitSegment = null;
-        Log.v(this.TAG, 'Release deferred HEVC video SourceBuffer init after audio init');
-        this.appendInitSegment(initSegment, true);
-    }
-
-    appendMediaSegment(mediaSegment) {
-        let ms = mediaSegment;
-        this._pendingSegments[ms.type].push(ms);
-
-        if (this._config.autoCleanupSourceBuffer && this._needCleanupSourceBuffer()) {
-            this._doCleanupSourceBuffer();
+        if (this._pendingMediaDuration > duration) {
+            duration = this._pendingMediaDuration;
         }
 
-        let sb = this._sourceBuffers[ms.type];
-        if (sb && !sb.updating && !this._hasPendingRemoveRanges()) {
-            this._doAppendSegments();
-        }
+        this._requireSetMediaDuration = true;
+        this._pendingMediaDuration = duration;
+        this._updateMediaSourceDuration();
     }
 
-    flush() {
-        // remove all appended buffers
+    clearBufferedRanges() {
         for (let type in this._sourceBuffers) {
-            this.flushType(type);
+            this._clearTypeBufferedRanges(type);
         }
     }
 
-    flushType(type) {
+    _clearTypeBufferedRanges(type) {
         if (!this._sourceBuffers[type]) {
             return;
         }
@@ -366,10 +546,6 @@ class MSEController {
             }
         }
 
-        // pending segments should be discard
-        let ps = this._pendingSegments[type];
-        ps.splice(0, ps.length);
-
         if (this._mediaSource.readyState === 'closed') {
             // Parent MediaSource object has been detached from HTMLMediaElement
             return;
@@ -381,35 +557,19 @@ class MSEController {
             let end = sb.buffered.end(i);
             this._pendingRemoveRanges[type].push({start, end});
         }
+        Log.v(this.TAG, `Clear ${type} SourceBuffer`);
 
         // if sb is not updating, let's remove ranges now!
         if (!sb.updating) {
             this._doRemoveRanges();
         }
 
-        // Safari 10 may get InvalidStateError in the later appendBuffer() after SourceBuffer.remove() call
-        // Internal parser's state may be invalid at this time. Re-append last InitSegment to workaround.
-        // Related issue: https://bugs.webkit.org/show_bug.cgi?id=159230
-        if (Browser.safari) {
-            let lastInitSegment = this._lastInitSegments[type];
-            if (lastInitSegment) {
-                this._pendingSegments[type].push(lastInitSegment);
-                if (!sb.updating) {
-                    this._doAppendSegments();
-                }
-            }
-        }
     }
 
     endOfStream() {
         let ms = this._mediaSource;
         let sb = this._sourceBuffers;
         if (!ms || ms.readyState !== 'open') {
-            if (ms && ms.readyState === 'closed' && this._hasPendingSegments()) {
-                // If MediaSource hasn't turned into open state, and there're pending segments
-                // Mark pending endOfStream, defer call until all pending segments appended complete
-                this._hasPendingEos = true;
-            }
             return;
         }
         if (sb.video && sb.video.updating || sb.audio && sb.audio.updating) {
@@ -466,63 +626,15 @@ class MSEController {
         return end;
     }
 
-    _needCleanupSourceBuffer() {
-        if (!this._config.autoCleanupSourceBuffer) {
-            return false;
-        }
-
-        let currentTime = this._mediaElementProxy.getCurrentTime();
-
-        for (let type in this._sourceBuffers) {
-            let sb = this._sourceBuffers[type];
-            if (sb) {
-                let buffered = sb.buffered;
-                if (buffered.length >= 1) {
-                    if (currentTime - buffered.start(0) >= this._config.autoCleanupMaxBackwardDuration) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        return false;
-    }
-
-    _doCleanupSourceBuffer() {
-        let currentTime = this._mediaElementProxy.getCurrentTime();
-
-        for (let type in this._sourceBuffers) {
-            let sb = this._sourceBuffers[type];
-            if (sb) {
-                let buffered = sb.buffered;
-                let doRemove = false;
-
-                for (let i = 0; i < buffered.length; i++) {
-                    let start = buffered.start(i);
-                    let end = buffered.end(i);
-
-                    if (start <= currentTime && currentTime < end + 3) {  // padding 3 seconds
-                        if (currentTime - start >= this._config.autoCleanupMaxBackwardDuration) {
-                            doRemove = true;
-                            let removeEnd = currentTime - this._config.autoCleanupMinBackwardDuration;
-                            this._pendingRemoveRanges[type].push({start: start, end: removeEnd});
-                        }
-                    } else if (end < currentTime) {
-                        doRemove = true;
-                        this._pendingRemoveRanges[type].push({start: start, end: end});
-                    }
-                }
-
-                if (doRemove && !sb.updating) {
-                    this._doRemoveRanges();
-                }
-            }
-        }
-    }
-
     _updateMediaSourceDuration() {
+        if (this._config.isLive) {
+            this._requireSetMediaDuration = false;
+            this._pendingMediaDuration = 0;
+            return;
+        }
+
         let sb = this._sourceBuffers;
-        if (this._mediaElementProxy.getReadyState() === 0 || this._mediaSource.readyState !== 'open') {
+        if (this._mediaSource.readyState !== 'open') {
             return;
         }
         if ((sb.video && sb.video.updating) || (sb.audio && sb.audio.updating)) {
@@ -532,13 +644,109 @@ class MSEController {
         let current = this._mediaSource.duration;
         let target = this._pendingMediaDuration;
 
-        if (target > 0 && (isNaN(current) || target > current)) {
+        if (target > 0 && (!isFinite(current) || target > current)) {
             Log.v(this.TAG, `Update MediaSource duration from ${current} to ${target}`);
             this._mediaSource.duration = target;
         }
 
         this._requireSetMediaDuration = false;
         this._pendingMediaDuration = 0;
+    }
+
+    _getLiveBufferedRange() {
+        let currentTime = this._mediaElementProxy ? this._mediaElementProxy.getCurrentTime() : 0;
+        let start = -Infinity;
+        let end = Infinity;
+        let hasRange = false;
+
+        for (let type in this._sourceBuffers) {
+            let sb = this._sourceBuffers[type];
+            if (!sb) {
+                continue;
+            }
+
+            let buffered = sb.buffered;
+            if (buffered.length === 0) {
+                return null;
+            }
+
+            let rangeIndex = buffered.length - 1;
+            for (let i = 0; i < buffered.length; i++) {
+                let from = buffered.start(i);
+                let to = buffered.end(i);
+                if (currentTime >= from && currentTime < to) {
+                    rangeIndex = i;
+                    break;
+                }
+            }
+
+            start = Math.max(start, buffered.start(rangeIndex));
+            end = Math.min(end, buffered.end(rangeIndex));
+            hasRange = true;
+        }
+
+        if (!hasRange || !isFinite(start) || !isFinite(end) || end <= start) {
+            return null;
+        }
+
+        return {start, end};
+    }
+
+    _updateLiveSeekableRange() {
+        if (!this._config.isLive || !this._mediaSource || this._mediaSource.readyState !== 'open') {
+            return;
+        }
+        if (typeof this._mediaSource.setLiveSeekableRange !== 'function') {
+            return;
+        }
+        for (let type in this._sourceBuffers) {
+            let sb = this._sourceBuffers[type];
+            if (sb && sb.updating) {
+                return;
+            }
+        }
+
+        let range = this._getLiveBufferedRange();
+        if (!range) {
+            this._clearLiveSeekableRange();
+            return;
+        }
+
+        let start = Math.max(0, range.start);
+        let end = range.end;
+        if (end <= start) {
+            this._clearLiveSeekableRange();
+            return;
+        }
+
+        let last = this._lastLiveSeekableRange;
+        if (Math.abs(last.start - start) < 0.25 && Math.abs(last.end - end) < 0.25) {
+            return;
+        }
+
+        try {
+            this._mediaSource.setLiveSeekableRange(start, end);
+            last.start = start;
+            last.end = end;
+        } catch (error) {
+            Log.w(this.TAG, `Failed to update live seekable range: ${error.message}`);
+        }
+    }
+
+    _clearLiveSeekableRange() {
+        if (!this._mediaSource ||
+            this._mediaSource.readyState !== 'open' ||
+            typeof this._mediaSource.clearLiveSeekableRange !== 'function') {
+            return;
+        }
+
+        try {
+            this._mediaSource.clearLiveSeekableRange();
+            this._lastLiveSeekableRange.start = NaN;
+            this._lastLiveSeekableRange.end = NaN;
+        } catch (error) {
+            Log.w(this.TAG, `Failed to clear live seekable range: ${error.message}`);
+        }
     }
 
     _doRemoveRanges() {
@@ -555,80 +763,256 @@ class MSEController {
         }
     }
 
-    _doAppendSegments() {
-        if (this._hasFatalMediaError) {
-            this._discardPendingSegments();
+    _isBatchableMediaSegment(segment) {
+        return segment &&
+            segment.info &&
+            segment.data &&
+            segment.data.byteLength > 0 &&
+            segment.timestampOffset == null &&
+            !segment.resetParserState;
+    }
+
+    _getMediaSegmentTimelineBegin(segment) {
+        const info = segment.info;
+        let begin = Infinity;
+        if (isFinite(info.beginDts)) {
+            begin = Math.min(begin, info.beginDts);
+        }
+        if (isFinite(info.beginPts)) {
+            begin = Math.min(begin, info.beginPts);
+        }
+        if (info.firstSample) {
+            if (isFinite(info.firstSample.dts)) {
+                begin = Math.min(begin, info.firstSample.dts);
+            }
+            if (isFinite(info.firstSample.pts)) {
+                begin = Math.min(begin, info.firstSample.pts);
+            }
+        }
+        return begin / 1000;
+    }
+
+    _getMediaSegmentTimelineEnd(segment) {
+        const info = segment.info;
+        let end = -Infinity;
+        if (isFinite(info.endDts)) {
+            end = Math.max(end, info.endDts);
+        }
+        if (isFinite(info.endPts)) {
+            end = Math.max(end, info.endPts);
+        }
+        if (info.lastSample) {
+            if (isFinite(info.lastSample.dts) && isFinite(info.lastSample.duration)) {
+                end = Math.max(end, info.lastSample.dts + info.lastSample.duration);
+            }
+            if (isFinite(info.lastSample.pts) && isFinite(info.lastSample.duration)) {
+                end = Math.max(end, info.lastSample.pts + info.lastSample.duration);
+            }
+        }
+        return end / 1000;
+    }
+
+    _recordAppendedMediaSegment(type, segment) {
+        if (!this._bufferedSegmentRecords[type] ||
+            !this._isBatchableMediaSegment(segment)) {
             return;
         }
 
-        let pendingSegments = this._pendingSegments;
+        const begin = this._getMediaSegmentTimelineBegin(segment);
+        const end = this._getMediaSegmentTimelineEnd(segment);
+        if (!isFinite(begin) || !isFinite(end) || end <= begin) {
+            return;
+        }
 
-        for (let type in pendingSegments) {
-            if (!this._sourceBuffers[type] || this._sourceBuffers[type].updating || this._mediaSource.streaming === false) {
+        this._bufferedSegmentRecords[type].push({
+            begin,
+            end,
+            byteLength: segment.data.byteLength,
+            pending: true
+        });
+    }
+
+    getForwardBufferInfo(currentTime) {
+        if (typeof currentTime !== 'number' || !isFinite(currentTime)) {
+            return {
+                currentTime: 0,
+                forwardBytes: 0,
+                audioForwardBytes: 0,
+                videoForwardBytes: 0
+            };
+        }
+
+        this._syncBufferedSegmentRecords();
+        const audioForwardBytes = this._getTypeForwardBufferBytes('audio', currentTime);
+        const videoForwardBytes = this._getTypeForwardBufferBytes('video', currentTime);
+        const audioBufferedBytes = this._getTypeBufferedBytes('audio');
+        const videoBufferedBytes = this._getTypeBufferedBytes('video');
+        const audioForwardDuration = this._getTypeForwardBufferDuration('audio', currentTime);
+        const videoForwardDuration = this._getTypeForwardBufferDuration('video', currentTime);
+
+        return {
+            currentTime,
+            forwardBytes: audioForwardBytes + videoForwardBytes,
+            audioForwardBytes,
+            videoForwardBytes,
+            audioBufferedBytes,
+            videoBufferedBytes,
+            forwardDuration: Math.min(audioForwardDuration, videoForwardDuration),
+            audioForwardDuration,
+            videoForwardDuration
+        };
+    }
+
+    _syncBufferedSegmentRecords() {
+        for (let type in this._bufferedSegmentRecords) {
+            const records = this._bufferedSegmentRecords[type];
+            const sb = this._sourceBuffers[type];
+            if (!records || !sb) {
+                continue;
+            }
+            if (records.length === 0) {
                 continue;
             }
 
-            if (pendingSegments[type].length > 0) {
-                let segment = pendingSegments[type].shift();
-
-                if (typeof segment.timestampOffset === 'number' && isFinite(segment.timestampOffset)) {
-                    // For MPEG audio stream in MSE, if unbuffered-seeking occurred
-                    // We need explicitly set timestampOffset to the desired point in timeline for mpeg SourceBuffer.
-                    let currentOffset = this._sourceBuffers[type].timestampOffset;
-                    let targetOffset = segment.timestampOffset / 1000;  // in seconds
-
-                    let delta = Math.abs(currentOffset - targetOffset);
-                    if (delta > 0.1) {  // If time delta > 100ms
-                        Log.v(this.TAG, `Update MPEG audio timestampOffset from ${currentOffset} to ${targetOffset}`);
-                        this._sourceBuffers[type].timestampOffset = targetOffset;
-                    }
-                    delete segment.timestampOffset;
-                }
-
-                if (!segment.data || segment.data.byteLength === 0) {
-                    // Ignore empty buffer
+            const buffered = sb.buffered;
+            const clippedRecords = [];
+            for (let readIndex = 0; readIndex < records.length; readIndex++) {
+                const record = records[readIndex];
+                if (record.pending === true) {
+                    clippedRecords.push(record);
                     continue;
                 }
-
-                try {
-                    this._sourceBuffers[type].appendBuffer(segment.data);
-                    this._isBufferFull = false;
-                } catch (error) {
-                    if (error.code === 22) {  // QuotaExceededError
-                        this._pendingSegments[type].unshift(segment);
-                        /* Notice that FireFox may not throw QuotaExceededError if SourceBuffer is full
-                         * Currently we can only do lazy-load to avoid SourceBuffer become scattered.
-                         * SourceBuffer eviction policy may be changed in future version of FireFox.
-                         *
-                         * Related issues:
-                         * https://bugzilla.mozilla.org/show_bug.cgi?id=1279885
-                         * https://bugzilla.mozilla.org/show_bug.cgi?id=1280023
-                         */
-
-                        // report buffer full, abort network IO
-                        if (!this._isBufferFull) {
-                            this._emitter.emit(MSEEvents.BUFFER_FULL);
-                        }
-                        this._isBufferFull = true;
-                    } else {
-                        this._emitFatalMediaError(error);
-                    }
-                }
+                this._appendBufferedRecordIntersections(clippedRecords, record, buffered);
             }
+            records.splice(0, records.length, ...clippedRecords);
         }
     }
 
-    _discardPendingSegments() {
-        for (let type in this._pendingSegments) {
-            let pending = this._pendingSegments[type];
-            if (pending) {
-                pending.splice(0, pending.length);
+    _appendBufferedRecordIntersections(output, record, ranges) {
+        const duration = record.end - record.begin;
+        if (!isFinite(duration) || duration <= 0 || !isFinite(record.byteLength) || record.byteLength <= 0) {
+            return;
+        }
+
+        for (let i = 0; i < ranges.length; i++) {
+            const start = Math.max(record.begin, ranges.start(i));
+            const end = Math.min(record.end, ranges.end(i));
+            if (end <= start) {
+                continue;
+            }
+
+            output.push({
+                begin: start,
+                end,
+                byteLength: Math.ceil(record.byteLength * ((end - start) / duration))
+            });
+        }
+    }
+
+    _getTypeForwardBufferBytes(type, currentTime) {
+        const records = this._bufferedSegmentRecords[type];
+        if (!records || records.length === 0) {
+            return 0;
+        }
+
+        let bytes = 0;
+        for (let record of records) {
+            if (record.end <= currentTime) {
+                continue;
+            }
+
+            const overlapStart = Math.max(record.begin, currentTime);
+            const overlapEnd = record.end;
+            if (overlapEnd <= overlapStart) {
+                continue;
+            }
+
+            const duration = record.end - record.begin;
+            bytes += duration > 0 ?
+                record.byteLength * ((overlapEnd - overlapStart) / duration) :
+                record.byteLength;
+        }
+        return Math.ceil(bytes);
+    }
+
+    _getTypeBufferedBytes(type) {
+        const records = this._bufferedSegmentRecords[type];
+        if (!records || records.length === 0) {
+            return 0;
+        }
+
+        let bytes = 0;
+        for (let record of records) {
+            if (isFinite(record.byteLength) && record.byteLength > 0) {
+                bytes += record.byteLength;
+            }
+        }
+        return Math.ceil(bytes);
+    }
+
+    _getTypeForwardBufferDuration(type, currentTime) {
+        const end = this._getTypeForwardBufferedRecordEnd(type, currentTime);
+        return isFinite(end) ? Math.max(0, end - currentTime) : 0;
+    }
+
+    _getTypeForwardBufferedRecordEnd(type, currentTime) {
+        const records = this._bufferedSegmentRecords[type];
+        if (!records || records.length === 0) {
+            return NaN;
+        }
+
+        const mergeGap = 0.12;
+        const forwardRecords = [];
+        for (let record of records) {
+            if (!isFinite(record.begin) || !isFinite(record.end) || record.end <= currentTime) {
+                continue;
+            }
+            forwardRecords.push(record);
+        }
+        if (forwardRecords.length === 0) {
+            return NaN;
+        }
+
+        forwardRecords.sort((a, b) => {
+            if (a.begin === b.begin) {
+                return a.end - b.end;
+            }
+            return a.begin - b.begin;
+        });
+
+        let end = NaN;
+        for (let record of forwardRecords) {
+            if (record.pending === true) {
+                continue;
+            }
+            if (!isFinite(end)) {
+                if (record.begin > currentTime + mergeGap) {
+                    break;
+                }
+                end = record.end;
+                continue;
+            }
+            if (record.begin > end + mergeGap) {
+                break;
+            }
+            end = Math.max(end, record.end);
+        }
+        return end;
+    }
+
+    _markAppendedMediaSegmentRecordsComplete(type) {
+        const records = this._bufferedSegmentRecords[type];
+        if (!records) {
+            return;
+        }
+        for (let record of records) {
+            if (record.pending === true) {
+                record.pending = false;
             }
         }
     }
 
     _emitFatalMediaError(error) {
-        this._discardPendingSegments();
         if (this._hasFatalMediaError) {
             return;
         }
@@ -641,17 +1025,16 @@ class MSEController {
     _onSourceOpen() {
         Log.v(this.TAG, 'MediaSource onSourceOpen');
         this._mediaSource.removeEventListener('sourceopen', this.e.onSourceOpen);
-        // deferred sourcebuffer creation / initialization
-        if (this._pendingSourceBufferInit.length > 0) {
-            let pendings = this._pendingSourceBufferInit;
-            while (pendings.length) {
-                let segment = pendings.shift();
-                this.appendInitSegment(segment, true);
+        if (this._config.isLive) {
+            try {
+                this._mediaSource.duration = Infinity;
+                this._clearLiveSeekableRange();
+            } catch (error) {
+                Log.e(this.TAG, error.message);
             }
         }
-        // there may be some pending media segments, append them
-        if (this._hasPendingSegments()) {
-            this._doAppendSegments();
+        if (this._requireSetMediaDuration) {
+            this._updateMediaSourceDuration();
         }
         this._emitter.emit(MSEEvents.SOURCE_OPEN);
     }
@@ -690,27 +1073,33 @@ class MSEController {
         }
     }
 
-    _hasPendingSegments() {
-        let ps = this._pendingSegments;
-        return ps.video.length > 0 || ps.audio.length > 0;
-    }
-
     _hasPendingRemoveRanges() {
         let prr = this._pendingRemoveRanges;
         return prr.video.length > 0 || prr.audio.length > 0;
     }
 
-    _onSourceBufferUpdateEnd() {
+    _onSourceBufferUpdateEnd(e) {
         if (this._requireSetMediaDuration) {
             this._updateMediaSourceDuration();
         } else if (this._hasPendingRemoveRanges()) {
             this._doRemoveRanges();
-        } else if (this._hasPendingSegments()) {
-            this._doAppendSegments();
         } else if (this._hasPendingEos) {
             this.endOfStream();
         }
-        this._emitter.emit(MSEEvents.UPDATE_END);
+        this._updateLiveSeekableRange();
+        let type = undefined;
+        if (e && e.target) {
+            for (let mediaType in this._sourceBuffers) {
+                if (this._sourceBuffers[mediaType] === e.target) {
+                    type = mediaType;
+                    break;
+                }
+            }
+        }
+        if (type !== undefined) {
+            this._markAppendedMediaSegmentRecordsComplete(type);
+        }
+        this._emitter.emit(MSEEvents.UPDATE_END, type);
     }
 
     _onSourceBufferError(e) {

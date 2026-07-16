@@ -27,9 +27,12 @@ class SeekingHandler {
     private _media_element: HTMLMediaElement = null;
     private _always_seek_keyframe: boolean = false;
     private _on_unbuffered_seek: (milliseconds: number) => void = null;
+    private _on_seek_request?: (seconds: number, source: string) => boolean = null;
 
     private _request_set_current_time: boolean = false;
     private _seek_request_record_clocktime?: number = null;
+    private _controlled_media_seek_timer?: number = null;
+    private _controlled_media_seek_target?: number = null;
     private _idr_sample_list: IDRSampleList = new IDRSampleList();
 
     private e?: any = null;
@@ -37,11 +40,13 @@ class SeekingHandler {
     public constructor(
         config: any,
         media_element: HTMLMediaElement,
-        on_unbuffered_seek: (milliseconds: number) => void
+        on_unbuffered_seek: (milliseconds: number) => void,
+        on_seek_request?: (seconds: number, source: string) => boolean
     ) {
         this._config = config;
         this._media_element = media_element;
         this._on_unbuffered_seek = on_unbuffered_seek;
+        this._on_seek_request = on_seek_request || null;
 
         this.e = {
             onMediaSeeking: this._onMediaSeeking.bind(this),
@@ -59,14 +64,29 @@ class SeekingHandler {
     }
 
     public destroy(): void {
+        this._cancelControlledMediaSeek();
         this._idr_sample_list.clear();
         this._idr_sample_list = null;
         this._media_element.removeEventListener('seeking', this.e.onMediaSeeking);
         this._media_element = null;
         this._on_unbuffered_seek = null;
+        this._on_seek_request = null;
     }
 
     public seek(seconds: number): void {
+        this._cancelControlledMediaSeek();
+        if (!this._config.isLive && this._requestControlledSeek(seconds, 'api')) {
+            return;
+        }
+
+        if (this._config.isLive) {
+            const liveTarget = this._clampLiveSeekTarget(seconds);
+            if (liveTarget != null) {
+                this.directSeek(liveTarget);
+            }
+            return;
+        }
+
         const direct_seek: boolean = this._isPositionBuffered(seconds);
         let direct_seek_to_video_begin: boolean = false;
 
@@ -95,7 +115,7 @@ class SeekingHandler {
             }
         } else {
             this._idr_sample_list.clear();
-            this._on_unbuffered_seek(Math.floor(seconds * 1000));  // In milliseconds
+            this._on_unbuffered_seek(Math.round(seconds * 1000000) / 1000);  // In milliseconds
             if (this._config.accurateSeek) {
                 this.directSeek(seconds);
             }
@@ -120,7 +140,29 @@ class SeekingHandler {
         }
 
         let target: number = this._media_element.currentTime;
+
+        if (this._shouldCoalesceControlledMediaSeek()) {
+            this._scheduleControlledMediaSeek(target);
+            return;
+        }
+
+        if (!this._config.isLive && this._requestControlledSeek(target, 'media')) {
+            return;
+        }
+
+        this._applyMediaSeeking(target);
+    }
+
+    private _applyMediaSeeking(target: number, deferUnbufferedSeek: boolean = true): void {
         const buffered: TimeRanges = this._media_element.buffered;
+
+        if (this._config.isLive) {
+            const liveTarget = this._clampLiveSeekTarget(target);
+            if (liveTarget != null && Math.abs(liveTarget - target) > 0.01) {
+                this.directSeek(liveTarget);
+            }
+            return;
+        }
 
         // Handle seeking to video begin (near 0.0s)
         if (target < 1.0 && buffered.length > 0) {
@@ -145,11 +187,52 @@ class SeekingHandler {
             return;
         }
 
-        // else: Prepare for unbuffered seeking
-        // Defer the unbuffered seeking since the seeking bar maybe still being draged
-        this._seek_request_record_clocktime = SeekingHandler._getClockTime();
-        window.setTimeout(this._pollAndApplyUnbufferedSeek.bind(this), 50);
+        if (deferUnbufferedSeek) {
+            // else: Prepare for unbuffered seeking
+            // Defer the unbuffered seeking since the seeking bar maybe still being draged
+            this._seek_request_record_clocktime = SeekingHandler._getClockTime();
+            window.setTimeout(this._pollAndApplyUnbufferedSeek.bind(this), 50);
+        } else {
+            this._applyUnbufferedSeek(target);
+        }
 
+    }
+
+    private _shouldCoalesceControlledMediaSeek(): boolean {
+        return this._config.isMMTS === true &&
+            this._config.isLive !== true &&
+            this._on_seek_request != null;
+    }
+
+    private _scheduleControlledMediaSeek(target: number): void {
+        this._cancelControlledMediaSeek();
+        this._controlled_media_seek_target = target;
+        this._controlled_media_seek_timer = window.setTimeout(() => {
+            this._controlled_media_seek_timer = null;
+            const pendingTarget = this._controlled_media_seek_target;
+            this._controlled_media_seek_target = null;
+            if (pendingTarget == null || this._media_element == null) {
+                return;
+            }
+            if (!this._requestControlledSeek(pendingTarget, 'media')) {
+                this._applyMediaSeeking(pendingTarget, false);
+            }
+        }, this._getControlledSeekDebounceInterval());
+    }
+
+
+    private _getControlledSeekDebounceInterval(): number {
+        const configured = this._config && this._config.mmtsSeekDebounceInterval;
+        return typeof configured === 'number' && isFinite(configured) && configured >= 0 ?
+            configured : 100;
+    }
+
+    private _cancelControlledMediaSeek(): void {
+        if (this._controlled_media_seek_timer != null) {
+            window.clearTimeout(this._controlled_media_seek_timer);
+            this._controlled_media_seek_timer = null;
+        }
+        this._controlled_media_seek_target = null;
     }
 
     private _pollAndApplyUnbufferedSeek(): void {
@@ -161,16 +244,20 @@ class SeekingHandler {
         if (record_time <= SeekingHandler._getClockTime() - 100) {
             const target = this._media_element.currentTime;
             this._seek_request_record_clocktime = null;
-            if (!this._isPositionBuffered(target)) {
-                this._idr_sample_list.clear();
-                this._on_unbuffered_seek(Math.floor(target * 1000));  // In milliseconds
-                // Update currentTime if using accurateSeek, or wait for recommend_seekpoint callback
-                if (this._config.accurateSeek) {
-                    this.directSeek(target);
-                }
-            }
+            this._applyUnbufferedSeek(target);
         } else {
             window.setTimeout(this._pollAndApplyUnbufferedSeek.bind(this), 50);
+        }
+    }
+
+    private _applyUnbufferedSeek(target: number): void {
+        if (!this._isPositionBuffered(target)) {
+            this._idr_sample_list.clear();
+            this._on_unbuffered_seek(Math.round(target * 1000000) / 1000);  // In milliseconds
+            // Update currentTime if using accurateSeek, or wait for recommend_seekpoint callback
+            if (this._config.accurateSeek) {
+                this.directSeek(target);
+            }
         }
     }
 
@@ -186,6 +273,52 @@ class SeekingHandler {
         }
 
         return false;
+    }
+
+    private _requestControlledSeek(seconds: number, source: string): boolean {
+        if (!this._on_seek_request || typeof seconds !== 'number' || !isFinite(seconds)) {
+            return false;
+        }
+        return this._on_seek_request(seconds, source) === true;
+    }
+
+    private _clampLiveSeekTarget(seconds: number): number | null {
+        const range = this._getLiveSeekableRange();
+        if (range == null) {
+            return null;
+        }
+
+        if (seconds < range.start) {
+            return range.start;
+        }
+
+        if (seconds >= range.end) {
+            return Math.max(range.start, range.end - 0.05);
+        }
+
+        return seconds;
+    }
+
+    private _getLiveSeekableRange(): {start: number, end: number} | null {
+        const seekable = this._media_element.seekable;
+        const seekableRange = this._getLastValidRange(seekable);
+        if (seekableRange != null) {
+            return seekableRange;
+        }
+
+        return this._getLastValidRange(this._media_element.buffered);
+    }
+
+    private _getLastValidRange(ranges: TimeRanges): {start: number, end: number} | null {
+        for (let i = ranges.length - 1; i >= 0; i--) {
+            const start = ranges.start(i);
+            const end = ranges.end(i);
+            if (isFinite(start) && isFinite(end) && end > start) {
+                return {start, end};
+            }
+        }
+
+        return null;
     }
 
     private _getNearestKeyframe(dts: number): any {
