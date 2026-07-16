@@ -3039,7 +3039,8 @@ var MSEController = /** @class */ (function () {
     };
     MSEController.prototype._resetSourceBufferParserState = function (type, mimeType) {
         var sb = this._sourceBuffers[type];
-        if (!this._mediaSource || !sb || sb.updating || this._mediaSource.readyState !== 'open') {
+        if (!this._mediaSource || !sb || sb.updating ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended')) {
             return { ok: false, blocked: true };
         }
         if (typeof sb.changeType !== 'function') {
@@ -3060,7 +3061,9 @@ var MSEController = /** @class */ (function () {
     };
     MSEController.prototype.appendInitSegmentDirect = function (initSegment, resetParserState) {
         if (resetParserState === void 0) { resetParserState = false; }
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
+        if (!this._mediaSource ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended') ||
+            this._mediaSource.streaming === false) {
             return { ok: false, blocked: true };
         }
         var is = resetParserState ? Object.assign({}, initSegment) : initSegment;
@@ -3072,6 +3075,9 @@ var MSEController = /** @class */ (function () {
             return { ok: false, blocked: true };
         }
         if (!sb) {
+            if (this._mediaSource.readyState !== 'open') {
+                return { ok: false, blocked: true };
+            }
             var result = this._addSourceBuffer(type, mimeType);
             if (!result.ok) {
                 this._emitter.emit(_mse_events__WEBPACK_IMPORTED_MODULE_3__["default"].ERROR, { code: result.error.code, msg: result.error.message });
@@ -3115,7 +3121,9 @@ var MSEController = /** @class */ (function () {
     };
     MSEController.prototype.appendMediaSegmentDirect = function (mediaSegment) {
         var type = mediaSegment.type;
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
+        if (!this._mediaSource ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended') ||
+            this._mediaSource.streaming === false) {
             return { ok: false, blocked: true };
         }
         if (this._hasFatalMediaError) {
@@ -3164,7 +3172,8 @@ var MSEController = /** @class */ (function () {
         }
     };
     MSEController.prototype.removeRangeDirect = function (type, start, end) {
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open') {
+        if (!this._mediaSource ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended')) {
             return { ok: false, blocked: true };
         }
         var sb = this._sourceBuffers[type];
@@ -3182,7 +3191,8 @@ var MSEController = /** @class */ (function () {
     };
     MSEController.prototype.resetParserStateDirect = function (type, mimeType) {
         var sb = this._sourceBuffers[type];
-        if (!this._mediaSource || !sb || sb.updating || this._mediaSource.readyState !== 'open') {
+        if (!this._mediaSource || !sb || sb.updating ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended')) {
             return { ok: false, blocked: true };
         }
         return this._resetSourceBufferParserState(type, mimeType);
@@ -26285,7 +26295,7 @@ var MSEBufferStateMachine = /** @class */ (function () {
         if (this._runPendingAudioTrackSwitchRebuild()) {
             return;
         }
-        if (!this._isMediaSourceOpen()) {
+        if (!this._isMediaSourceOperational()) {
             return;
         }
         if (this._runPendingRemove()) {
@@ -28214,11 +28224,14 @@ var MSEBufferStateMachine = /** @class */ (function () {
         var value = this._config && this._config.mseSeekPrerollKeepDuration;
         return typeof value === 'number' && isFinite(value) && value >= 0 ? value : 6;
     };
-    MSEBufferStateMachine.prototype._isMediaSourceOpen = function () {
+    MSEBufferStateMachine.prototype._isMediaSourceOperational = function () {
         var state = this._getMediaSourceState();
         return this._source_opened &&
-            state.readyState === 'open' &&
+            this._isOperationalMediaSourceState(state) &&
             state.streaming !== false;
+    };
+    MSEBufferStateMachine.prototype._isOperationalMediaSourceState = function (state) {
+        return state.readyState === 'open' || state.readyState === 'ended';
     };
     MSEBufferStateMachine.prototype._hasFatalMediaError = function () {
         return !!this._getMediaSourceState().hasFatalMediaError;
@@ -28226,7 +28239,7 @@ var MSEBufferStateMachine = /** @class */ (function () {
     MSEBufferStateMachine.prototype._canOperateOnType = function (type) {
         var state = this._getMediaSourceState();
         var sourceBuffer = this._getSourceBufferState(type, state);
-        return state.readyState === 'open' &&
+        return this._isOperationalMediaSourceState(state) &&
             state.streaming !== false &&
             !state.hasFatalMediaError &&
             this._inflight_operations[type] === null &&
@@ -28235,7 +28248,7 @@ var MSEBufferStateMachine = /** @class */ (function () {
     MSEBufferStateMachine.prototype._canAppendMediaToType = function (type) {
         var state = this._getMediaSourceState();
         var sourceBuffer = this._getSourceBufferState(type, state);
-        return state.readyState === 'open' &&
+        return this._isOperationalMediaSourceState(state) &&
             state.streaming !== false &&
             !state.hasFatalMediaError &&
             this._inflight_operations[type] === null &&

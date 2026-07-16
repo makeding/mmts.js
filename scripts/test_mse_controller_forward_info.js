@@ -165,6 +165,21 @@ function testParserResetUsesChangeTypeWithoutRemovingAudioSourceBuffer() {
     assert.strictEqual(harness.operations.some((entry) => entry.type === 'remove'), false);
 }
 
+function testParserResetAllowsChangeTypeToReopenEndedMediaSource() {
+    let harness;
+    harness = makeParserResetController((mimeType) => {
+        assert.strictEqual(mimeType, harness.targetMimeType);
+        harness.controller._mediaSource.readyState = 'open';
+    });
+    harness.controller._mediaSource.readyState = 'ended';
+
+    const result = harness.controller.resetParserStateDirect('audio', harness.targetMimeType);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(harness.controller._mediaSource.readyState, 'open');
+    assert.strictEqual(harness.controller._sourceBuffers.audio, harness.sourceBuffer);
+}
+
 function testParserResetWithoutChangeTypeFailsWithoutRemovingAudioSourceBuffer() {
     const harness = makeParserResetController();
 
@@ -257,6 +272,7 @@ testForwardDurationDoesNotJumpToFutureRange();
 testInflightRecordCountsBytesWithoutClaimingPlayableDuration();
 testBufferedBytesShrinkAfterPlayedRangeRemoval();
 testParserResetUsesChangeTypeWithoutRemovingAudioSourceBuffer();
+testParserResetAllowsChangeTypeToReopenEndedMediaSource();
 testParserResetWithoutChangeTypeFailsWithoutRemovingAudioSourceBuffer();
 testParserResetFailureDoesNotRemoveAudioSourceBuffer();
 testFreshAudioInitForFullMediaSourceRebuildNeverRemovesSourceBuffer();

@@ -1320,7 +1320,7 @@ class MSEBufferStateMachine {
             return;
         }
 
-        if (!this._isMediaSourceOpen()) {
+        if (!this._isMediaSourceOperational()) {
             return;
         }
 
@@ -3454,11 +3454,15 @@ class MSEBufferStateMachine {
         return typeof value === 'number' && isFinite(value) && value >= 0 ? value : 6;
     }
 
-    private _isMediaSourceOpen(): boolean {
+    private _isMediaSourceOperational(): boolean {
         const state = this._getMediaSourceState();
         return this._source_opened &&
-            state.readyState === 'open' &&
+            this._isOperationalMediaSourceState(state) &&
             state.streaming !== false;
+    }
+
+    private _isOperationalMediaSourceState(state: MSEBufferMediaSourceState): boolean {
+        return state.readyState === 'open' || state.readyState === 'ended';
     }
 
     private _hasFatalMediaError(): boolean {
@@ -3468,7 +3472,7 @@ class MSEBufferStateMachine {
     private _canOperateOnType(type: MSEBufferTrackType): boolean {
         const state = this._getMediaSourceState();
         const sourceBuffer = this._getSourceBufferState(type, state);
-        return state.readyState === 'open' &&
+        return this._isOperationalMediaSourceState(state) &&
             state.streaming !== false &&
             !state.hasFatalMediaError &&
             this._inflight_operations[type] === null &&
@@ -3478,7 +3482,7 @@ class MSEBufferStateMachine {
     private _canAppendMediaToType(type: MSEBufferTrackType): boolean {
         const state = this._getMediaSourceState();
         const sourceBuffer = this._getSourceBufferState(type, state);
-        return state.readyState === 'open' &&
+        return this._isOperationalMediaSourceState(state) &&
             state.streaming !== false &&
             !state.hasFatalMediaError &&
             this._inflight_operations[type] === null &&

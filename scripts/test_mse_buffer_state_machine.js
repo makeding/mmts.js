@@ -271,6 +271,7 @@ function makeHarness(overrides) {
     let quotaOnce = null;
     let initQuotaOnce = null;
     let rebuildSucceeds = true;
+    let mediaSourceReadyState = 'open';
 
     const output = {
         appendInit(type, segment) {
@@ -350,7 +351,7 @@ function makeHarness(overrides) {
         },
         getMediaSourceState() {
             return {
-                readyState: 'open',
+                readyState: mediaSourceReadyState,
                 streaming: true,
                 hasFatalMediaError: false,
                 sourceBuffers,
@@ -401,6 +402,9 @@ function makeHarness(overrides) {
         },
         failRebuild() {
             rebuildSucceeds = false;
+        },
+        setMediaSourceReadyState(readyState) {
+            mediaSourceReadyState = readyState;
         },
         updateEnd(type) {
             sourceBuffers[type].updating = false;
@@ -589,6 +593,27 @@ function testVodAudioTrackSwitchPreparationCanBeCancelledWithoutLeavingPause() {
         entry[0] === 'resumeTransmuxer' &&
         entry[1] === 'MMTS_VOD_AUDIO_TRACK_REBUILD_CANCELLED'
     ), true);
+}
+
+function testVodAudioTrackRebuildStartsTransmuxerSeekFromEndedMediaSource() {
+    const h = makeHarness({config: {isMMTS: true, isLive: false}});
+    const operation = makePlaybackOperation(
+        'audio-switch', 1, 0xf111, 0, 'requested', 5111.916
+    );
+    assert.strictEqual(h.sm.setPlaybackOperation(operation), true);
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.setMediaSourceReadyState('ended');
+
+    assert.strictEqual(h.sm.onMMTSVodAudioTrackRebuild(5.111916, operation, 1), true);
+    assert.strictEqual(h.sm._pending_transmuxer_seek_milliseconds, null);
+    assert.strictEqual(h.sm._pending_transmuxer_seek_reason, null);
+    assert.strictEqual(h.log.filter((entry) =>
+        entry[0] === 'seekTransmuxer' &&
+        entry[1] === 5111.916 &&
+        entry[2] === 'MMTS_VOD_AUDIO_TRACK_REBUILD'
+    ).length, 1);
 }
 
 function testVodAudioTrackSwitchCollectsThroughExistingBackpressure() {
@@ -1783,6 +1808,49 @@ function testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek() {
     ), true);
 }
 
+function testVideoTrackSwitchRequestsAndCommitsFromEndedMediaSource() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.setMediaSourceReadyState('ended');
+
+    const operation = makePlaybackOperation('video-switch', 2, 0xf201);
+    const videoSwitch = makeVideoTrackSwitch(12, 13);
+    const videoInitSegment = attachPlaybackOperation(makeInit('video'), operation);
+    videoInitSegment.mmtsVideoTrackSwitch = makeVideoTrackSwitchIdentity(videoSwitch);
+    const videoMediaSegment = attachPlaybackOperation(
+        makeSegment('video', 12, 13, 1024),
+        operation
+    );
+    markRandomAccessSafeVideoSegment(videoMediaSegment, videoSwitch);
+    videoMediaSegment.mmtsVideoTrackSwitch = videoSwitch;
+
+    assert.strictEqual(h.sm.setPlaybackOperation(operation), true);
+    assert.strictEqual(h.sm.onVideoTrackSwitch({
+        stage: 'request',
+        operation,
+        transactionId: 2,
+    }), true);
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'resumeTransmuxer' && entry[1] === 'TRACK_SWITCHING_DATA_REQUEST'
+    ), true);
+    assert.strictEqual(h.sm.onVideoTrackSwitch({
+        stage: 'commit_ready',
+        operation,
+        transactionId: 2,
+        videoSwitch,
+        videoInitSegment,
+        videoMediaSegment,
+    }), true);
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'resetParserState' && entry[1] === 'video'
+    ), true);
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'appendInit' && entry[1] === 'video'
+    ), true);
+}
+
 function testVideoTrackSwitchRejectsInvalidRemuxedWindow() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
@@ -2928,6 +2996,7 @@ testAudioTrackSwitchRequestDropsQueuedOldInit();
 testLiveAudioTrackSwitchCollectsThroughExistingBackpressure();
 testVodAudioTrackRebuildWaitsForIdleSeekWithoutRemovingBuffers();
 testVodAudioTrackSwitchPreparationCanBeCancelledWithoutLeavingPause();
+testVodAudioTrackRebuildStartsTransmuxerSeekFromEndedMediaSource();
 testVodAudioTrackSwitchCollectsThroughExistingBackpressure();
 testAudioTrackSwitchCancelIsExactAndAllowsImmediateSuccessor();
 testAudioTrackSwitchCancelRejectsStaleAttemptWithinTransaction();
@@ -2948,6 +3017,7 @@ testAudioTrackSwitchRebuildFailureDefersToTransactionOwner();
 testInvalidAudioRebuildPlanDefersToTransactionOwner();
 testBackpressureDoesNotOverrideSeekState();
 testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek();
+testVideoTrackSwitchRequestsAndCommitsFromEndedMediaSource();
 testVideoTrackSwitchRejectsInvalidRemuxedWindow();
 testHevcVideoInitWaitsForAudioInit();
 testHev1VideoInitWaitsForAudioInit();

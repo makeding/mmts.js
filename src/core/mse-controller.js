@@ -303,7 +303,8 @@ class MSEController {
 
     _resetSourceBufferParserState(type, mimeType) {
         let sb = this._sourceBuffers[type];
-        if (!this._mediaSource || !sb || sb.updating || this._mediaSource.readyState !== 'open') {
+        if (!this._mediaSource || !sb || sb.updating ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended')) {
             return {ok: false, blocked: true};
         }
 
@@ -325,7 +326,9 @@ class MSEController {
     }
 
     appendInitSegmentDirect(initSegment, resetParserState = false) {
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
+        if (!this._mediaSource ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended') ||
+            this._mediaSource.streaming === false) {
             return {ok: false, blocked: true};
         }
 
@@ -340,6 +343,9 @@ class MSEController {
         }
 
         if (!sb) {
+            if (this._mediaSource.readyState !== 'open') {
+                return {ok: false, blocked: true};
+            }
             let result = this._addSourceBuffer(type, mimeType);
             if (!result.ok) {
                 this._emitter.emit(MSEEvents.ERROR, {code: result.error.code, msg: result.error.message});
@@ -386,7 +392,9 @@ class MSEController {
 
     appendMediaSegmentDirect(mediaSegment) {
         let type = mediaSegment.type;
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open' || this._mediaSource.streaming === false) {
+        if (!this._mediaSource ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended') ||
+            this._mediaSource.streaming === false) {
             return {ok: false, blocked: true};
         }
         if (this._hasFatalMediaError) {
@@ -442,7 +450,8 @@ class MSEController {
     }
 
     removeRangeDirect(type, start, end) {
-        if (!this._mediaSource || this._mediaSource.readyState !== 'open') {
+        if (!this._mediaSource ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended')) {
             return {ok: false, blocked: true};
         }
         let sb = this._sourceBuffers[type];
@@ -461,7 +470,8 @@ class MSEController {
 
     resetParserStateDirect(type, mimeType) {
         let sb = this._sourceBuffers[type];
-        if (!this._mediaSource || !sb || sb.updating || this._mediaSource.readyState !== 'open') {
+        if (!this._mediaSource || !sb || sb.updating ||
+            (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended')) {
             return {ok: false, blocked: true};
         }
         return this._resetSourceBufferParserState(type, mimeType);
