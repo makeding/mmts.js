@@ -23,8 +23,26 @@
   "scripts": {
     "build": "webpack --mode=production --progress",
     "build:debug": "webpack --mode=development --progress",
-    "watch": "webpack --mode=development --progress --watch",
-    "serve": "webpack serve --mode=development --progress"
+    "serve": "webpack serve --mode=development --progress",
+    "test:h265-slice-parser": "node scripts/test_h265_slice_parser.js",
+    "test:hevc-poc": "node scripts/test_hevc_poc.js",
+    "test:mmts-aac-config-remux": "node scripts/test_mmts_aac_config_remux.js",
+    "test:mmts-audio-track-switch-window": "node scripts/test_mmts_audio_track_switch_window.js",
+    "test:mmts-demux-remux-timeline": "node scripts/test_mmts_demux_remux_timeline.js",
+    "test:mmts-duration-probe": "node scripts/test_mmts_duration_probe.js",
+    "test:mmts-gap-check-compare": "node scripts/compare_mmts_gap_check.js",
+    "test:mmts-program-packet-loss": "node scripts/test_mmts_program_packet_loss.js",
+    "test:mmts-si-signaling": "node scripts/test_mmts_si_signaling.js",
+    "test:mmts-startup-group": "node scripts/test_mmts_startup_group.js",
+    "test:mmts-subtitle-assembler": "node scripts/test_mmts_subtitle_assembler.js",
+    "test:mmts-timestamp-table": "node scripts/test_mmts_timestamp_table.js",
+    "test:mmts-tlv-chunking": "node scripts/test_mmts_tlv_chunking.js",
+    "test:mmts-video-mpu-assembler": "node scripts/test_mmts_video_mpu_assembler.js",
+    "test:mse-buffer-state-machine": "node scripts/test_mse_buffer_state_machine.js",
+    "test:mse-controller": "node scripts/test_mse_controller_forward_info.js",
+    "test:startup-buffer-gate": "node scripts/test_startup_buffer_gate.js",
+    "test:startup-stall-jumper": "node scripts/test_startup_stall_jumper.js",
+    "watch": "webpack --mode=development --progress --watch"
   },
   "dependencies": {
     "es6-promise": "^4.2.5"

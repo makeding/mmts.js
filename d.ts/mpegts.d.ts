@@ -41,6 +41,74 @@ declare namespace Mpegts {
         segments?: MediaSegment[];
     }
 
+    interface MMTSDurationProbeOptions {
+        filesize?: number;
+        withCredentials?: boolean;
+        timeout?: number;
+        videoPacketId?: number;
+        initialStartProbeBytes?: number;
+        initialTailProbeBytes?: number;
+        maxStartProbeBytes?: number;
+        maxTailProbeBytes?: number;
+    }
+
+    interface MMTSDurationProbeResult {
+        duration: number;
+        filesize: number;
+        startTime: number;
+        endTime: number;
+        startOffset: number;
+        endOffset: number;
+        startPacketId: number;
+        endPacketId: number;
+    }
+
+    type PlaybackOperationKind = 'startup' | 'seek' | 'audio-switch' | 'video-switch';
+    type PlaybackOperationProgressStatus = 'queued' | 'running' | 'retrying' | 'recovering';
+    type PlaybackOperationTerminalStatus =
+        'committed' | 'no-op' | 'cancelled' | 'superseded' | 'failed';
+    type PlaybackOperationStatus = PlaybackOperationProgressStatus | PlaybackOperationTerminalStatus;
+
+    interface PlaybackOperation {
+        scopeId: string;
+        transactionKey: string;
+        attemptKey: string;
+        timelineGeneration: number;
+        kind: PlaybackOperationKind;
+        transactionId: number;
+        attempt: number;
+        phase: string;
+        intentTimeMicroseconds: number;
+        requestedTimeMicroseconds: number;
+        requestedTimeMilliseconds: number;
+        packetId?: number;
+    }
+
+    interface PlaybackOperationEvent {
+        operation: PlaybackOperation;
+        scopeId: string;
+        transactionKey: string;
+        attemptKey: string;
+        timelineGeneration: number;
+        transactionId: number;
+        attempt: number;
+        kind: PlaybackOperationKind;
+        phase: string;
+        status: PlaybackOperationStatus;
+        terminal: boolean;
+        requestedPacketId?: number;
+        committedPacketId?: number;
+        requestedTimeMilliseconds: number;
+        committedTimeMilliseconds?: number;
+        reason?: string;
+        error?: any;
+    }
+
+    interface PlaybackOperationResult extends PlaybackOperationEvent {
+        status: PlaybackOperationTerminalStatus;
+        terminal: true;
+    }
+
     interface Config {
         /**
          * @desc Enable separated thread (DedicatedWorker) for transmuxing
@@ -63,6 +131,13 @@ declare namespace Mpegts {
          *          improve video load/seek time.
          */
         stashInitialSize?: number;
+
+        /**
+         * @desc Maximum loader read rate in KB/s. Set to 0 to disable throttling.
+         *       This limits fetch-stream and xhr-range reads before transmuxing.
+         * @defaultvalue 0
+         */
+        loaderThrottleKBps?: number;
 
         /**
          * @desc Same to `isLive` in **MediaDataSource**, ignored if has been set in MediaDataSource structure.
@@ -99,16 +174,82 @@ declare namespace Mpegts {
         liveBufferLatencyMinRemain?: number;
 
         /**
+         * @desc Enable lazy-load pause/resume backpressure for live streams.
+         *       Useful when a file or timeshift source is served as a simulated live stream.
+         * @defaultvalue false
+         */
+        lazyLoadOnLive?: boolean;
+
+        /**
          * @desc Force the MMTS HEVC video packet_id. Useful for choosing an alternate video asset.
          */
         mmtsVideoPacketId?: number;
 
         /**
-         * @desc Defer the MMTS HEVC video SourceBuffer initialization until audio initialization arrives.
-         *       This avoids startup races on browsers that reject adding the audio SourceBuffer after HEVC video.
-         * @defaultvalue true for `type: 'mmts'`, false otherwise
+         * @desc Defer initial MMTS HEVC video SourceBuffer creation until the audio init segment has arrived.
+         * @defaultvalue true for MMTS VOD except Firefox; false for MMTS live
          */
         mmtsDeferHevcVideoInitUntilAudio?: boolean;
+
+        /**
+         * @desc Keep remuxer timestamp state on MMTS packet discontinuity unless a media timeline reset is required.
+         * @defaultvalue true for `type: 'mmts'`
+         */
+        mmtsPreserveRemuxerTimestampOnPacketDiscontinuity?: boolean;
+
+        /**
+         * @desc Clamp small positive MMTS AAC timestamp gaps to the expected frame timeline when enabled.
+         *       Disabled by default so packet-loss gaps remain on the media timeline.
+         * @defaultvalue false
+         */
+        mmtsClampAudioTimestampGap?: boolean;
+
+        /**
+         * @desc Clamp small positive MMTS HEVC timestamp gaps to the expected frame timeline when enabled.
+         *       Disabled by default so packet-loss gaps remain visible as freezes or decoder recovery artifacts.
+         * @defaultvalue false
+         */
+        mmtsClampVideoTimestampGap?: boolean;
+
+        /**
+         * @desc Required forward buffer before initial MMTS live playback starts, in seconds. Set to 0 to disable.
+         * @defaultvalue 1.5 for `type: 'mmts'` with `isLive: true`
+         */
+        mmtsLiveInitialBufferDuration?: number;
+
+        /**
+         * @desc Duration of MMTS video samples kept in remuxer memory before appending to MSE, in seconds.
+         *       This gives packet-loss recovery enough previous video samples to bridge sparse HEVC ranges.
+         * @defaultvalue 0
+         */
+        mmtsVideoTailStashDuration?: number;
+
+        /**
+         * @desc Duration of the small in-memory AAC sample cache used for instant MMTS audio track switching, in seconds.
+         *       This caches audio frames only, not video frames or MSE buffered media.
+         * @defaultvalue 10
+         */
+        mmtsAudioTrackSwitchCacheDuration?: number;
+
+        /**
+         * @desc Bytes to seek before an estimated MMTS VOD byte position while the target time has not been indexed yet.
+         * @defaultvalue 33554432
+         */
+        mmtsVodSeekLookbackBytes?: number;
+
+        /**
+         * @desc Maximum bytes to seek before an estimated MMTS VOD byte position when retrying unresolved seeks
+         *       or when the first random access point is still after the requested time.
+         * @defaultvalue 268435456
+         */
+        mmtsVodSeekMaxLookbackBytes?: number;
+
+        /**
+         * @desc Coalesce rapid MMTS VOD progress-bar changes. Only the latest
+         *       target is submitted after this interval, in milliseconds.
+         * @defaultvalue 100
+         */
+        mmtsSeekDebounceInterval?: number;
 
         /**
          * @desc Chasing the live stream latency caused by the internal buffer in HTMLMediaElement
@@ -159,14 +300,71 @@ declare namespace Mpegts {
         lazyLoad?: boolean;
         /**
          * @desc Indicates how many seconds of data to be kept for `lazyLoad`.
-         * @defaultvalue 3 * 60
+         * @defaultvalue 3 * 60; 90 for MMTS VOD; 18 for MMTS live
          */
         lazyLoadMaxDuration?: number;
         /**
          * @desc Indicates the `lazyLoad` recover time boundary in seconds.
-         * @defaultvalue 30
+         * @defaultvalue 30; 60 for MMTS VOD; 8 for MMTS live
          */
         lazyLoadRecoverDuration?: number;
+        /**
+         * @desc Indicates how many forward buffered bytes to be kept for `lazyLoad`.
+         * @defaultvalue undefined; 112MiB for MMTS VOD; 64MiB for MMTS live
+         */
+        lazyLoadMaxBytes?: number;
+        /**
+         * @desc Indicates the `lazyLoad` recover byte boundary.
+         * @defaultvalue undefined; 96MiB for MMTS VOD; 32MiB for MMTS live
+         */
+        lazyLoadRecoverBytes?: number;
+        /**
+         * @desc Pause MMTS loading when appended and queued video bytes reach this soft limit.
+         * @defaultvalue undefined; 112MiB for MMTS VOD; 64MiB for MMTS live
+         */
+        mseBufferVideoSoftLimitBytes?: number;
+        /**
+         * @desc Stop MMTS video append before total buffered video reaches this hard byte limit and wait for played data cleanup.
+         * @defaultvalue undefined; 128MiB for MMTS VOD; 96MiB for MMTS live
+         */
+        mseBufferVideoHardLimitBytes?: number;
+        /**
+         * @desc Pause MMTS loading when appended and queued audio bytes reach this soft limit.
+         * @defaultvalue undefined; 8MiB for MMTS VOD and live
+         */
+        mseBufferAudioSoftLimitBytes?: number;
+        /**
+         * @desc Stop MMTS audio append before total buffered audio reaches this hard byte limit and wait for played data cleanup.
+         * @defaultvalue undefined; 12MiB for MMTS VOD and live
+         */
+        mseBufferAudioHardLimitBytes?: number;
+        /**
+         * @desc Pause MMTS loading when the contiguous playable forward window reaches this duration.
+         * @defaultvalue undefined; 90 for MMTS VOD; 18 for MMTS live
+         */
+        mseBufferForwardTargetDuration?: number;
+        /**
+         * @desc Resume MMTS loading after the contiguous playable forward window falls below this duration.
+         * @defaultvalue undefined; 60 for MMTS VOD; 8 for MMTS live
+         */
+        mseBufferRecoverForwardDuration?: number;
+        /**
+         * @desc Required forward buffer before initial playback starts, in seconds. Set to 0 to disable.
+         *       If unset, MMTS live playback falls back to `mmtsLiveInitialBufferDuration`.
+         * @defaultvalue 0; 3 for MMTS live lazy-load
+         */
+        startupBufferDuration?: number;
+        /**
+         * @desc Maximum media duration to combine into one MSE appendBuffer call, in seconds. Set to 0 to disable.
+         * @defaultvalue 0; 0.5 for MMTS VOD; 0.35 for MMTS live
+         */
+        mseAppendBatchDuration?: number;
+        /**
+         * @desc Maximum seconds one MSE track may be appended ahead of the other track.
+         *       This prevents audio and video SourceBuffers from drifting apart under heavy append load.
+         * @defaultvalue undefined; 2 for MMTS VOD; 1.5 for MMTS live
+         */
+        mseAppendTrackLeadLimit?: number;
         /**
          * @desc Do load after MediaSource `sourceopen` event triggered. On Chrome, tabs which
          *          be opened in background may not trigger `sourceopen` event until switched to that tab.
@@ -176,20 +374,20 @@ declare namespace Mpegts {
 
         /**
          * @desc Do auto cleanup for SourceBuffer
-         * @defaultvalue false (from docs)
+         * @defaultvalue false; true for MMTS
          */
         autoCleanupSourceBuffer?: boolean;
         /**
          * @desc When backward buffer duration exceeded this value (in seconds), do auto cleanup for SourceBuffer
-         * @defaultvalue 3 * 60
+         * @defaultvalue 3 * 60; 6 for MMTS VOD, 10 for MMTS live
          */
         autoCleanupMaxBackwardDuration?: number;
         /**
          * @desc Indicates the duration in seconds to reserve for backward buffer when doing auto cleanup.
-         * @defaultvalue 2 * 60
+         *       MMTS hard-budget or quota recovery may reduce this to at most 4 seconds for live or 2 seconds for VOD.
+         * @defaultvalue 2 * 60; 2 for MMTS VOD, 4 for MMTS live
          */
         autoCleanupMinBackwardDuration?: number;
-
         /**
          * @defaultvalue 600
          */
@@ -411,10 +609,15 @@ declare namespace Mpegts {
     }
 
     interface MSEPlayer extends Player {
-        switchPrimaryAudio(): void;
-        switchSecondaryAudio(): void;
-        selectAudioTrack(packetId: number): void;
-        selectVideoTrack(packetId: number): void;
+        /**
+         * Submit a seek. For MMTS VOD the Promise resolves only when the new
+         * startup group is committed, cancelled, superseded, or failed.
+         */
+        seek(seconds: number): Promise<PlaybackOperationResult>;
+        switchPrimaryAudio(): Promise<PlaybackOperationResult>;
+        switchSecondaryAudio(): Promise<PlaybackOperationResult>;
+        selectAudioTrack(packetId: number): Promise<PlaybackOperationResult>;
+        selectVideoTrack(packetId: number): Promise<PlaybackOperationResult>;
         mediaInfo: MSEPlayerMediaInfo;
         statisticsInfo: MSEPlayerStatisticsInfo;
     }
@@ -458,6 +661,10 @@ declare namespace Mpegts {
         PES_PRIVATE_DATA_ARRIVED: string;
         MMTS_AUDIO_TRACKS: string;
         MMTS_VIDEO_TRACKS: string;
+        /** Progress events: queued/running/retrying/recovering and terminal states. */
+        MMTS_OPERATION_STATE: string;
+        /** Terminal operation events only. */
+        MMTS_OPERATION_RESULT: string;
         MMTS_SUBTITLE_TRACKS: string;
         MMTS_SUBTITLE_DATA_ARRIVED: string;
         STATISTICS_INFO: string;
@@ -488,6 +695,7 @@ declare var Mpegts: {
     isSupported(): boolean;
     supportWorkerForMSEH265Playback(): Promise<boolean>;
     getFeatureList(): Mpegts.FeatureList;
+    probeMMTSDuration(url: string, options?: Mpegts.MMTSDurationProbeOptions): Promise<Mpegts.MMTSDurationProbeResult>;
 
     /**
      * @deprecated Use `Mpegts.BaseLoaderConstructor` instead.
