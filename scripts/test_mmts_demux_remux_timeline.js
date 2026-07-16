@@ -945,6 +945,55 @@ function testDemuxerAcceptsNormalDescriptorTimeline() {
     assert.strictEqual(demuxer.last_video_source_info_.presentationIndex, 8);
 }
 
+function testDemuxerMapsSwitchedVideoToExistingRawTimeline() {
+    const demuxer = makeDemuxerHarness();
+    demuxer.output_video_raw_dts_base_ = 92044;
+    demuxer.last_video_dts_ = 9580;
+    demuxer.program_ = {
+        getTimestampAtAccessUnit() {
+            return {
+                dts: 0,
+                pts: 17,
+                rawDts: 101641,
+                rawPts: 101658,
+                decodingIndex: 0,
+                presentationIndex: 1,
+                timescale: 1000,
+            };
+        }
+    };
+
+    const result = consumeVideoAccessUnitTimestamp(demuxer, 0x301, 20, 1, 0, 200000);
+    assert.strictEqual(result.dts, 9597);
+    assert.strictEqual(result.pts, 9614);
+    assert.strictEqual(result.rawDts, 101641);
+    assert.strictEqual(result.rawPts, 101658);
+}
+
+function testDemuxerValidatesSwitchedVideoMpuOnSharedRawTimeline() {
+    const demuxer = makeDemuxerHarness();
+    demuxer.output_video_raw_dts_base_ = 92044;
+    demuxer.last_video_dts_ = 9580;
+    const makeTimestamp = (dts, pts, rawDts, rawPts) => ({
+        dts,
+        pts,
+        rawDts,
+        rawPts,
+        decodingIndex: 0,
+        presentationIndex: 0,
+        timescale: 1000,
+    });
+
+    assert.strictEqual(demuxer.validateVideoMpuTimestamps([
+        makeTimestamp(0, 0, 101641, 101641),
+        makeTimestamp(17, 17, 101658, 101658),
+    ]), true);
+    assert.strictEqual(demuxer.validateVideoMpuTimestamps([
+        makeTimestamp(0, 0, 101600, 101600),
+        makeTimestamp(17, 17, 101617, 101617),
+    ]), false);
+}
+
 function testDemuxerRejectsVideoWithoutDescriptorTimestamp() {
     const demuxer = makeDemuxerHarness();
     demuxer.program_ = {
@@ -2935,6 +2984,8 @@ function testDemuxerKeepsHev1PpsUpdatesInBand() {
 
 testProbeRejectsStructuredAudioSelectionFailure();
 testDemuxerAcceptsNormalDescriptorTimeline();
+testDemuxerMapsSwitchedVideoToExistingRawTimeline();
+testDemuxerValidatesSwitchedVideoMpuOnSharedRawTimeline();
 testDemuxerRejectsVideoWithoutDescriptorTimestamp();
 testDemuxerRejectsStaleSourceWithoutAdvancingTimeline();
 testDemuxerAllowsFileReorderWithoutRawDtsRollback();

@@ -14964,11 +14964,11 @@ var MMTSDemuxer = /** @class */ (function (_super) {
         var previousDts;
         for (var _i = 0, timestamps_1 = timestamps; _i < timestamps_1.length; _i++) {
             var timestamp = timestamps_1[_i];
-            if (timestamp === null || !Number.isFinite(timestamp.timescale) || timestamp.timescale <= 0) {
+            var mappedTimestamp = this.mapVideoDescriptorTimestamp(timestamp);
+            if (mappedTimestamp === null) {
                 return false;
             }
-            var dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
-            var pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+            var dts = mappedTimestamp.dts, pts = mappedTimestamp.pts;
             if (!Number.isFinite(dts) || !Number.isFinite(pts) || pts < dts ||
                 (previousDts !== undefined && dts <= previousDts)) {
                 return false;
@@ -14976,12 +14976,30 @@ var MMTSDemuxer = /** @class */ (function (_super) {
             previousDts = dts;
         }
         if (this.last_video_dts_ >= 0 && this.pending_seek_media_time_ === undefined) {
-            var firstDts = Math.floor(timestamps[0].dts * 1000 / timestamps[0].timescale);
-            if (firstDts <= this.last_video_dts_) {
+            var firstTimestamp = this.mapVideoDescriptorTimestamp(timestamps[0]);
+            if (firstTimestamp === null || firstTimestamp.dts <= this.last_video_dts_) {
                 return false;
             }
         }
         return true;
+    };
+    MMTSDemuxer.prototype.mapVideoDescriptorTimestamp = function (timestamp) {
+        if (timestamp === null || !Number.isFinite(timestamp.timescale) || timestamp.timescale <= 0) {
+            return null;
+        }
+        var rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);
+        var rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
+        var dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
+        var pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+        if (this.output_video_raw_dts_base_ >= 0) {
+            dts = rawDts - this.output_video_raw_dts_base_;
+            pts = rawPts - this.output_video_raw_dts_base_;
+        }
+        if (!Number.isFinite(dts) || !Number.isFinite(pts) ||
+            !Number.isFinite(rawDts) || !Number.isFinite(rawPts)) {
+            return null;
+        }
+        return { dts: dts, pts: pts, rawDts: rawDts, rawPts: rawPts };
     };
     MMTSDemuxer.prototype.rejectVideoMpu = function (accessUnits, reason) {
         if (accessUnits.length === 0) {
@@ -15426,7 +15444,11 @@ var MMTSDemuxer = /** @class */ (function (_super) {
         if (timestamp === null || this.last_video_dts_ < 0) {
             return false;
         }
-        var dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
+        var mappedTimestamp = this.mapVideoDescriptorTimestamp(timestamp);
+        if (mappedTimestamp === null) {
+            return false;
+        }
+        var dts = mappedTimestamp.dts;
         var duration = dts - this.last_video_dts_;
         return duration <= 0;
     };
@@ -15492,10 +15514,14 @@ var MMTSDemuxer = /** @class */ (function (_super) {
         var decodingIndex;
         var presentationIndex;
         if (timestamp !== null) {
-            pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
-            dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
-            rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
-            rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);
+            var mappedTimestamp = this.mapVideoDescriptorTimestamp(timestamp);
+            if (mappedTimestamp === null) {
+                return null;
+            }
+            pts = mappedTimestamp.pts;
+            dts = mappedTimestamp.dts;
+            rawPts = mappedTimestamp.rawPts;
+            rawDts = mappedTimestamp.rawDts;
             decodingIndex = timestamp.decodingIndex;
             presentationIndex = timestamp.presentationIndex;
             if (this.last_video_dts_ >= 0) {

@@ -83,6 +83,13 @@ interface VideoTimestamp {
     source: 'descriptor';
 }
 
+interface MappedVideoDescriptorTimestamp {
+    dts: number;
+    pts: number;
+    rawDts: number;
+    rawPts: number;
+}
+
 interface MMTSTimedVideoAccessUnit extends MMTSVideoAccessUnit {
     descriptorTimestamp: MMTSTimestamp | null;
     outputAllowed?: boolean;
@@ -1543,11 +1550,11 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         let previousDts: number | undefined;
         for (const timestamp of timestamps) {
-            if (timestamp === null || !Number.isFinite(timestamp.timescale) || timestamp.timescale <= 0) {
+            const mappedTimestamp = this.mapVideoDescriptorTimestamp(timestamp);
+            if (mappedTimestamp === null) {
                 return false;
             }
-            const dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
-            const pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+            const {dts, pts} = mappedTimestamp;
             if (!Number.isFinite(dts) || !Number.isFinite(pts) || pts < dts ||
                 (previousDts !== undefined && dts <= previousDts)) {
                 return false;
@@ -1555,12 +1562,33 @@ class MMTSDemuxer extends BaseDemuxer {
             previousDts = dts;
         }
         if (this.last_video_dts_ >= 0 && this.pending_seek_media_time_ === undefined) {
-            const firstDts = Math.floor(timestamps[0].dts * 1000 / timestamps[0].timescale);
-            if (firstDts <= this.last_video_dts_) {
+            const firstTimestamp = this.mapVideoDescriptorTimestamp(timestamps[0]);
+            if (firstTimestamp === null || firstTimestamp.dts <= this.last_video_dts_) {
                 return false;
             }
         }
         return true;
+    }
+
+    private mapVideoDescriptorTimestamp(timestamp: MMTSTimestamp): MappedVideoDescriptorTimestamp | null {
+        if (timestamp === null || !Number.isFinite(timestamp.timescale) || timestamp.timescale <= 0) {
+            return null;
+        }
+
+        const rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);
+        const rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
+        let dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
+        let pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
+        if (this.output_video_raw_dts_base_ >= 0) {
+            dts = rawDts - this.output_video_raw_dts_base_;
+            pts = rawPts - this.output_video_raw_dts_base_;
+        }
+
+        if (!Number.isFinite(dts) || !Number.isFinite(pts) ||
+            !Number.isFinite(rawDts) || !Number.isFinite(rawPts)) {
+            return null;
+        }
+        return {dts, pts, rawDts, rawPts};
     }
 
     private rejectVideoMpu(accessUnits: MMTSVideoAccessUnit[], reason: string): void {
@@ -2169,7 +2197,11 @@ class MMTSDemuxer extends BaseDemuxer {
             return false;
         }
 
-        const dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
+        const mappedTimestamp = this.mapVideoDescriptorTimestamp(timestamp);
+        if (mappedTimestamp === null) {
+            return false;
+        }
+        const dts = mappedTimestamp.dts;
         const duration = dts - this.last_video_dts_;
         return duration <= 0;
     }
@@ -2254,10 +2286,14 @@ class MMTSDemuxer extends BaseDemuxer {
         let presentationIndex: number | undefined;
 
         if (timestamp !== null) {
-            pts = Math.floor(timestamp.pts * 1000 / timestamp.timescale);
-            dts = Math.floor(timestamp.dts * 1000 / timestamp.timescale);
-            rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
-            rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);
+            const mappedTimestamp = this.mapVideoDescriptorTimestamp(timestamp);
+            if (mappedTimestamp === null) {
+                return null;
+            }
+            pts = mappedTimestamp.pts;
+            dts = mappedTimestamp.dts;
+            rawPts = mappedTimestamp.rawPts;
+            rawDts = mappedTimestamp.rawDts;
             decodingIndex = timestamp.decodingIndex;
             presentationIndex = timestamp.presentationIndex;
             if (this.last_video_dts_ >= 0) {
