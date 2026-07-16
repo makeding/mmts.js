@@ -30,6 +30,14 @@ function parseArgs(argv) {
         audioSwitchSecondAtReadSeconds: undefined,
         audioSwitchSecondTimelineSeconds: undefined,
         audioSwitchSecondOutput: undefined,
+        videoSwitchPacketId: undefined,
+        videoSwitchAtReadSeconds: undefined,
+        videoSwitchOutput: undefined,
+        videoSwitchRequiredForwardSeconds: 0.25,
+        videoSwitchSecondPacketId: undefined,
+        videoSwitchSecondAtReadSeconds: undefined,
+        videoSwitchSecondOutput: undefined,
+        initialVideoOutput: undefined,
         audioSwitchRebuildFromSeek: false,
         seekTargetSeconds: undefined,
         seekDurationSeconds: undefined,
@@ -76,6 +84,22 @@ function parseArgs(argv) {
             args.audioSwitchSecondTimelineSeconds = Number(argv[++i]);
         } else if (arg === '--audio-switch-second-output') {
             args.audioSwitchSecondOutput = argv[++i];
+        } else if (arg === '--video-switch-packet-id') {
+            args.videoSwitchPacketId = Number(argv[++i]);
+        } else if (arg === '--video-switch-at-read-seconds') {
+            args.videoSwitchAtReadSeconds = Number(argv[++i]);
+        } else if (arg === '--video-switch-output') {
+            args.videoSwitchOutput = argv[++i];
+        } else if (arg === '--video-switch-required-forward-seconds') {
+            args.videoSwitchRequiredForwardSeconds = Number(argv[++i]);
+        } else if (arg === '--video-switch-second-packet-id') {
+            args.videoSwitchSecondPacketId = Number(argv[++i]);
+        } else if (arg === '--video-switch-second-at-read-seconds') {
+            args.videoSwitchSecondAtReadSeconds = Number(argv[++i]);
+        } else if (arg === '--video-switch-second-output') {
+            args.videoSwitchSecondOutput = argv[++i];
+        } else if (arg === '--initial-video-output') {
+            args.initialVideoOutput = argv[++i];
         } else if (arg === '--audio-switch-rebuild-from-seek') {
             args.audioSwitchRebuildFromSeek = true;
         } else if (arg === '--seek-target-seconds') {
@@ -96,7 +120,7 @@ function parseArgs(argv) {
     }
 
     if (!args.file) {
-        throw new Error('usage: node scripts/probe_mmts_demux_remux_stream.js <mmts-file> [--seconds N] [--bytes N] [--chunk-size N] [--live] [--firefox-live-audio-rebuild] [--print-first-segments N] [--verbose] [--audio-switch-packet-id N --audio-switch-at-read-seconds N --audio-switch-timeline-seconds N] [--initial-audio-output FILE] [--audio-switch-output FILE] [--audio-switch-required-forward-seconds N] [--audio-switch-second-packet-id N --audio-switch-second-at-read-seconds N --audio-switch-second-timeline-seconds N --audio-switch-second-output FILE] [--audio-switch-rebuild-from-seek --seek-target-seconds N --seek-duration-seconds N] [--seek-after-seconds N] [--seek-lookback-bytes N] [--seek-max-read-bytes N]');
+        throw new Error('usage: node scripts/probe_mmts_demux_remux_stream.js <mmts-file> [--seconds N] [--bytes N] [--chunk-size N] [--live] [--firefox-live-audio-rebuild] [--print-first-segments N] [--verbose] [--audio-switch-packet-id N --audio-switch-at-read-seconds N --audio-switch-timeline-seconds N] [--initial-audio-output FILE] [--audio-switch-output FILE] [--audio-switch-required-forward-seconds N] [--audio-switch-second-packet-id N --audio-switch-second-at-read-seconds N --audio-switch-second-timeline-seconds N --audio-switch-second-output FILE] [--video-switch-packet-id N --video-switch-at-read-seconds N] [--initial-video-output FILE] [--video-switch-output FILE] [--video-switch-required-forward-seconds N] [--video-switch-second-packet-id N --video-switch-second-at-read-seconds N --video-switch-second-output FILE] [--audio-switch-rebuild-from-seek --seek-target-seconds N --seek-duration-seconds N] [--seek-after-seconds N] [--seek-lookback-bytes N] [--seek-max-read-bytes N]');
     }
     if (!Number.isFinite(args.chunkSize) || args.chunkSize <= 0) {
         throw new Error('--chunk-size must be a positive number');
@@ -110,6 +134,10 @@ function parseArgs(argv) {
     if (!Number.isFinite(args.audioSwitchRequiredForwardSeconds) ||
         args.audioSwitchRequiredForwardSeconds <= 0) {
         throw new Error('--audio-switch-required-forward-seconds must be a positive number');
+    }
+    if (!Number.isFinite(args.videoSwitchRequiredForwardSeconds) ||
+        args.videoSwitchRequiredForwardSeconds <= 0) {
+        throw new Error('--video-switch-required-forward-seconds must be a positive number');
     }
     if ((args.seekTargetSeconds === undefined) !== (args.seekDurationSeconds === undefined) ||
         (args.seekTargetSeconds !== undefined &&
@@ -141,6 +169,21 @@ function parseArgs(argv) {
          (args.audioSwitchSecondTimelineSeconds !== undefined &&
           (!Number.isFinite(args.audioSwitchSecondTimelineSeconds) || args.audioSwitchSecondTimelineSeconds < 0)))) {
         throw new Error('second audio switch requires a non-rebuild first switch and finite packet/read parameters');
+    }
+    const hasVideoSwitch = args.videoSwitchPacketId !== undefined ||
+        args.videoSwitchAtReadSeconds !== undefined || args.videoSwitchOutput !== undefined;
+    if (hasVideoSwitch &&
+        (!Number.isFinite(args.videoSwitchPacketId) ||
+         !Number.isFinite(args.videoSwitchAtReadSeconds) || args.videoSwitchAtReadSeconds < 0)) {
+        throw new Error('video switch requires finite packet/read parameters');
+    }
+    const hasSecondVideoSwitch = args.videoSwitchSecondPacketId !== undefined ||
+        args.videoSwitchSecondAtReadSeconds !== undefined || args.videoSwitchSecondOutput !== undefined;
+    if (hasSecondVideoSwitch &&
+        (!hasVideoSwitch || !Number.isFinite(args.videoSwitchSecondPacketId) ||
+         !Number.isFinite(args.videoSwitchSecondAtReadSeconds) ||
+         args.videoSwitchSecondAtReadSeconds < 0)) {
+        throw new Error('second video switch requires a first switch and finite packet/read parameters');
     }
 
     args.file = path.resolve(args.file);
@@ -282,6 +325,7 @@ function createStats() {
         drops: {
             video: {total: 0, byReason: {}, byMpu: {}, samples: [], recentSamples: [], samplesByMpu: {}}
         },
+        rejectedVideoMpus: {total: 0, byReason: {}, byPacketId: {}, samples: []},
         discontinuities: [],
         firstDemuxVideoSamples: [],
         firstSegments: [],
@@ -291,6 +335,8 @@ function createStats() {
         startupGroups: [],
         audioSwitchInitSegments: [],
         audioSwitchMediaSegments: [],
+        videoSwitchInitSegments: [],
+        videoSwitchMediaSegments: [],
         errors: []
     };
 }
@@ -302,6 +348,7 @@ function resetTimelineStats(stats) {
     stats.media = fresh.media;
     stats.demux = fresh.demux;
     stats.drops = fresh.drops;
+    stats.rejectedVideoMpus = fresh.rejectedVideoMpus;
     stats.discontinuities = fresh.discontinuities;
     stats.firstDemuxVideoSamples = fresh.firstDemuxVideoSamples;
     stats.firstSegments = fresh.firstSegments;
@@ -583,7 +630,7 @@ function hasRequiredAudioSwitchCoverage(probe) {
         probe.requestedStart + probe.requiredForwardSeconds;
 }
 
-function summarizeAudioCapture(capture) {
+function summarizeMediaCapture(capture) {
     const firstRange = capture.mediaRanges[0];
     const lastRange = capture.mediaRanges[capture.mediaRanges.length - 1];
     return {
@@ -668,6 +715,137 @@ function validateAudioSwitchProbe(probe, previousProbe) {
     return errors;
 }
 
+function createVideoSwitchProbe(label, packetId, atReadSeconds, output,
+                                requiredForwardSeconds) {
+    return {
+        label,
+        packetId,
+        atReadSeconds,
+        requestedStart: undefined,
+        output,
+        attempted: false,
+        selectAccepted: false,
+        selectionResult: null,
+        contractId: undefined,
+        initContract: null,
+        mediaContract: null,
+        initCodec: undefined,
+        initData: null,
+        mediaData: null,
+        mediaParts: [],
+        mediaRanges: [],
+        firstMediaRandomAccessSafe: false,
+        firstMediaSource: null,
+        requiredForwardSeconds,
+    };
+}
+
+function createVideoCapture(output) {
+    return {
+        output,
+        initData: null,
+        mediaParts: [],
+        mediaRanges: [],
+    };
+}
+
+function captureVideoMedia(capture, segment) {
+    const beginDts = segmentBeginDts(segment);
+    const endDts = segmentEndDts(segment);
+    if (!capture || !segment || !segment.data || segment.data.byteLength === 0 ||
+        !Number.isFinite(beginDts) || !Number.isFinite(endDts) || endDts <= beginDts) {
+        return false;
+    }
+    const previousRange = capture.mediaRanges[capture.mediaRanges.length - 1];
+    if (previousRange && Math.abs(beginDts - previousRange.endDts) > 100) {
+        return false;
+    }
+    capture.mediaParts.push(Buffer.from(segment.data));
+    capture.mediaRanges.push({beginDts, endDts});
+    if (!capture.mediaData) {
+        capture.mediaData = capture.mediaParts[0];
+    }
+    return true;
+}
+
+function hasRequiredVideoSwitchCoverage(probe) {
+    const firstRange = probe && probe.mediaRanges[0];
+    const lastRange = probe && probe.mediaRanges[probe.mediaRanges.length - 1];
+    return !!firstRange && !!lastRange &&
+        lastRange.endDts - firstRange.beginDts + 0.001 >= probe.requiredForwardSeconds * 1000;
+}
+
+function summarizeVideoSwitchProbe(probe) {
+    if (probe == null) {
+        return null;
+    }
+    return {
+        packetId: probe.packetId,
+        atReadSeconds: probe.atReadSeconds,
+        requestedStart: probe.requestedStart,
+        attempted: probe.attempted,
+        selectAccepted: probe.selectAccepted,
+        selectionReason: probe.selectionResult && probe.selectionResult.reason,
+        selectionResult: probe.selectionResult,
+        contractId: probe.contractId,
+        initContract: probe.initContract,
+        mediaContract: probe.mediaContract,
+        initCodec: probe.initCodec,
+        initBytes: probe.initData ? probe.initData.byteLength : 0,
+        mediaBytes: probe.mediaParts.reduce((total, part) => total + part.byteLength, 0),
+        mediaParts: probe.mediaParts.length,
+        mediaStart: probe.mediaRanges.length > 0 ? probe.mediaRanges[0].beginDts / 1000 : undefined,
+        mediaEnd: probe.mediaRanges.length > 0 ?
+            probe.mediaRanges[probe.mediaRanges.length - 1].endDts / 1000 : undefined,
+        firstMediaRandomAccessSafe: probe.firstMediaRandomAccessSafe,
+        firstMediaSource: probe.firstMediaSource,
+        requiredForwardSeconds: probe.requiredForwardSeconds,
+        output: probe.output,
+    };
+}
+
+function validateVideoSwitchProbe(probe, previousProbe) {
+    const errors = [];
+    if (!probe.attempted) {
+        errors.push(`${probe.label}: selection was not attempted`);
+    }
+    if (!probe.selectAccepted) {
+        errors.push(`${probe.label}: selection was not accepted`);
+    }
+    if (!probe.initContract || !probe.initData || probe.initData.byteLength === 0) {
+        errors.push(`${probe.label}: initialization segment is missing`);
+    }
+    if (!probe.mediaContract || !probe.mediaData || probe.mediaData.byteLength === 0) {
+        errors.push(`${probe.label}: media segment is missing`);
+    }
+    if (!probe.firstMediaRandomAccessSafe) {
+        errors.push(`${probe.label}: first media segment is not random-access safe`);
+    }
+    if (!hasRequiredVideoSwitchCoverage(probe)) {
+        errors.push(`${probe.label}: media does not cover the required forward window`);
+    }
+    if (probe.initContract && probe.initContract.packetId !== probe.packetId) {
+        errors.push(`${probe.label}: initialization contract packetId mismatch`);
+    }
+    if (probe.mediaContract && probe.mediaContract.packetId !== probe.packetId) {
+        errors.push(`${probe.label}: media contract packetId mismatch`);
+    }
+    if (probe.firstMediaSource && probe.firstMediaSource.packetId !== probe.packetId) {
+        errors.push(`${probe.label}: first media source packetId mismatch`);
+    }
+    if (probe.initContract && probe.mediaContract &&
+        probe.initContract.id !== probe.mediaContract.id) {
+        errors.push(`${probe.label}: initialization/media contract id mismatch`);
+    }
+    if (previousProbe &&
+        (!Number.isFinite(probe.contractId) ||
+         !Number.isFinite(previousProbe.contractId) ||
+         probe.contractId <= previousProbe.contractId)) {
+        errors.push(`${probe.label}: contract id did not advance`);
+    }
+    return errors;
+}
+
 function main() {
     setupBrowserGlobals();
     const args = parseArgs(process.argv);
@@ -713,7 +891,28 @@ function main() {
         ) : null;
     const audioSwitchProbes = [firstAudioSwitchProbe, secondAudioSwitchProbe].filter((probe) => probe != null);
     const initialAudioCapture = createAudioCapture(args.initialAudioOutput);
+    const firstVideoSwitchProbe = Number.isFinite(args.videoSwitchPacketId) ?
+        createVideoSwitchProbe(
+            'first',
+            args.videoSwitchPacketId,
+            args.videoSwitchAtReadSeconds,
+            args.videoSwitchOutput,
+            args.videoSwitchRequiredForwardSeconds
+        ) : null;
+    const secondVideoSwitchProbe = Number.isFinite(args.videoSwitchSecondPacketId) ?
+        createVideoSwitchProbe(
+            'second',
+            args.videoSwitchSecondPacketId,
+            args.videoSwitchSecondAtReadSeconds,
+            args.videoSwitchSecondOutput,
+            args.videoSwitchRequiredForwardSeconds
+        ) : null;
+    const videoSwitchProbes = [firstVideoSwitchProbe, secondVideoSwitchProbe].filter(
+        (probe) => probe != null
+    );
+    const initialVideoCapture = createVideoCapture(args.initialVideoOutput);
     let activeAudioSwitchProbe = null;
+    let activeVideoSwitchProbe = null;
     stats.printFirstSegmentsLimit = args.printFirstSegments;
     const startupOperation = playbackOperationModule.createPlaybackOperation({
         scopeId: 'mmts-stream-probe',
@@ -760,6 +959,29 @@ function main() {
         demuxer.logDroppedVideoSample = function(packetId, mpuSequenceNumber, units, timestamp, reason) {
             recordVideoDrop(stats, packetId, mpuSequenceNumber, units, timestamp, reason);
             return originalLogDroppedVideoSample.call(this, packetId, mpuSequenceNumber, units, timestamp, reason);
+        };
+    }
+    const originalRejectVideoMpu = demuxer.rejectVideoMpu;
+    if (typeof originalRejectVideoMpu === 'function') {
+        demuxer.rejectVideoMpu = function(accessUnits, reason) {
+            const first = Array.isArray(accessUnits) && accessUnits.length > 0 ? accessUnits[0] : null;
+            const packetId = first ? first.packetId : undefined;
+            const mpuSequenceNumber = first ? first.mpuSequenceNumber : undefined;
+            const rejected = stats.rejectedVideoMpus;
+            rejected.total++;
+            rejected.byReason[reason] = (rejected.byReason[reason] || 0) + 1;
+            if (packetId !== undefined) {
+                rejected.byPacketId[packetId] = (rejected.byPacketId[packetId] || 0) + 1;
+            }
+            if (rejected.samples.length < 32) {
+                rejected.samples.push({
+                    packetId,
+                    mpuSequenceNumber,
+                    accessUnitCount: Array.isArray(accessUnits) ? accessUnits.length : 0,
+                    reason,
+                });
+            }
+            return originalRejectVideoMpu.call(this, accessUnits, reason);
         };
     }
     const originalHandleMpuDiscontinuity = demuxer.handleMpuDiscontinuity;
@@ -839,6 +1061,58 @@ function main() {
         }
         return accepted;
     };
+    const captureVideoSwitchSegment = (type, segment) => {
+        const contract = segment && segment.mmtsVideoTrackSwitch;
+        if (!contract) {
+            return;
+        }
+        let probe = videoSwitchProbes.find((candidate) =>
+            candidate.attempted && candidate.contractId === contract.id
+        );
+        if (!probe) {
+            probe = videoSwitchProbes.find((candidate) =>
+                candidate.attempted && candidate.contractId == null &&
+                candidate.packetId === contract.packetId
+            );
+        }
+        if (!probe) {
+            return;
+        }
+        if (probe.contractId == null) {
+            probe.contractId = contract.id;
+        }
+        if (type === 'init') {
+            probe.initContract = Object.assign({}, contract);
+            probe.initData = Buffer.from(segment.data);
+            probe.initCodec = segment.codec;
+        } else {
+            probe.mediaContract = Object.assign({}, contract);
+            probe.firstMediaRandomAccessSafe = segment.mmtsRandomAccessSafe === true;
+            probe.firstMediaSource = segment.mmtsSourceInfo || null;
+            captureVideoMedia(probe, segment);
+        }
+    };
+    const requestVideoSwitch = (probe, requestedStart, transactionId) => {
+        probe.attempted = true;
+        probe.requestedStart = requestedStart;
+        const operation = playbackOperationModule.createPlaybackOperation({
+            scopeId: 'mmts-stream-probe',
+            timelineGeneration: transactionId,
+            kind: 'video-switch',
+            transactionId,
+            requestedTimeMilliseconds: requestedStart * 1000,
+            packetId: probe.packetId,
+            phase: 'requested',
+        });
+        const switchIdentity = playbackOperationModule.createPlaybackSwitchIdentity(operation);
+        const result = demuxer.selectVideoTrack(probe.packetId, switchIdentity);
+        probe.selectionResult = result || null;
+        probe.selectAccepted = !!result && result.accepted === true;
+        if (probe.selectAccepted) {
+            activeVideoSwitchProbe = probe;
+        }
+        return probe.selectAccepted;
+    };
     remuxer.onInitSegment = (type, segment) => {
         if (stats.init[type] !== undefined) {
             stats.init[type]++;
@@ -858,6 +1132,14 @@ function main() {
         if (type === 'audio' && segment && segment.mmtsAudioTrackSwitch) {
             stats.audioSwitchInitSegments.push(segment.mmtsAudioTrackSwitch);
             captureAudioSwitchSegment('init', segment);
+        }
+        if (type === 'video' && (!firstVideoSwitchProbe || !firstVideoSwitchProbe.attempted) &&
+            segment && segment.data && segment.data.byteLength > 0) {
+            initialVideoCapture.initData = Buffer.from(segment.data);
+        }
+        if (type === 'video' && segment && segment.mmtsVideoTrackSwitch) {
+            stats.videoSwitchInitSegments.push(segment.mmtsVideoTrackSwitch);
+            captureVideoSwitchSegment('init', segment);
         }
     };
     remuxer.onMediaSegment = (type, segment) => {
@@ -882,6 +1164,25 @@ function main() {
             !hasRequiredAudioSwitchCoverage(activeAudioSwitchProbe)) {
             captureAudioMedia(activeAudioSwitchProbe, segment);
         }
+        if (type === 'video' && (!firstVideoSwitchProbe || !firstVideoSwitchProbe.attempted)) {
+            captureVideoMedia(initialVideoCapture, segment);
+        }
+        if (type === 'video' && segment && segment.mmtsVideoTrackSwitch) {
+            stats.videoSwitchMediaSegments.push({
+                contract: segment.mmtsVideoTrackSwitch,
+                beginDts: segmentBeginDts(segment),
+                endDts: segmentEndDts(segment),
+                bytes: segment.data ? segment.data.byteLength : 0,
+                samples: segment.sampleCount || 0,
+                randomAccessSafe: segment.mmtsRandomAccessSafe === true,
+                source: segment.mmtsSourceInfo || null,
+            });
+            captureVideoSwitchSegment('media', segment);
+        } else if (type === 'video' && activeVideoSwitchProbe &&
+            activeVideoSwitchProbe.contractId != null &&
+            !hasRequiredVideoSwitchCoverage(activeVideoSwitchProbe)) {
+            captureVideoMedia(activeVideoSwitchProbe, segment);
+        }
     };
     remuxer.bindDataSource(demuxer);
     const remuxDataAvailable = demuxer.onDataAvailable;
@@ -904,6 +1205,8 @@ function main() {
     let offset = 0;
     let audioSwitchRequested = false;
     let secondAudioSwitchRequested = false;
+    let videoSwitchRequested = false;
+    let secondVideoSwitchRequested = false;
     let seekApplied = false;
     let seekStartOffset = undefined;
     let seekReadBytes = 0;
@@ -994,6 +1297,26 @@ function main() {
                 maxEnd >= args.audioSwitchSecondAtReadSeconds * 1000) {
                 secondAudioSwitchRequested = requestAudioSwitch(secondAudioSwitchProbe);
             }
+            if (!videoSwitchRequested && firstVideoSwitchProbe &&
+                maxEnd >= firstVideoSwitchProbe.atReadSeconds * 1000) {
+                videoSwitchRequested = requestVideoSwitch(
+                    firstVideoSwitchProbe,
+                    maxEnd / 1000,
+                    1
+                );
+            }
+            if (!secondVideoSwitchRequested && secondVideoSwitchProbe &&
+                firstVideoSwitchProbe.selectAccepted &&
+                firstVideoSwitchProbe.initData &&
+                firstVideoSwitchProbe.mediaData &&
+                hasRequiredVideoSwitchCoverage(firstVideoSwitchProbe) &&
+                maxEnd >= secondVideoSwitchProbe.atReadSeconds * 1000) {
+                secondVideoSwitchRequested = requestVideoSwitch(
+                    secondVideoSwitchProbe,
+                    maxEnd / 1000,
+                    2
+                );
+            }
             if (Number.isFinite(args.seconds) && maxEnd >= args.seconds * 1000) {
                 break;
             }
@@ -1026,6 +1349,21 @@ function main() {
             );
         }
     }
+    if (initialVideoCapture.output && initialVideoCapture.initData &&
+        initialVideoCapture.mediaParts.length > 0) {
+        fs.writeFileSync(
+            initialVideoCapture.output,
+            Buffer.concat([initialVideoCapture.initData].concat(initialVideoCapture.mediaParts))
+        );
+    }
+    for (const probe of videoSwitchProbes) {
+        if (probe.output && probe.initData && probe.mediaParts.length > 0) {
+            fs.writeFileSync(
+                probe.output,
+                Buffer.concat([probe.initData].concat(probe.mediaParts))
+            );
+        }
+    }
 
     const audioSwitchProbeErrors = [];
     if (firstAudioSwitchProbe) {
@@ -1033,6 +1371,16 @@ function main() {
     }
     if (secondAudioSwitchProbe) {
         audioSwitchProbeErrors.push(...validateAudioSwitchProbe(secondAudioSwitchProbe, firstAudioSwitchProbe));
+    }
+    const videoSwitchProbeErrors = [];
+    if (firstVideoSwitchProbe) {
+        videoSwitchProbeErrors.push(...validateVideoSwitchProbe(firstVideoSwitchProbe, null));
+    }
+    if (secondVideoSwitchProbe) {
+        videoSwitchProbeErrors.push(...validateVideoSwitchProbe(
+            secondVideoSwitchProbe,
+            firstVideoSwitchProbe
+        ));
     }
 
     console.log(`file=${args.file}`);
@@ -1054,8 +1402,10 @@ function main() {
     console.log(`startup_groups=${JSON.stringify(stats.startupGroups)}`);
     console.log(`audio_switch_init=${JSON.stringify(stats.audioSwitchInitSegments)}`);
     console.log(`audio_switch_media=${JSON.stringify(stats.audioSwitchMediaSegments)}`);
+    console.log(`video_switch_init=${JSON.stringify(stats.videoSwitchInitSegments)}`);
+    console.log(`video_switch_media=${JSON.stringify(stats.videoSwitchMediaSegments)}`);
     if (initialAudioCapture.output) {
-        console.log(`initial_audio_capture=${JSON.stringify(summarizeAudioCapture(initialAudioCapture))}`);
+        console.log(`initial_audio_capture=${JSON.stringify(summarizeMediaCapture(initialAudioCapture))}`);
     }
     if (firstAudioSwitchProbe) {
         console.log(`audio_switch_probe_first=${JSON.stringify(summarizeAudioSwitchProbe(firstAudioSwitchProbe))}`);
@@ -1065,6 +1415,18 @@ function main() {
     }
     if (firstAudioSwitchProbe) {
         console.log(`audio_switch_probe_errors=${JSON.stringify(audioSwitchProbeErrors)}`);
+    }
+    if (initialVideoCapture.output) {
+        console.log(`initial_video_capture=${JSON.stringify(summarizeMediaCapture(initialVideoCapture))}`);
+    }
+    if (firstVideoSwitchProbe) {
+        console.log(`video_switch_probe_first=${JSON.stringify(summarizeVideoSwitchProbe(firstVideoSwitchProbe))}`);
+    }
+    if (secondVideoSwitchProbe) {
+        console.log(`video_switch_probe_second=${JSON.stringify(summarizeVideoSwitchProbe(secondVideoSwitchProbe))}`);
+    }
+    if (firstVideoSwitchProbe) {
+        console.log(`video_switch_probe_errors=${JSON.stringify(videoSwitchProbeErrors)}`);
     }
     if (args.audioSwitchRebuildFromSeek) {
         console.log(`audio_switch_rebuild=${JSON.stringify({
@@ -1090,6 +1452,7 @@ function main() {
         console.log(`first_segments=${JSON.stringify(stats.firstSegments)}`);
     }
     printDropSummary(stats);
+    console.log(`rejected_video_mpus=${JSON.stringify(stats.rejectedVideoMpus)}`);
     console.log(`discontinuities=${JSON.stringify(stats.discontinuities)}`);
     console.log(`errors=${stats.errors.length}`);
     for (const error of stats.errors) {
@@ -1098,7 +1461,8 @@ function main() {
 
     const hasOutput = stats.media.video.segments > 0 && stats.media.audio.segments > 0;
     const hasErrors = stats.errors.length > 0;
-    process.exitCode = hasOutput && !hasErrors && audioSwitchProbeErrors.length === 0 ? 0 : 1;
+    process.exitCode = hasOutput && !hasErrors && audioSwitchProbeErrors.length === 0 &&
+        videoSwitchProbeErrors.length === 0 ? 0 : 1;
 }
 
 if (require.main === module) {
