@@ -358,6 +358,9 @@ class MMTSDemuxer extends BaseDemuxer {
     private rejected_video_mpus_: {[key: string]: boolean} = {};
     private nominal_video_mpu_access_unit_count_: number = 0;
     private video_reference_recovery_pending_: boolean = false;
+    private video_reference_recovery_parameter_set_generation_limit_: number = 0;
+    private video_reference_recovery_watch_remaining_: number = 0;
+    private video_reference_recovery_watch_delay_: number = 0;
 
     public constructor(probeData: any, config: any) {
         super();
@@ -1415,10 +1418,19 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         const shortMpu = this.nominal_video_mpu_access_unit_count_ > 0 &&
             accessUnits.length < this.nominal_video_mpu_access_unit_count_;
+        const parameterSetGeneration = parsedAccessUnits.reduce((generation, parsed) => {
+            return Math.max(generation, parsed.chain.vps.generation,
+                parsed.chain.sps.generation, parsed.chain.pps.generation);
+        }, 0);
+        const quarantineParameterSetChange = !shortMpu &&
+            this.shouldQuarantineRecoveryParameterSetChange(parameterSetGeneration);
         const referenceRecovery = this.prepareVideoReferenceRecovery(
             accessUnits.length,
-            parsedAccessUnits[0].input.nalUnitType
+            parsedAccessUnits[0].input.nalUnitType,
+            parameterSetGeneration,
+            quarantineParameterSetChange
         );
+        const dropWholeMpu = shortMpu || quarantineParameterSetChange;
         const endOfSequenceAfterMpu = parsedAccessUnits.some((parsed) => parsed.endOfSequence);
         const prepared = this.hevc_poc_recovery_.prepareMpu(
             parsedAccessUnits.map((parsed) => parsed.input),
@@ -1475,7 +1487,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.activateVideoParameterSetChain(chain);
             }
             const recoveredPicture = prepared.pictures[i];
-            const dropShortMpuTail = this.shouldDropShortVideoMpuPicture(shortMpu, i);
+            const dropShortMpuTail = this.shouldDropShortVideoMpuPicture(dropWholeMpu, i);
             const timedAccessUnit: MMTSTimedVideoAccessUnit = {
                 ...accessUnits[i],
                 keyframe: isH265IrapNalu(recoveredPicture.nalUnitType),
@@ -1485,18 +1497,35 @@ class MMTSDemuxer extends BaseDemuxer {
                 isLeading: recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_N ||
                     recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_R,
                 outputAllowed: recoveredPicture.outputAllowed && !dropShortMpuTail,
-                dropReason: dropShortMpuTail ? 'hevc-short-mpu-tail' : undefined
+                dropReason: dropShortMpuTail ?
+                    (quarantineParameterSetChange ?
+                        'hevc-recovery-parameter-set-quarantine' : 'hevc-short-mpu-tail') :
+                    undefined
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
         }
     }
 
-    private prepareVideoReferenceRecovery(accessUnitCount: number, firstNalUnitType: number): boolean {
+    private prepareVideoReferenceRecovery(accessUnitCount: number,
+                                          firstNalUnitType: number,
+                                          parameterSetGeneration: number = 0,
+                                          quarantineParameterSetChange: boolean = false): boolean {
         const previousNominal = this.nominal_video_mpu_access_unit_count_;
         const shortMpu = previousNominal > 0 && accessUnitCount < previousNominal;
         const startsWithRandomAccess = isH265IrapNalu(firstNalUnitType);
         const recoverReferences = startsWithRandomAccess &&
             this.video_reference_recovery_pending_;
+
+        if (shortMpu) {
+            this.video_reference_recovery_parameter_set_generation_limit_ =
+                parameterSetGeneration;
+            this.video_reference_recovery_watch_remaining_ = 0;
+            this.video_reference_recovery_watch_delay_ = 0;
+        } else if (quarantineParameterSetChange) {
+            this.video_reference_recovery_pending_ = true;
+            this.video_reference_recovery_watch_remaining_ = 0;
+            this.video_reference_recovery_watch_delay_ = 0;
+        }
 
         if (recoverReferences) {
             // A shortened GOP at an MMTS splice may omit pictures referenced by
@@ -1504,11 +1533,31 @@ class MMTSDemuxer extends BaseDemuxer {
             // shortened MPU itself is discarded and must never reach the
             // decoder, including its nominal CRA.
             this.hevc_poc_recovery_.reset(true);
+            this.video_reference_recovery_parameter_set_generation_limit_ = Math.max(
+                this.video_reference_recovery_parameter_set_generation_limit_,
+                parameterSetGeneration
+            );
+            this.video_reference_recovery_watch_remaining_ = 16;
+            this.video_reference_recovery_watch_delay_ = 3;
         }
 
         this.nominal_video_mpu_access_unit_count_ = Math.max(previousNominal, accessUnitCount);
-        this.video_reference_recovery_pending_ = shortMpu;
+        this.video_reference_recovery_pending_ = shortMpu || quarantineParameterSetChange;
         return recoverReferences;
+    }
+
+    private shouldQuarantineRecoveryParameterSetChange(parameterSetGeneration: number): boolean {
+        if (this.video_reference_recovery_pending_ ||
+            this.video_reference_recovery_watch_remaining_ <= 0) {
+            return false;
+        }
+        this.video_reference_recovery_watch_remaining_--;
+        if (this.video_reference_recovery_watch_delay_ > 0) {
+            this.video_reference_recovery_watch_delay_--;
+            return false;
+        }
+        return parameterSetGeneration >
+            this.video_reference_recovery_parameter_set_generation_limit_;
     }
 
     private shouldDropShortVideoMpuPicture(shortMpu: boolean, decodingIndex: number): boolean {
@@ -3294,6 +3343,9 @@ class MMTSDemuxer extends BaseDemuxer {
         this.rejected_video_mpus_ = {};
         this.nominal_video_mpu_access_unit_count_ = 0;
         this.video_reference_recovery_pending_ = false;
+        this.video_reference_recovery_parameter_set_generation_limit_ = 0;
+        this.video_reference_recovery_watch_remaining_ = 0;
+        this.video_reference_recovery_watch_delay_ = 0;
         this.video_waiting_random_access_ = true;
         this.video_recovery_gap_pending_ = false;
         this.seed_audio_after_video_bootstrap_ = false;

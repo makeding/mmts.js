@@ -3045,33 +3045,57 @@ function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
     };
     demuxer.nominal_video_mpu_access_unit_count_ = 0;
     demuxer.video_reference_recovery_pending_ = false;
+    demuxer.video_reference_recovery_parameter_set_generation_limit_ = 0;
+    demuxer.video_reference_recovery_watch_remaining_ = 0;
+    demuxer.video_reference_recovery_watch_delay_ = 0;
 
     assert.strictEqual(
-        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 7),
         false
     );
     assert.strictEqual(resetCount, 0);
     assert.strictEqual(demuxer.nominal_video_mpu_access_unit_count_, 32);
 
     assert.strictEqual(
-        demuxer.prepareVideoReferenceRecovery(8, TEST_H265_NALU_TYPE.CRA_NUT),
+        demuxer.prepareVideoReferenceRecovery(8, TEST_H265_NALU_TYPE.CRA_NUT, 7),
         false
     );
     assert.strictEqual(resetCount, 0);
     assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
 
     assert.strictEqual(
-        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 9),
         true
     );
     assert.strictEqual(resetCount, 1);
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
+    assert.strictEqual(demuxer.video_reference_recovery_watch_remaining_, 16);
+    assert.strictEqual(demuxer.video_reference_recovery_watch_delay_, 3);
+
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), false);
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), false);
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), false);
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(9), false);
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), true);
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 10, true),
+        false
+    );
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 9),
+        true
+    );
+    assert.strictEqual(resetCount, 2);
     assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
         false
     );
-    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(resetCount, 2);
     assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 0), true);
     assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 1), true);
     assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(false, 1), false);

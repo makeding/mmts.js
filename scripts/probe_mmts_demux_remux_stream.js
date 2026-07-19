@@ -343,6 +343,7 @@ function createStats() {
         },
         rejectedVideoMpus: {total: 0, byReason: {}, byPacketId: {}, samples: []},
         videoMpuAccessUnitCounts: [],
+        hevcPictures: [],
         discontinuities: [],
         firstDemuxVideoSamples: [],
         firstSegments: [],
@@ -1050,6 +1051,28 @@ function main() {
             return originalFlushPendingVideoAccessUnits.call(this);
         };
     }
+    const originalParseHEVCVideoAccessUnit = demuxer.parseHEVCVideoAccessUnit;
+    if (typeof originalParseHEVCVideoAccessUnit === 'function') {
+        demuxer.parseHEVCVideoAccessUnit = function(accessUnit) {
+            const parsed = originalParseHEVCVideoAccessUnit.call(this, accessUnit);
+            if (parsed && parsed.input) {
+                stats.hevcPictures.push({
+                    packetId: accessUnit.packetId,
+                    mpuSequenceNumber: accessUnit.mpuSequenceNumber,
+                    auIndex: accessUnit.auIndex,
+                    nalUnitType: parsed.input.nalUnitType,
+                    temporalId: parsed.input.temporalId,
+                    pocLsb: parsed.input.pocLsb,
+                    parameterSetSignature: parsed.input.parameterSetSignature,
+                    chainSignature: parsed.chain && parsed.chain.signature,
+                    length: accessUnit.length,
+                    naluTypes: accessUnit.units.map((unit) => unit.type),
+                    naluSizes: accessUnit.units.map((unit) => unit.data.byteLength),
+                });
+            }
+            return parsed;
+        };
+    }
     const originalActivateVideoParameterSetChain = demuxer.activateVideoParameterSetChain;
     if (typeof originalActivateVideoParameterSetChain === 'function') {
         demuxer.activateVideoParameterSetChain = function(chain) {
@@ -1561,6 +1584,7 @@ function main() {
     printDropSummary(stats);
     console.log(`rejected_video_mpus=${JSON.stringify(stats.rejectedVideoMpus)}`);
     console.log(`video_mpu_access_unit_counts=${JSON.stringify(stats.videoMpuAccessUnitCounts)}`);
+    console.log(`hevc_pictures=${JSON.stringify(stats.hevcPictures)}`);
     console.log(`discontinuities=${JSON.stringify(stats.discontinuities)}`);
     console.log(`errors=${stats.errors.length}`);
     for (const error of stats.errors) {
