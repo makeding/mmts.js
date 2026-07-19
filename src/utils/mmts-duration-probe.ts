@@ -181,7 +181,7 @@ function parseMMTSTimestampPoints(buffer: ArrayBuffer,
             }
 
             if (mmtp.payloadType === MMTPPayloadType.ControlMessage) {
-                program.parseSignalingPacket(mmtp);
+                program.parseSignalingPacket(mmtp, byteStart + packet.startOffset);
                 continue;
             }
 

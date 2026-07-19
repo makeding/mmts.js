@@ -92,10 +92,12 @@ export interface MMTAsset {
 export interface MMTMpuTimestampDescriptor {
     mpuSequenceNumber: number;
     presentationTimeUs: number;
+    sourceFilePosition?: number;
 }
 
 export interface MMTMpuExtendedTimestampDescriptor {
     mpuSequenceNumber: number;
+    sourceFilePosition?: number;
     timescale?: number;
     ptsOffsetType: number;
     defaultPtsOffset: number;
@@ -124,10 +126,12 @@ export interface MMTSIResult {
     messages: number[];
     tables: number[];
     mptTables: MMTParsedPackageTable[];
+    sourceFilePosition?: number;
 }
 
 export interface SignalingFragmentState {
     data: number[];
+    firstFilePosition?: number;
     lastSeq: number;
     state: 'init' | 'not-started' | 'in-fragment' | 'skip';
 }
@@ -156,7 +160,8 @@ export default class MMTSI {
 
     public static parseSignalingPayload(payload: Uint8Array,
                                         packetSequenceNumber: number,
-                                        fragmentState: SignalingFragmentState): MMTSIResult {
+                                        fragmentState: SignalingFragmentState,
+                                        filePosition: number = 0): MMTSIResult {
         const result: MMTSIResult = {assets: [], conditionalAccessInfos: [], messages: [], tables: [], mptTables: []};
         const reader = new ByteReader(payload);
         if (!reader.canRead(2)) {
@@ -175,10 +180,12 @@ export default class MMTSI {
             const completed = MMTSI.assembleFragment(
                 fragmentState,
                 fragmentationIndicator,
-                reader.remainingBytes()
+                reader.remainingBytes(),
+                filePosition
             );
             if (completed !== null) {
-                MMTSI.parseSignalingMessage(completed, result);
+                result.sourceFilePosition = completed.filePosition;
+                MMTSI.parseSignalingMessage(completed.data, result);
             }
             return result;
         }
@@ -186,6 +193,8 @@ export default class MMTSI {
         if (fragmentationIndicator !== NOT_FRAGMENTED) {
             return result;
         }
+
+        result.sourceFilePosition = filePosition;
 
         while (reader.bytesLeft() > 0) {
             if (!reader.canRead(lengthExtensionFlag ? 4 : 2)) {
@@ -204,6 +213,7 @@ export default class MMTSI {
     public static createFragmentState(): SignalingFragmentState {
         return {
             data: [],
+            firstFilePosition: undefined,
             lastSeq: 0,
             state: 'init'
         };
@@ -215,6 +225,7 @@ export default class MMTSI {
             state.state = 'skip';
         } else if (((state.lastSeq + 1) >>> 0) !== packetSequenceNumber) {
             state.data = [];
+            state.firstFilePosition = undefined;
             state.state = 'skip';
         }
         state.lastSeq = packetSequenceNumber;
@@ -222,21 +233,25 @@ export default class MMTSI {
 
     private static assembleFragment(state: SignalingFragmentState,
                                     fragmentationIndicator: number,
-                                    data: Uint8Array): Uint8Array | null {
+                                    data: Uint8Array,
+                                    filePosition: number): {data: Uint8Array; filePosition: number} | null {
         switch (fragmentationIndicator) {
             case NOT_FRAGMENTED:
                 if (state.state === 'in-fragment') {
                     state.data = [];
                 }
+                state.firstFilePosition = undefined;
                 state.state = 'not-started';
-                return data;
+                return {data, filePosition};
             case FIRST_FRAGMENT:
                 if (state.state === 'in-fragment') {
                     state.data = [];
+                    state.firstFilePosition = undefined;
                     state.state = 'skip';
                     return null;
                 }
                 state.data = Array.prototype.slice.call(data);
+                state.firstFilePosition = filePosition;
                 state.state = 'in-fragment';
                 return null;
             case MIDDLE_FRAGMENT:
@@ -251,9 +266,12 @@ export default class MMTSI {
                 }
                 MMTSI.append(state.data, data);
                 const completed = new Uint8Array(state.data);
+                const completedFilePosition = state.firstFilePosition !== undefined ?
+                    state.firstFilePosition : filePosition;
                 state.data = [];
+                state.firstFilePosition = undefined;
                 state.state = 'not-started';
-                return completed;
+                return {data: completed, filePosition: completedFilePosition};
             default:
                 return null;
         }

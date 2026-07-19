@@ -1076,7 +1076,7 @@ function testVodSeekRecommendsRequestedTimeAfterFindingEarlierRap() {
     assert.strictEqual(h.controller._pendingMMTSVodSeek, null);
 }
 
-function testVodSeekRejectsDistantSparseKeyframe() {
+function testVodSeekUsesKnownCheckpointWithinIndexedCoverage() {
     const h = makeHarness();
     h.controller._demuxer = new h.MMTSDemuxer();
     h.controller._config = {isMMTS: true, mmtsVodSeekLookbackBytes: 32 * 1024 * 1024};
@@ -1088,12 +1088,9 @@ function testVodSeekRejectsDistantSparseKeyframe() {
     );
 
     const seekPoint = h.controller._resolveSeekPoint(segmentInfo, segment, 187000);
-    const estimatedPosition = Math.floor(187000 * segment.filesize / segmentInfo.duration);
-    assert.strictEqual(seekPoint.estimated, true);
-    assert.strictEqual(seekPoint.milliseconds, 187000);
-    assert.strictEqual(seekPoint.estimatedPosition, estimatedPosition);
-    assert.strictEqual(seekPoint.fileposition, estimatedPosition - 32 * 1024 * 1024);
-    assert.notStrictEqual(seekPoint.fileposition, 220000000);
+    assert.strictEqual(seekPoint.estimated, undefined);
+    assert.strictEqual(seekPoint.milliseconds, 25000);
+    assert.strictEqual(seekPoint.fileposition, 220000000);
 }
 
 function testVodSeekUsesNearbyKnownKeyframe() {
@@ -1770,7 +1767,7 @@ async function main() {
     testVodAudioSwitchAudioFirstSegmentUsesStartupCollector();
     testVodAudioSwitchStartupUsesOperationIdentityAndSafeVideoPreroll();
     testVodSeekRecommendsRequestedTimeAfterFindingEarlierRap();
-    testVodSeekRejectsDistantSparseKeyframe();
+    testVodSeekUsesKnownCheckpointWithinIndexedCoverage();
     testVodSeekUsesNearbyKnownKeyframe();
     testVodSeekUsesObservedNearbyKeyframeSpanWithIncompleteDuration();
     testLateSeekOutputsNeverAcquireNewOperationIdentity();

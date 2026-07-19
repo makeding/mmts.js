@@ -90,11 +90,15 @@ class MediaInfo {
         let table = this.keyframesIndex;
         let keyframeIdx = this._search(table.times, milliseconds);
 
-        return {
+        let result = {
             index: keyframeIdx,
             milliseconds: table.times[keyframeIdx],
             fileposition: table.filepositions[keyframeIdx]
         };
+        if (Array.isArray(table.randomAccessFilepositions)) {
+            result.randomAccessFileposition = table.randomAccessFilepositions[keyframeIdx];
+        }
+        return result;
     }
 
     _search(list, value) {

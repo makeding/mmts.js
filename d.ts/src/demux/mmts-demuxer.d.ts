@@ -161,7 +161,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private updateVodMediaInfoIndex;
     private applyPlaybackModeMediaInfo;
     private insertVodKeyframe;
-    private updateVodDurationEstimate;
+    private updateVodDurationEndpoint;
     private logVideoNalu;
     private logDroppedVideoSample;
     private logVideoSample;

@@ -73,8 +73,12 @@ function mpt(tableId, version, mode, assets) {
 }
 
 function signalingPacket(table) {
-    const message = bytes(0x80, 0x00, 0x00, ...u16(table.byteLength), table);
+    const message = signalingMessage(table);
     return bytes(0x01, 0x00, ...u16(message.byteLength), message);
+}
+
+function signalingMessage(table) {
+    return bytes(0x80, 0x00, 0x00, ...u16(table.byteLength), table);
 }
 
 function testAssetDescriptorsAndHvc1() {
@@ -131,7 +135,77 @@ function testOrderedMptSubsets() {
     assert.strictEqual(program.getAsset(0x132).assetType, 'hvc1');
 }
 
+function testTimestampRestartUsesEarliestDescriptorSignalingPosition() {
+    const mmtsi = loadModule('src/demux/mmt-si.ts', {});
+    const MMTSProgram = loadModule('src/demux/mmts-program.ts', {
+        './mmt-si': mmtsi,
+        './mpu': {__esModule: true, default: {}},
+        './mmts-timestamp-table': {__esModule: true, default: class {}}
+    }).default;
+    const program = new MMTSProgram();
+    const timestamp = descriptor(0x0001, bytes(
+        ...u32(20),
+        ...u32(0), ...u32(0)
+    ));
+    const extendedTimestamp = descriptor(0x8026, bytes(
+        0x01, ...u32(1000),
+        ...u32(20), 0x00, ...u16(0), 0x01, ...u16(0)
+    ));
+
+    program.parseSignalingPacket({
+        payload: signalingPacket(mpt(0x20, 1, 2, [asset('hvc1', 0x140, timestamp)])),
+        packetSequenceNumber: 1,
+        packetId: 1
+    }, 1000);
+    program.parseSignalingPacket({
+        payload: signalingPacket(mpt(0x20, 2, 2, [asset('hvc1', 0x140, extendedTimestamp)])),
+        packetSequenceNumber: 2,
+        packetId: 1
+    }, 2000);
+
+    assert.strictEqual(program.getTimestampRestartFilePosition(0x140, 20), 1000);
+    program.resetMediaState(true);
+    assert.strictEqual(program.getTimestampRestartFilePosition(0x140, 20), null);
+    assert.strictEqual(program.getAsset(0x140).assetType, 'hvc1');
+}
+
+function testFragmentedSignalingUsesFirstFragmentPosition() {
+    const mmtsi = loadModule('src/demux/mmt-si.ts', {});
+    const MMTSProgram = loadModule('src/demux/mmts-program.ts', {
+        './mmt-si': mmtsi,
+        './mpu': {__esModule: true, default: {}},
+        './mmts-timestamp-table': {__esModule: true, default: class {}}
+    }).default;
+    const program = new MMTSProgram();
+    const descriptors = bytes(
+        descriptor(0x0001, bytes(...u32(21), ...u32(0), ...u32(0))),
+        descriptor(0x8026, bytes(
+            0x01, ...u32(1000),
+            ...u32(21), 0x00, ...u16(0), 0x01, ...u16(0)
+        ))
+    );
+    const message = signalingMessage(
+        mpt(0x20, 1, 2, [asset('hvc1', 0x141, descriptors)])
+    );
+    const split = Math.floor(message.byteLength / 2);
+
+    assert.strictEqual(program.parseSignalingPacket({
+        payload: bytes(0x40, 0x00, message.subarray(0, split)),
+        packetSequenceNumber: 10,
+        packetId: 1
+    }, 4096).length, 0);
+    program.parseSignalingPacket({
+        payload: bytes(0xc0, 0x00, message.subarray(split)),
+        packetSequenceNumber: 11,
+        packetId: 1
+    }, 8192);
+
+    assert.strictEqual(program.getTimestampRestartFilePosition(0x141, 21), 4096);
+}
+
 testAssetDescriptorsAndHvc1();
 testOrderedMptSubsets();
+testTimestampRestartUsesEarliestDescriptorSignalingPosition();
+testFragmentedSignalingUsesFirstFragmentPosition();
 
 console.log('mmts SI signaling tests passed');

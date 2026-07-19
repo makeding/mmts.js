@@ -838,13 +838,8 @@ class TransmuxingController {
             }
             if (nearest != null && nearest.milliseconds <= milliseconds) {
                 const keyframes = segmentInfo.keyframesIndex;
-                const nextIndex = nearest.index + 1;
-                if (nearest.milliseconds === milliseconds ||
-                    (nextIndex < keyframes.times.length &&
-                     keyframes.times[nextIndex] >= milliseconds &&
-                     keyframes.filepositions[nextIndex] >= nearest.fileposition &&
-                     keyframes.filepositions[nextIndex] - nearest.fileposition <=
-                        this._getMMTSVodSeekInitialLookback())) {
+                const lastIndexedTime = keyframes.times[keyframes.times.length - 1];
+                if (milliseconds <= lastIndexedTime) {
                     return nearest;
                 }
                 if (canEstimateMMTSPosition) {
@@ -852,11 +847,6 @@ class TransmuxingController {
                         (milliseconds - nearest.milliseconds) * segment.filesize / segmentInfo.duration
                     );
                     if (estimatedReadBytes <= this._getMMTSVodSeekInitialLookback()) {
-                        return nearest;
-                    }
-                } else {
-                    const lastIndexedTime = keyframes.times[keyframes.times.length - 1];
-                    if (milliseconds <= lastIndexedTime) {
                         return nearest;
                     }
                 }
@@ -1145,9 +1135,12 @@ class TransmuxingController {
 
     _schedulePendingMMTSVodSeekRetryIfNeeded(segmentIndex, syncPointTime) {
         const pending = this._pendingMMTSVodSeek;
+        const tolerance = this._getMMTSVodSeekLandingTolerance(
+            pending ? pending.segmentInfo : null
+        );
         if (pending == null || pending.segmentIndex !== segmentIndex ||
             typeof syncPointTime !== 'number' || !isFinite(syncPointTime) ||
-            syncPointTime <= pending.milliseconds + 250 ||
+            syncPointTime <= pending.milliseconds + tolerance ||
             pending.fileposition === 0) {
             return false;
         }
@@ -1169,6 +1162,12 @@ class TransmuxingController {
             });
         });
         return true;
+    }
+
+    _getMMTSVodSeekLandingTolerance(segmentInfo) {
+        const fps = segmentInfo && typeof segmentInfo.fps === 'number' &&
+            isFinite(segmentInfo.fps) && segmentInfo.fps > 0 ? segmentInfo.fps : 60;
+        return Math.max(17, Math.min(100, 1000 / fps + 8));
     }
 
     _emitPendingMMTSVodSeekAudioSegments() {
@@ -1667,13 +1666,10 @@ class TransmuxingController {
                 }
                 this._emitPendingMMTSVodSeekAudioSegments();
                 this._clearPendingSeekPoint();
-                let seekpoint = mmtsPending.milliseconds;
-                if (typeof syncPointTime === 'number' && isFinite(syncPointTime) &&
-                    syncPointTime > mmtsPending.milliseconds + 250) {
-                    seekpoint = Browser.safari ? firstSyncPoint.pts : syncPointTime;
-                }
-
-                this._emitter.emit(TransmuxingEvents.RECOMMEND_SEEKPOINT, seekpoint);
+                this._emitter.emit(
+                    TransmuxingEvents.RECOMMEND_SEEKPOINT,
+                    mmtsPending.milliseconds
+                );
                 return;
             }
         }

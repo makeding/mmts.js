@@ -35,7 +35,7 @@ declare class MMTSProgram {
     private conditional_access_info_;
     private timestamp_table_;
     destroy(): void;
-    parseSignalingPacket(packet: MMTPPacket): MMTAsset[];
+    parseSignalingPacket(packet: MMTPPacket, filePosition?: number): MMTAsset[];
     private acceptMptTables;
     parseMpuPacket(packet: MMTPPacket, filePosition?: number): MMTSParsedMpu | null;
     getAsset(packetId: number): MMTAsset | undefined;
@@ -47,6 +47,7 @@ declare class MMTSProgram {
     peekTimestampAtAccessUnit(packetId: number, mpuSequenceNumber: number, auIndex: number): MMTSTimestamp | null;
     getDescriptorAccessUnitCount(packetId: number, mpuSequenceNumber: number): number | null;
     getMpuPresentationWindow(packetId: number, mpuSequenceNumber: number): MMTSMpuPresentationWindow | null;
+    getTimestampRestartFilePosition(packetId: number, mpuSequenceNumber: number): number | null;
     getTimestampsForMpu(packetId: number, mpuSequenceNumber: number, presentationIndexes: number[]): MMTSTimestamp[] | null;
     peekTimestampsForMpu(packetId: number, mpuSequenceNumber: number, presentationIndexes: number[]): MMTSTimestamp[] | null;
     setPresentationIndexes(packetId: number, mpuSequenceNumber: number, indexes: number[]): void;
@@ -56,6 +57,7 @@ declare class MMTSProgram {
     private getStreamState;
     private presentationIndexKey;
     private mergeConditionalAccessInfos;
+    private annotateTimestampDescriptorSources;
     private applyConditionalAccessDefaults;
     private copyDefinedConditionalAccessFields;
     private copyMissingConditionalAccessFields;

@@ -2982,6 +2982,36 @@ function testDemuxerKeepsHev1PpsUpdatesInBand() {
     assert.strictEqual(demuxer.video_metadata_.pps, chain.pps.nalu);
 }
 
+function testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition() {
+    const MMTSDemuxer = loadDemuxer();
+    const demuxer = Object.create(MMTSDemuxer.prototype);
+    demuxer.config_ = {isLive: false};
+    demuxer.duration_overridden_ = false;
+    demuxer.filesize_ = 4 * 1024 * 1024 * 1024;
+    demuxer.last_media_info_duration_ = 0;
+    demuxer.keyframes_index_ = {
+        times: [],
+        filepositions: [],
+        randomAccessFilepositions: [],
+    };
+    demuxer.media_info_ = {
+        isComplete() { return false; }
+    };
+
+    demuxer.updateVodMediaInfoIndex(1000, 200, 500, true, 40);
+    demuxer.updateVodMediaInfoIndex(1000, 150, 450, true, 40);
+    demuxer.updateVodMediaInfoIndex(1400, 300, 600, false, 40);
+
+    assert.deepStrictEqual(Array.from(demuxer.keyframes_index_.times), [1000]);
+    assert.deepStrictEqual(Array.from(demuxer.keyframes_index_.filepositions), [150]);
+    assert.deepStrictEqual(
+        Array.from(demuxer.keyframes_index_.randomAccessFilepositions),
+        [450]
+    );
+    assert.strictEqual(demuxer.media_info_.duration, 1440);
+    assert.strictEqual(demuxer.last_media_info_duration_, 1440);
+}
+
 testProbeRejectsStructuredAudioSelectionFailure();
 testDemuxerAcceptsNormalDescriptorTimeline();
 testDemuxerMapsSwitchedVideoToExistingRawTimeline();
@@ -3028,5 +3058,6 @@ testDemuxerDropsCachedReplayOverlapAfterDiscontinuity();
 testDemuxerReusesExactParameterSetVersion();
 testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
+testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 
 console.log('mmts demux/remux timeline tests passed');

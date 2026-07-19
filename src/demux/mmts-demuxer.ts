@@ -121,6 +121,7 @@ interface MMTSSampleSourceInfo {
     sampleNumber?: number;
     auIndex?: number;
     filePosition: number;
+    restartFilePosition?: number;
     rawDts?: number;
     rawPts?: number;
     decodingIndex?: number;
@@ -297,7 +298,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private media_info_ = new MediaInfo();
     private filesize_: number = 0;
     private duration_overridden_: boolean = false;
-    private keyframes_index_ = {times: [], filepositions: []};
+    private keyframes_index_ = {times: [], filepositions: [], randomAccessFilepositions: []};
     private last_media_info_duration_: number = 0;
     private pending_seek_media_time_: number | undefined = undefined;
     private seek_preserved_video_timestamp_base_: boolean = false;
@@ -561,7 +562,7 @@ class MMTSDemuxer extends BaseDemuxer {
             }
 
             if (mmtp.payloadType === MMTPPayloadType.ControlMessage) {
-                this.parseSignalingMessages(mmtp);
+                this.parseSignalingMessages(mmtp, packetFilePosition);
             } else if (mmtp.payloadType === MMTPPayloadType.Mpu) {
                 this.parseMpu(mmtp, packetFilePosition);
             }
@@ -577,8 +578,8 @@ class MMTSDemuxer extends BaseDemuxer {
         return chunk.byteLength;
     }
 
-    private parseSignalingMessages(mmtp): void {
-        const assets = this.program_.parseSignalingPacket(mmtp);
+    private parseSignalingMessages(mmtp, filePosition: number): void {
+        const assets = this.program_.parseSignalingPacket(mmtp, filePosition);
         for (const asset of assets) {
             if (asset.packetId < 0) {
                 continue;
@@ -1745,6 +1746,10 @@ class MMTSDemuxer extends BaseDemuxer {
         const sourceDts = videoTimestamp.dts - this.output_video_dts_base_;
         const dts = sourceDts;
         const pts = videoTimestamp.pts - this.output_video_dts_base_;
+        const timestampRestartFilePosition = this.program_ &&
+            typeof this.program_.getTimestampRestartFilePosition === 'function' ?
+            this.program_.getTimestampRestartFilePosition(packetId, mpuSequenceNumber) : null;
+        const restartFilePosition = timestampRestartFilePosition ?? filePosition;
         const recoveryGap = this.takePendingVideoRecoveryGap(
             videoTimestamp,
             dts,
@@ -1759,6 +1764,7 @@ class MMTSDemuxer extends BaseDemuxer {
             sampleNumber,
             auIndex,
             filePosition,
+            restartFilePosition,
             rawDts: videoTimestamp.rawDts,
             rawPts: videoTimestamp.rawPts,
             decodingIndex: videoTimestamp.decodingIndex,
@@ -1797,7 +1803,13 @@ class MMTSDemuxer extends BaseDemuxer {
         if (randomAccessSafe) {
             this.video_random_access_safe_pending_ = false;
         }
-        this.updateVodMediaInfoIndex(sourceDts, filePosition, keyframe);
+        this.updateVodMediaInfoIndex(
+            pts,
+            restartFilePosition,
+            filePosition,
+            keyframe,
+            this.getVideoRefSampleDuration()
+        );
         this.maybeSeedAudioAfterVideoBootstrap(sourceDts);
         this.logVideoSample(packetId, mpuSequenceNumber, units, keyframe, dts, pts, videoTimestamp);
 
@@ -1832,7 +1844,11 @@ class MMTSDemuxer extends BaseDemuxer {
         }
     }
 
-    private updateVodMediaInfoIndex(dts: number, filePosition: number, keyframe: boolean): void {
+    private updateVodMediaInfoIndex(presentationTime: number,
+                                    restartFilePosition: number,
+                                    randomAccessFilePosition: number,
+                                    keyframe: boolean,
+                                    sampleDuration: number): void {
         if (this.config_.isLive) {
             return;
         }
@@ -1840,14 +1856,16 @@ class MMTSDemuxer extends BaseDemuxer {
         const mi = this.media_info_;
         this.applyPlaybackModeMediaInfo(mi);
 
-        if (!keyframe) {
-            return;
+        if (keyframe) {
+            this.insertVodKeyframe(
+                presentationTime,
+                restartFilePosition,
+                randomAccessFilePosition
+            );
         }
+        this.updateVodDurationEndpoint(presentationTime, sampleDuration);
 
-        this.insertVodKeyframe(dts, filePosition);
-        this.updateVodDurationEstimate(dts, filePosition);
-
-        if (mi.isComplete()) {
+        if (keyframe && mi.isComplete()) {
             this.onMediaInfo && this.onMediaInfo(mi);
         }
     }
@@ -1867,11 +1885,14 @@ class MMTSDemuxer extends BaseDemuxer {
         }
     }
 
-    private insertVodKeyframe(milliseconds: number, filePosition: number): void {
+    private insertVodKeyframe(milliseconds: number,
+                              restartFilePosition: number,
+                              randomAccessFilePosition: number): void {
         const index = this.keyframes_index_;
         if (index.times.length === 0 || milliseconds > index.times[index.times.length - 1]) {
             index.times.push(milliseconds);
-            index.filepositions.push(filePosition);
+            index.filepositions.push(restartFilePosition);
+            index.randomAccessFilepositions.push(randomAccessFilePosition);
             return;
         }
 
@@ -1880,23 +1901,25 @@ class MMTSDemuxer extends BaseDemuxer {
             pos++;
         }
         if (index.times[pos] === milliseconds) {
-            index.filepositions[pos] = Math.min(index.filepositions[pos], filePosition);
+            index.filepositions[pos] = Math.min(index.filepositions[pos], restartFilePosition);
+            index.randomAccessFilepositions[pos] = Math.min(
+                index.randomAccessFilepositions[pos],
+                randomAccessFilePosition
+            );
             return;
         }
 
         index.times.splice(pos, 0, milliseconds);
-        index.filepositions.splice(pos, 0, filePosition);
+        index.filepositions.splice(pos, 0, restartFilePosition);
+        index.randomAccessFilepositions.splice(pos, 0, randomAccessFilePosition);
     }
 
-    private updateVodDurationEstimate(milliseconds: number, filePosition: number): void {
+    private updateVodDurationEndpoint(presentationTime: number, sampleDuration: number): void {
         if (this.duration_overridden_) {
             return;
         }
 
-        let duration = milliseconds;
-        if (this.filesize_ > 0 && filePosition > 0) {
-            duration = Math.max(duration, Math.floor(milliseconds * this.filesize_ / filePosition));
-        }
+        const duration = presentationTime + Math.max(sampleDuration, 0);
 
         if (duration > this.last_media_info_duration_) {
             this.last_media_info_duration_ = duration;

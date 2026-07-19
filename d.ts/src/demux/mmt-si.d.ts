@@ -88,9 +88,11 @@ export interface MMTAsset {
 export interface MMTMpuTimestampDescriptor {
     mpuSequenceNumber: number;
     presentationTimeUs: number;
+    sourceFilePosition?: number;
 }
 export interface MMTMpuExtendedTimestampDescriptor {
     mpuSequenceNumber: number;
+    sourceFilePosition?: number;
     timescale?: number;
     ptsOffsetType: number;
     defaultPtsOffset: number;
@@ -116,14 +118,16 @@ export interface MMTSIResult {
     messages: number[];
     tables: number[];
     mptTables: MMTParsedPackageTable[];
+    sourceFilePosition?: number;
 }
 export interface SignalingFragmentState {
     data: number[];
+    firstFilePosition?: number;
     lastSeq: number;
     state: 'init' | 'not-started' | 'in-fragment' | 'skip';
 }
 export default class MMTSI {
-    static parseSignalingPayload(payload: Uint8Array, packetSequenceNumber: number, fragmentState: SignalingFragmentState): MMTSIResult;
+    static parseSignalingPayload(payload: Uint8Array, packetSequenceNumber: number, fragmentState: SignalingFragmentState, filePosition?: number): MMTSIResult;
     static createFragmentState(): SignalingFragmentState;
     private static checkFragmentState;
     private static assembleFragment;

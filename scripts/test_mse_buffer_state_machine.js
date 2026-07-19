@@ -2095,7 +2095,7 @@ function testForwardDurationCanTriggerBackpressureAndRecover() {
     );
 }
 
-function testMMTSDirectSeekAlignsToBufferedVideoRandomAccessPoint() {
+function testMMTSDirectSeekKeepsRequestedTimeWithBufferedVideoRandomAccessPreroll() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
     h.sourceBuffers.video.exists = true;
@@ -2112,7 +2112,7 @@ function testMMTSDirectSeekAlignsToBufferedVideoRandomAccessPoint() {
     assert.strictEqual(h.sm.onDirectSeek(10.1), true);
     assert.strictEqual(
         h.log.some((entry) =>
-            entry[0] === 'seekMedia' && entry[1] === 10.667 && entry[2] === 'DIRECT_SEEK'
+            entry[0] === 'seekMedia' && entry[1] === 10.1 && entry[2] === 'DIRECT_SEEK'
         ),
         true
     );
@@ -3061,7 +3061,7 @@ testBackpressureRequiresBothTrackDataButNotPlayableIntersection();
 testPendingQueuesTriggerBackpressureBeforeMSEAppend();
 testAudioBytesTriggerBackpressureAndRecovery();
 testForwardDurationCanTriggerBackpressureAndRecover();
-testMMTSDirectSeekAlignsToBufferedVideoRandomAccessPoint();
+testMMTSDirectSeekKeepsRequestedTimeWithBufferedVideoRandomAccessPreroll();
 testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint();
 testNonMMTSDirectSeekKeepsRequestedTime();
 testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease();

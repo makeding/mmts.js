@@ -531,11 +531,10 @@ class MSEBufferStateMachine {
             return false;
         }
         if (this._isMMTS() && this._expectsVideo()) {
-            const randomAccessTarget = this._resolveBufferedVideoRandomAccessPoint(targetTime);
-            if (randomAccessTarget === null) {
+            const randomAccessStart = this._resolveBufferedVideoRandomAccessPoint(targetTime);
+            if (randomAccessStart === null) {
                 return false;
             }
-            targetTime = randomAccessTarget;
         }
         this._live_audio_track_switch_collection_hold = false;
         this._main_state = 'SEEKING';
@@ -3263,18 +3262,15 @@ class MSEBufferStateMachine {
 
     private _resolveBufferedVideoRandomAccessPoint(targetTime: number): number | null {
         const tolerance = 0.01;
-        for (let i = 0; i < this._video_random_access_points.length; i++) {
+        for (let i = this._video_random_access_points.length - 1; i >= 0; i--) {
             const point = this._video_random_access_points[i];
             const pointTime = point.pts / 1000;
-            if (pointTime < targetTime - tolerance ||
-                !this._hasPlayableRangeAt(pointTime, 0.05)) {
+            if (pointTime > targetTime + tolerance ||
+                !this._hasPlayableRangeAt(
+                    pointTime,
+                    Math.max(0.05, targetTime - pointTime + 0.05)
+                )) {
                 continue;
-            }
-            if (Math.abs(pointTime - targetTime) > tolerance) {
-                Log.v(
-                    this.TAG,
-                    `Move MMTS direct seek from ${targetTime.toFixed(3)} to video RAP ${pointTime.toFixed(3)}`
-                );
             }
             return pointTime;
         }

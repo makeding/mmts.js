@@ -98,7 +98,7 @@ class MMTSProgram {
         this.timestamp_table_ = null;
     }
 
-    public parseSignalingPacket(packet: MMTPPacket): MMTAsset[] {
+    public parseSignalingPacket(packet: MMTPPacket, filePosition: number = 0): MMTAsset[] {
         let state = this.signaling_fragment_states_[packet.packetId];
         if (state === undefined) {
             state = MMTSI.createFragmentState();
@@ -108,8 +108,14 @@ class MMTSProgram {
         const result = MMTSI.parseSignalingPayload(
             packet.payload,
             packet.packetSequenceNumber,
-            state
+            state,
+            filePosition
         );
+
+        this.annotateTimestampDescriptorSources(result.assets, result.sourceFilePosition);
+        for (const table of result.mptTables || []) {
+            this.annotateTimestampDescriptorSources(table.assets, result.sourceFilePosition);
+        }
 
         const acceptedMptTables = this.acceptMptTables(result.mptTables || []);
         const assets: MMTAsset[] = [];
@@ -250,10 +256,19 @@ class MMTSProgram {
 
     public resetMediaState(preserveTimestampBase: boolean = false): void {
         const streamStates = this.stream_states_by_packet_id_;
+        this.signaling_fragment_states_ = {};
         this.mfu_fragment_states_ = {};
         this.mmtp_packet_continuity_states_ = {};
+        this.mpt_subset_states_ = {};
         this.stream_states_by_packet_id_ = {};
         this.presentation_indexes_by_packet_and_mpu_ = {};
+        for (const key of Object.keys(this.assets_by_packet_id_)) {
+            const asset = this.assets_by_packet_id_[Number(key)];
+            asset.timestampDescriptors = undefined;
+            asset.extendedTimestampDescriptors = undefined;
+            asset.timestampDescriptorCount = 0;
+            asset.extendedTimestampDescriptorCount = 0;
+        }
         if (preserveTimestampBase) {
             for (const key of Object.keys(streamStates)) {
                 const state = streamStates[Number(key)];
@@ -300,6 +315,30 @@ class MMTSProgram {
             this.assets_by_packet_id_[packetId],
             mpuSequenceNumber
         );
+    }
+
+    public getTimestampRestartFilePosition(packetId: number,
+                                           mpuSequenceNumber: number): number | null {
+        const asset = this.assets_by_packet_id_[packetId];
+        if (asset === undefined ||
+            asset.timestampDescriptors === undefined ||
+            asset.extendedTimestampDescriptors === undefined) {
+            return null;
+        }
+        const timestamp = asset.timestampDescriptors.find((descriptor) => {
+            return descriptor.mpuSequenceNumber === mpuSequenceNumber;
+        });
+        const extended = asset.extendedTimestampDescriptors.find((descriptor) => {
+            return descriptor.mpuSequenceNumber === mpuSequenceNumber;
+        });
+        if (timestamp === undefined || extended === undefined ||
+            typeof timestamp.sourceFilePosition !== 'number' ||
+            !Number.isSafeInteger(timestamp.sourceFilePosition) || timestamp.sourceFilePosition < 0 ||
+            typeof extended.sourceFilePosition !== 'number' ||
+            !Number.isSafeInteger(extended.sourceFilePosition) || extended.sourceFilePosition < 0) {
+            return null;
+        }
+        return Math.min(timestamp.sourceFilePosition, extended.sourceFilePosition);
     }
 
     public getTimestampsForMpu(packetId: number,
@@ -397,6 +436,20 @@ class MMTSProgram {
             updated = this.copyDefinedConditionalAccessFields(info, this.conditional_access_info_) || updated;
         }
         return updated;
+    }
+
+    private annotateTimestampDescriptorSources(assets: MMTAsset[], filePosition?: number): void {
+        if (typeof filePosition !== 'number' || !Number.isSafeInteger(filePosition) || filePosition < 0) {
+            return;
+        }
+        for (const asset of assets) {
+            for (const descriptor of asset.timestampDescriptors || []) {
+                descriptor.sourceFilePosition = filePosition;
+            }
+            for (const descriptor of asset.extendedTimestampDescriptors || []) {
+                descriptor.sourceFilePosition = filePosition;
+            }
+        }
     }
 
     private applyConditionalAccessDefaults(asset: MMTAsset): void {
