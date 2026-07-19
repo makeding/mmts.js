@@ -520,6 +520,7 @@ function makeReorderedVideoAccessUnit(naluType, dts, pts, sampleNumber, keyframe
         units: [{type: naluType, data}],
         length: data.byteLength,
         keyframe,
+        isLeading: naluType === TEST_H265_NALU_TYPE.RASL_R,
         descriptorTimestamp: dts === null ? null : {
             dts,
             pts,
@@ -3015,7 +3016,7 @@ function testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition() 
     assert.strictEqual(demuxer.last_media_info_duration_, 1440);
 }
 
-function testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint() {
+function testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe() {
     const demuxer = makeVideoSampleAppendHarness();
     const accessUnit = makeTimedOutputAccessUnit(0x100, 11, 1, 0, 120000, 5200);
     accessUnit.keyframe = true;
@@ -3024,7 +3025,7 @@ function testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint() {
     demuxer.appendTimedVideoAccessUnit(accessUnit);
 
     assert.strictEqual(demuxer.video_track_.samples.length, 1);
-    assert.strictEqual(demuxer.video_track_.samples[0].isKeyframe, false);
+    assert.strictEqual(demuxer.video_track_.samples[0].isKeyframe, true);
     assert.strictEqual(demuxer.video_track_.samples[0].mmtsRandomAccessSafe, undefined);
 }
 
@@ -3171,7 +3172,7 @@ testDemuxerReusesExactParameterSetVersion();
 testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
-testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint();
+testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe();
 testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice();
 testRemuxerAttachesParserResetInitToRecoveryRap();
 

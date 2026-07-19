@@ -943,7 +943,10 @@ class MP4Remuxer {
                 mmtsSourceInfo: this._makeRemuxedMMTSSourceInfo(sample.mmtsSourceInfo, dts, pts),
                 mmtsRandomAccessSafe: sample.mmtsRandomAccessSafe === true,
                 flags: {
-                    isLeading: 0,
+                    // RASL pictures are decoded after their associated CRA but
+                    // presented before it.  Preserve that ISO-BMFF dependency
+                    // metadata instead of describing every sample as unknown.
+                    isLeading: sample.isLeading === true ? 1 : 0,
                     dependsOn: isKeyframe ? 2 : 1,
                     isDependedOn: isKeyframe ? 1 : 0,
                     hasRedundancy: 0,

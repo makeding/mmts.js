@@ -93,6 +93,7 @@ interface MappedVideoDescriptorTimestamp {
 interface MMTSTimedVideoAccessUnit extends MMTSVideoAccessUnit {
     descriptorTimestamp: MMTSTimestamp | null;
     mseRandomAccessSafe?: boolean;
+    isLeading?: boolean;
     outputAllowed?: boolean;
 }
 
@@ -1477,6 +1478,8 @@ class MMTSDemuxer extends BaseDemuxer {
                 descriptorTimestamp: committedTimestamps[i],
                 mseRandomAccessSafe: isH265IrapNalu(recoveredPicture.nalUnitType) &&
                     recoveredPicture.noRaslOutput,
+                isLeading: recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_N ||
+                    recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_R,
                 outputAllowed: recoveredPicture.outputAllowed
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
@@ -1829,10 +1832,12 @@ class MMTSDemuxer extends BaseDemuxer {
         const sample: any = {
             units,
             length,
-            // A CRA with output-leading RASL pictures is an IRAP for indexing,
-            // but it is not a safe MSE sync sample.  Marking it sync lets the
-            // browser restart decoding there without the preceding pictures.
-            isKeyframe: mseRandomAccessSafe,
+            // ISO-BMFF sync metadata describes the coded frame itself: CRA is
+            // an HEVC keyframe even when it is not a safe standalone seek
+            // landing point because leading RASL pictures follow it.  Keep the
+            // stricter no-RASL-output decision in mmtsRandomAccessSafe only.
+            isKeyframe: keyframe,
+            isLeading: accessUnit.isLeading === true,
             dts,
             pts,
             cts: pts - dts,
