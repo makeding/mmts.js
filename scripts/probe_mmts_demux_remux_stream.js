@@ -545,7 +545,7 @@ function recordDemuxVideoTrack(stats, videoTrack, gapThresholdMs) {
                 mmtsRandomAccessSafe: sample.mmtsRandomAccessSafe === true,
                 length: sample.length,
                 naluTypes: Array.isArray(sample.units) ? sample.units.map((unit) => unit.type) : [],
-                naluSizes: Array.isArray(sample.units) ? sample.units.map((unit) => unit.data.byteLength) : [],
+                naluSizes: Array.isArray(sample.units) ? sample.units.map((unit) => unit.byteLength || unit.data.byteLength) : [],
                 source
             });
         }
@@ -1067,7 +1067,7 @@ function main() {
                     chainSignature: parsed.chain && parsed.chain.signature,
                     length: accessUnit.length,
                     naluTypes: accessUnit.units.map((unit) => unit.type),
-                    naluSizes: accessUnit.units.map((unit) => unit.data.byteLength),
+                    naluSizes: accessUnit.units.map((unit) => unit.byteLength || unit.data.byteLength),
                 });
             }
             return parsed;

@@ -52,8 +52,113 @@ export interface MMTSPacketLossInfo {
 interface AssembledMFU {
     fragment: MFUFragment;
     filePosition: number;
-    unit: Uint8Array;
+    unit: MMTSByteSpanList;
     randomAccess: boolean;
+}
+
+export class MMTSByteSpanList implements Iterable<number> {
+    public readonly spans: Uint8Array[];
+    public readonly byteLength: number;
+
+    public constructor(spans: Uint8Array[], byteLength?: number) {
+        this.spans = spans.filter((span) => span.byteLength > 0);
+        this.byteLength = byteLength !== undefined ? byteLength :
+            this.spans.reduce((length, span) => length + span.byteLength, 0);
+        const actualLength = this.spans.reduce((length, span) => length + span.byteLength, 0);
+        if (actualLength !== this.byteLength) {
+            throw new RangeError('MMTS byte span length mismatch');
+        }
+    }
+
+    public readUint8(index: number): number | undefined {
+        if (!Number.isInteger(index) || index < 0 || index >= this.byteLength) {
+            return undefined;
+        }
+        let offset = index;
+        for (const span of this.spans) {
+            if (offset < span.byteLength) {
+                return span[offset];
+            }
+            offset -= span.byteLength;
+        }
+        return undefined;
+    }
+
+    public readUint32BE(index: number): number | undefined {
+        const a = this.readUint8(index);
+        const b = this.readUint8(index + 1);
+        const c = this.readUint8(index + 2);
+        const d = this.readUint8(index + 3);
+        if (a === undefined || b === undefined || c === undefined || d === undefined) {
+            return undefined;
+        }
+        return ((a * 0x1000000) + (b << 16) + (c << 8) + d) >>> 0;
+    }
+
+    public copyRange(offset: number, length: number): Uint8Array {
+        if (!Number.isInteger(offset) || !Number.isInteger(length) ||
+            offset < 0 || length < 0 || offset + length > this.byteLength) {
+            throw new RangeError('Invalid MMTS byte span range');
+        }
+        if (length === 0) {
+            return new Uint8Array(0);
+        }
+        let sourceOffset = offset;
+        for (const span of this.spans) {
+            if (sourceOffset >= span.byteLength) {
+                sourceOffset -= span.byteLength;
+                continue;
+            }
+            if (sourceOffset + length <= span.byteLength) {
+                return span.subarray(sourceOffset, sourceOffset + length);
+            }
+            break;
+        }
+        const result = new Uint8Array(length);
+        this.copyTo(result, 0, offset, length);
+        return result;
+    }
+
+    public copyTo(target: Uint8Array,
+                  targetOffset: number = 0,
+                  sourceOffset: number = 0,
+                  length: number = this.byteLength - sourceOffset): void {
+        if (!Number.isInteger(targetOffset) || !Number.isInteger(sourceOffset) ||
+            !Number.isInteger(length) || targetOffset < 0 || sourceOffset < 0 ||
+            length < 0 || sourceOffset + length > this.byteLength ||
+            targetOffset + length > target.byteLength) {
+            throw new RangeError('Invalid MMTS byte span copy');
+        }
+        let skip = sourceOffset;
+        let remaining = length;
+        let writeOffset = targetOffset;
+        for (const span of this.spans) {
+            if (remaining === 0) {
+                break;
+            }
+            if (skip >= span.byteLength) {
+                skip -= span.byteLength;
+                continue;
+            }
+            const copyLength = Math.min(remaining, span.byteLength - skip);
+            target.set(span.subarray(skip, skip + copyLength), writeOffset);
+            writeOffset += copyLength;
+            remaining -= copyLength;
+            skip = 0;
+        }
+    }
+
+    public toUint8Array(): Uint8Array {
+        return this.copyRange(0, this.byteLength);
+    }
+
+    public *[Symbol.iterator](): Iterator<number> {
+        for (const span of this.spans) {
+            for (let i = 0; i < span.byteLength; i++) {
+                yield span[i];
+            }
+        }
+    }
 }
 
 const MAX_TIMESTAMP_DESCRIPTORS = 100;
@@ -63,7 +168,7 @@ export interface MMTSCompletedMfuUnit {
     filePosition: number;
     mpuSequenceNumber: number;
     randomAccess: boolean;
-    unit: Uint8Array;
+    unit: MMTSByteSpanList;
 }
 
 export interface MMTSParsedMpu {
@@ -626,7 +731,7 @@ class MMTSProgram {
                 return {
                     fragment,
                     filePosition,
-                    unit: fragment.payload,
+                    unit: new MMTSByteSpanList([fragment.payload]),
                     randomAccess: packet.rapFlag
                 };
             case FragmentationIndicator.FirstFragment:
@@ -660,11 +765,14 @@ class MMTSProgram {
                 }
                 state.randomAccess = state.randomAccess || packet.rapFlag;
                 this.appendToState(state, fragment.payload);
-                const completeUnit = this.flattenMfuFragmentState(state);
+                const completeUnit = new MMTSByteSpanList(state.chunks, state.length);
                 const firstFragment = state.firstFragment;
                 const completeFragment: MFUFragment = {
                     ...fragment,
-                    payload: completeUnit,
+                    // Completed MFUs may span multiple source buffers. The full
+                    // payload lives in completeUnit; keep only the first view in
+                    // the fragment metadata so the hot path stays scatter/gather.
+                    payload: completeUnit.spans[0],
                     sampleNumber: firstFragment && firstFragment.sampleNumber !== undefined ?
                         firstFragment.sampleNumber : fragment.sampleNumber,
                     offset: firstFragment && firstFragment.offset !== undefined ?
@@ -750,16 +858,6 @@ class MMTSProgram {
     private appendToState(state: MFUFragmentState, data: Uint8Array): void {
         state.chunks.push(data);
         state.length += data.byteLength;
-    }
-
-    private flattenMfuFragmentState(state: MFUFragmentState): Uint8Array {
-        const unit = new Uint8Array(state.length);
-        let offset = 0;
-        for (const chunk of state.chunks) {
-            unit.set(chunk, offset);
-            offset += chunk.byteLength;
-        }
-        return unit;
     }
 
     private resetMfuFragmentState(state: MFUFragmentState): void {

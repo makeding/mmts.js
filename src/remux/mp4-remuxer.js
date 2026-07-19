@@ -988,9 +988,14 @@ class MP4Remuxer {
             for (let i = 0; i < mp4Samples.length; i++) {
                 const units = mp4Samples[i].units;
                 for (let j = 0; j < units.length; j++) {
-                    const data = units[j].data;
-                    result.set(data, writeOffset);
-                    writeOffset += data.byteLength;
+                    const unit = units[j];
+                    const byteLength = unit.byteLength || unit.data.byteLength;
+                    if (typeof unit.copyTo === 'function') {
+                        unit.copyTo(result, writeOffset);
+                    } else {
+                        result.set(unit.data, writeOffset);
+                    }
+                    writeOffset += byteLength;
                 }
             }
         });

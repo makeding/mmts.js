@@ -233,6 +233,7 @@ function testDuplicateMiddleFragmentIsNotAppendedTwice() {
     assert.notStrictEqual(completed, null);
     assert.strictEqual(completed.loss.packetSequenceGap, false);
     assert.strictEqual(completed.units.length, 1);
+    assert.strictEqual(completed.units[0].unit.spans.length, 3);
     assert.deepStrictEqual(Array.from(completed.units[0].unit), [1, 2, 3, 4, 5, 6]);
 }
 

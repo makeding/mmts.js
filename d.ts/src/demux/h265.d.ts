@@ -40,8 +40,16 @@ export declare class H265NaluPayload {
 export declare class H265NaluHVC1 {
     type: H265NaluType;
     data: Uint8Array;
+    private span_data_;
+    private byte_length_;
     constructor(nalu: H265NaluPayload);
     static fromLengthPrefixedData(data: Uint8Array, type: H265NaluType): H265NaluHVC1;
+    static fromLengthPrefixedSpans(spans: Uint8Array[], byteLength: number, type: H265NaluType, prefixBytes?: number): H265NaluHVC1;
+    get byteLength(): number;
+    get isShadow(): boolean;
+    readUint8(index: number): number | undefined;
+    getPayloadPrefix(maxBytes?: number): Uint8Array;
+    copyTo(target: Uint8Array, targetOffset?: number, sourceOffset?: number, length?: number): void;
 }
 export declare class H265AnnexBParser {
     private readonly TAG;

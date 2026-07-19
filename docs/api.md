@@ -69,7 +69,7 @@ In multipart mode, `duration` `filesize` `url` field in `MediaDataSource` struct
 | -------------------------------- | --------- | ---------------------------- | ---------------------------------------- |
 | `enableWorker?`                  | `boolean` | `false`                      | Enable separated thread (DedicatedWorker) for transmuxing |
 | `enableWorkerForMSE?`            | `boolean` | `false`                      | Enable separated thread (DedicatedWorker) for MediaSource |
-| `enableStashBuffer?`             | `boolean` | `true`                       | Enable IO stash buffer. Set to false if you need realtime (minimal latency) for live stream playback, but may stalled if there's network jittering. |
+| `enableStashBuffer?`             | `boolean` | `true`; `false` for MMTS VOD | Enable IO stash buffer. MMTS VOD disables the generic full-stream stash by default because its demuxer keeps packet-boundary leftovers and retains immutable source spans directly. |
 | `stashInitialSize?`              | `number`  | `384KB`                      | Indicates IO stash buffer initial size. Default is `384KB`. Indicate a suitable size can improve video load/seek time. |
 | `isLive?`                        | `boolean` | `false`                      | Same to `isLive` in **MediaDataSource**, ignored if has been set in MediaDataSource structure. |
 | `liveBufferLatencyChasing?`      | `boolean` | `false`                      | Chasing the live stream latency caused by the internal buffer in HTMLMediaElement. `isLive` should also be set to `true` |
@@ -83,6 +83,7 @@ In multipart mode, `duration` `filesize` `url` field in `MediaDataSource` struct
 | `liveSyncMinLatency?`            | `number`  | `undefined`                  | Minimum acceptable buffer latency in HTMLMediaElement, in seconds. Effective only if `isLive: true` and `liveSync: true` |
 | `liveSyncMinPlaybackRate?`       | `number`  | `0.95`                       | PlaybackRate limited between [0.5, 1] will be used for latency chasing. Effective only if `isLive: true` and `liveSync: true` |
 | `mmtsVideoPacketId?`             | `number`  | `undefined`                  | Force the MMTS HEVC video packet_id. Useful for service-specific video asset selection. |
+| `mmtsVideoSegmentSampleCount?`   | `number`  | `16` for MMTS VOD, `8` for MMTS live | Number of HEVC samples accumulated before remuxing a media segment. VOD uses larger source segments so the final MSE payload is written once instead of being copied again by append batching. |
 | `mmtsLiveInitialBufferDuration?` | `number`  | `1.5` for MMTS live          | Required forward buffer before initial MMTS live playback starts, in seconds. Kept for MMTS live compatibility. |
 | `mmtsClampAudioTimestampGap?`    | `boolean` | `false`                      | Clamp small positive MMTS AAC timestamp gaps to the expected frame timeline when enabled. By default packet-loss gaps remain on the media timeline. |
 | `mmtsClampVideoTimestampGap?`    | `boolean` | `false`                      | Clamp small positive MMTS HEVC timestamp gaps to the expected frame timeline when enabled. By default packet-loss gaps remain visible as freezes or decoder recovery artifacts. |
@@ -100,8 +101,8 @@ In multipart mode, `duration` `filesize` `url` field in `MediaDataSource` struct
 | `mseBufferAudioHardLimitBytes?`  | `number`  | `undefined`; `12MiB` for MMTS | Stop audio append before total buffered audio reaches this limit, until played data can be removed. |
 | `mseBufferForwardTargetDuration?` | `number` | `undefined`; `90` for MMTS VOD, `18` for MMTS live | Pause loading when the contiguous playable forward window reaches this duration. |
 | `mseBufferRecoverForwardDuration?` | `number` | `undefined`; `60` for MMTS VOD, `8` for MMTS live | Resume loading after the contiguous playable forward window falls below this duration. |
-| `startupBufferDuration?`         | `number`  | `0`; `3` for MMTS live lazy-load | Required forward buffer before initial playback starts, in seconds. Set to 0 to disable. If unset, MMTS live playback falls back to `mmtsLiveInitialBufferDuration`. |
-| `mseAppendBatchDuration?`        | `number`  | `0`; `0.5` for MMTS VOD, `0.35` for MMTS live | Maximum adjacent media duration combined into one MSE append operation. Set to 0 to disable. |
+| `startupBufferDuration?`         | `number`  | `0`; `4` for MMTS VOD, `3` for MMTS live lazy-load | Required forward buffer before initial playback starts, in seconds. Set to 0 to disable. If unset, MMTS live playback falls back to `mmtsLiveInitialBufferDuration`. |
+| `mseAppendBatchDuration?`        | `number`  | `0` for MMTS VOD, `0.35` for MMTS live | Maximum adjacent media duration combined into one MSE append operation. MMTS VOD remuxes larger source segments directly and therefore disables this second full-payload copy by default. |
 | `mseAppendTrackLeadLimit?`       | `number`  | `undefined`; `2` for MMTS VOD, `1.5` for MMTS live | Maximum seconds one MSE track may be appended ahead of the other track. |
 | `deferLoadAfterSourceOpen?`      | `boolean` | `true`                       | Do load after MediaSource `sourceopen` event triggered. On Chrome, tabs which be opened in background may not trigger `sourceopen` event until switched to that tab. |
 | `autoCleanupSourceBuffer`        | `boolean` | `false`; `true` for MMTS     | Do auto cleanup for SourceBuffer         |

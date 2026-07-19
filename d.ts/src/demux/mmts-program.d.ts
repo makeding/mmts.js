@@ -10,12 +10,23 @@ export interface MMTSPacketLossInfo {
     expectedSeq?: number;
     actualSeq?: number;
 }
+export declare class MMTSByteSpanList implements Iterable<number> {
+    readonly spans: Uint8Array[];
+    readonly byteLength: number;
+    constructor(spans: Uint8Array[], byteLength?: number);
+    readUint8(index: number): number | undefined;
+    readUint32BE(index: number): number | undefined;
+    copyRange(offset: number, length: number): Uint8Array;
+    copyTo(target: Uint8Array, targetOffset?: number, sourceOffset?: number, length?: number): void;
+    toUint8Array(): Uint8Array;
+    [Symbol.iterator](): Iterator<number>;
+}
 export interface MMTSCompletedMfuUnit {
     fragment: MFUFragment;
     filePosition: number;
     mpuSequenceNumber: number;
     randomAccess: boolean;
-    unit: Uint8Array;
+    unit: MMTSByteSpanList;
 }
 export interface MMTSParsedMpu {
     asset: MMTAsset | undefined;
@@ -70,7 +81,6 @@ declare class MMTSProgram {
     private resetMfuFragmentStatesForPacket;
     private checkMmtpPacketContinuity;
     private appendToState;
-    private flattenMfuFragmentState;
     private resetMfuFragmentState;
 }
 export default MMTSProgram;

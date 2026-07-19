@@ -17,7 +17,6 @@
  */
 
 import {H265NaluHVC1, H265NaluType} from './h265';
-import MPU from './mpu';
 import {isH265VclNalu} from '../utils/mmts-demuxer-utils';
 
 export interface MMTSVideoAccessUnit {
@@ -130,7 +129,7 @@ export default class MMTSVideoMpuAssembler {
 
         state.currentAccessUnit.units.push(input.nalu);
         state.currentAccessUnit.filePosition = Math.min(state.currentAccessUnit.filePosition, input.filePosition);
-        state.currentAccessUnit.length += input.nalu.data.byteLength;
+        state.currentAccessUnit.length += input.nalu.byteLength || input.nalu.data.byteLength;
         state.currentAccessUnit.keyframe = state.currentAccessUnit.keyframe || input.keyframe;
         state.currentAccessUnit.hasVcl = state.currentAccessUnit.hasVcl || input.isVcl;
 
@@ -296,13 +295,14 @@ export default class MMTSVideoMpuAssembler {
             return false;
         }
 
-        const data = nalu.data;
-        const unitLength = MPU.readLengthPrefixedUnitLength(data);
-        if (unitLength === undefined || unitLength + 4 > data.byteLength || unitLength < 3) {
+        const byteLength = nalu.byteLength || nalu.data.byteLength;
+        const unitLength = byteLength - 4;
+        if (unitLength + 4 > byteLength || unitLength < 3) {
             return false;
         }
 
-        return (data[6] & 0x80) !== 0;
+        const firstSliceByte = nalu.readUint8 ? nalu.readUint8(6) : nalu.data[6];
+        return firstSliceByte !== undefined && (firstSliceByte & 0x80) !== 0;
     }
 
     private shouldStartFallbackAccessUnit(input: MMTSVideoNaluInput): boolean {

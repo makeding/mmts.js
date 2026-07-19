@@ -45,12 +45,15 @@ export class H265NaluPayload {
 export class H265NaluHVC1 {
     type: H265NaluType;
     data: Uint8Array;
+    private span_data_: Uint8Array[] | null = null;
+    private byte_length_: number = 0;
 
     constructor(nalu: H265NaluPayload) {
         let nalu_size = nalu.data.byteLength;
 
         this.type = nalu.type;
         this.data = new Uint8Array(4 + nalu_size);  // 4 byte length-header + nalu payload
+        this.byte_length_ = this.data.byteLength;
 
         let v = new DataView(this.data.buffer);
         // Fill 4 byte length-header
@@ -70,7 +73,107 @@ export class H265NaluHVC1 {
         const nalu = Object.create(H265NaluHVC1.prototype) as H265NaluHVC1;
         nalu.type = type;
         nalu.data = data;
+        nalu.span_data_ = null;
+        nalu.byte_length_ = data.byteLength;
         return nalu;
+    }
+
+    public static fromLengthPrefixedSpans(spans: Uint8Array[],
+                                          byteLength: number,
+                                          type: H265NaluType,
+                                          prefixBytes: number = 4096): H265NaluHVC1 {
+        if (!Array.isArray(spans) || spans.length === 0 || byteLength < 6) {
+            throw new IllegalStateException('Invalid shadow HEVC NAL unit');
+        }
+        const prefixLength = Math.min(byteLength, Math.max(6, prefixBytes));
+        const prefix = new Uint8Array(prefixLength);
+        let writeOffset = 0;
+        for (const span of spans) {
+            if (writeOffset >= prefixLength) {
+                break;
+            }
+            const copyLength = Math.min(prefixLength - writeOffset, span.byteLength);
+            prefix.set(span.subarray(0, copyLength), writeOffset);
+            writeOffset += copyLength;
+        }
+        const declaredSize = new DataView(prefix.buffer, prefix.byteOffset, 4).getUint32(0);
+        if (declaredSize !== byteLength - 4) {
+            throw new IllegalStateException('Shadow HEVC NAL unit length does not match its prefix');
+        }
+        const nalu = Object.create(H265NaluHVC1.prototype) as H265NaluHVC1;
+        nalu.type = type;
+        nalu.data = prefix;
+        nalu.span_data_ = spans.slice();
+        nalu.byte_length_ = byteLength;
+        return nalu;
+    }
+
+    public get byteLength(): number {
+        return this.byte_length_ || this.data.byteLength;
+    }
+
+    public get isShadow(): boolean {
+        return this.span_data_ !== null;
+    }
+
+    public readUint8(index: number): number | undefined {
+        if (!Number.isInteger(index) || index < 0 || index >= this.byteLength) {
+            return undefined;
+        }
+        if (index < this.data.byteLength) {
+            return this.data[index];
+        }
+        let offset = index;
+        for (const span of this.span_data_ || []) {
+            if (offset < span.byteLength) {
+                return span[offset];
+            }
+            offset -= span.byteLength;
+        }
+        return undefined;
+    }
+
+    public getPayloadPrefix(maxBytes: number = 4096): Uint8Array {
+        const length = Math.min(Math.max(0, maxBytes), this.byteLength - 4);
+        if (this.data.byteLength >= length + 4) {
+            return this.data.subarray(4, length + 4);
+        }
+        const result = new Uint8Array(length);
+        this.copyTo(result, 0, 4, length);
+        return result;
+    }
+
+    public copyTo(target: Uint8Array,
+                  targetOffset: number = 0,
+                  sourceOffset: number = 0,
+                  length: number = this.byteLength - sourceOffset): void {
+        if (!Number.isInteger(targetOffset) || !Number.isInteger(sourceOffset) ||
+            !Number.isInteger(length) || targetOffset < 0 || sourceOffset < 0 ||
+            length < 0 || sourceOffset + length > this.byteLength ||
+            targetOffset + length > target.byteLength) {
+            throw new RangeError('Invalid HEVC NAL unit copy');
+        }
+        if (this.span_data_ === null) {
+            target.set(this.data.subarray(sourceOffset, sourceOffset + length), targetOffset);
+            return;
+        }
+        let skip = sourceOffset;
+        let remaining = length;
+        let writeOffset = targetOffset;
+        for (const span of this.span_data_) {
+            if (remaining === 0) {
+                break;
+            }
+            if (skip >= span.byteLength) {
+                skip -= span.byteLength;
+                continue;
+            }
+            const copyLength = Math.min(remaining, span.byteLength - skip);
+            target.set(span.subarray(skip, skip + copyLength), writeOffset);
+            writeOffset += copyLength;
+            remaining -= copyLength;
+            skip = 0;
+        }
     }
 }
 
