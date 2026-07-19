@@ -635,7 +635,7 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
     }
 
     private _getStallJumpMaxGap(): number | undefined {
-        return this._config.isMMTS ? 2 : undefined;
+        return this._config.isMMTS ? 5 : undefined;
     }
 
     private _getStallJumpMinBuffer(): number | undefined {
@@ -844,7 +844,22 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
                         this._selected_mmts_video_packet_id;
                 }
             }
+            const recoverPlayback = event.status === 'failed' &&
+                (event.kind === 'audio-switch' || event.kind === 'video-switch') &&
+                /recovery-(?:failed|reservation-missing)/.test(event.reason || '');
             this._completeScheduledOperation(event.operation);
+            if (recoverPlayback && !this._config.isLive && this._media_element &&
+                !this._media_element.error) {
+                const targetTime = Math.max(
+                    this._media_element.currentTime || 0,
+                    event.operation.requestedTimeMilliseconds / 1000
+                );
+                void this._requestLatestMMTSSeek(
+                    targetTime,
+                    `${event.kind}-recovery`,
+                    'user_seek'
+                );
+            }
             return;
         }
         if (msg === 'playback_operation_started') {

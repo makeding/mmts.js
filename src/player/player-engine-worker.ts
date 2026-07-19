@@ -918,14 +918,6 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
                     reason: `video-recovery-failed:${reason}`,
                 });
             }
-            mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS video track switch recovery failed',
-                reason,
-                packetId: failed.targetPacketId,
-                priorCommittedPacketId: failed.priorCommittedPacketId,
-                transactionId: failed.operation.transactionId,
-            });
             return;
         }
         if (!failed.internalSelectionChanged && !failed.selectionMayHaveMutated) {
@@ -958,18 +950,14 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
             postPlaybackOperationEvent(failed.operation, 'failed', {
                 reason: `video-recovery-reservation-missing:${reason}`,
             });
-            mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS video track switch recovery reservation is missing',
-                reason,
-                transactionId: failed.operation.transactionId,
-            });
             return;
         }
         releaseVideoSwitchReservations(failed, false);
         const recoveryOperation = rebindReservedPlaybackOperation(reservedRecoveryOperation, {
             phase: 'recovery',
-            requestedTimeMilliseconds: Math.max(0, media_element_current_time * 1000),
+            // currentTime can already belong to the failed candidate timeline.
+            // Recover from the stable point where the switch was requested.
+            requestedTimeMilliseconds: Math.max(0, failed.operation.requestedTimeMilliseconds),
             packetId: targetPacketId,
         });
         registerPlaybackRecovery(recoveryOperation, failed.operation,
@@ -2332,7 +2320,7 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
         cleanupUnifiedAudioTrackSwitch(failed.strategy, failed.operation);
         const requestedTimeMilliseconds = failed.strategy === 'live-forward' ?
             getAudioTrackSwitchTimelineSeed() :
-            Math.max(0, media_element_current_time * 1000);
+            Math.max(0, failed.operation.requestedTimeMilliseconds);
         const recoveryDepth = failed.recoveryDepth || 0;
         if (recoveryDepth >= 1) {
             releaseAudioSwitchReservations(failed);
@@ -2346,14 +2334,6 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
                     reason: `audio-recovery-failed:${reason}`,
                 });
             }
-            mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS audio track switch recovery failed',
-                reason,
-                packetId: failed.targetPacketId,
-                priorCommittedPacketId: failed.priorCommittedPacketId,
-                transactionId: failed.operation.transactionId,
-            });
             return;
         }
         if (!failed.internalSelectionChanged && !failed.selectionMayHaveMutated) {
@@ -2373,12 +2353,6 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
             audio_track_switch_coordinator.clear();
             postPlaybackOperationEvent(failed.operation, 'failed', {
                 reason: `audio-recovery-reservation-missing:${reason}`,
-            });
-            mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS audio track switch recovery reservation is missing',
-                reason,
-                transactionId: failed.operation.transactionId,
             });
             return;
         }

@@ -1,6 +1,6 @@
 {
   "name": "mmts.js",
-  "version": "1.8.0-1",
+  "version": "1.8.0-2",
   "description": "HTML5 MPEG2-TS / MMTS / FLV Stream Player",
   "main": "./dist/mpegts.js",
   "types": "./d.ts/mpegts.d.ts",
@@ -33,6 +33,10 @@
     "test:mmts-browser": "node scripts/test_mmts_browser_stress.js",
     "pretest:mmts-browser:8k": "npm run build",
     "test:mmts-browser:8k": "node scripts/test_mmts_browser_stress.js --file demo/8k --mode seek --duration 120 --seek-interval 5 --targets 49,51,62,68,75,86,105",
+    "pretest:mmts-browser:tracks": "npm run build",
+    "test:mmts-browser:tracks": "node scripts/test_mmts_browser_stress.js --mode tracks --duration 180 --seek-interval 10",
+    "pretest:mmts-browser:samples": "npm run build",
+    "test:mmts-browser:samples": "node scripts/test_mmts_browser_samples.js",
     "pretest:mmts-browser:cocktail": "npm run build",
     "test:mmts-browser:cocktail": "node scripts/test_mmts_browser_stress.js --mode cocktail --duration 1800",
     "test:mmts-demux-remux-timeline": "node scripts/test_mmts_demux_remux_timeline.js",

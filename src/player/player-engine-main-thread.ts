@@ -1346,16 +1346,7 @@ class PlayerEngineMainThread implements PlayerEngine {
                     failed.operation, 'failed', `video-recovery:${reason}`
                 );
             }
-            this._mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS video track switch recovery failed',
-                reason,
-                packetId: failed.targetPacketId,
-                priorCommittedPacketId: failed.priorCommittedPacketId,
-                transactionId: failed.operation.transactionId,
-                transactionKey: failed.operation.transactionKey,
-                attemptKey: failed.operation.attemptKey,
-            });
+            this._recoverMMTSPlaybackAfterTrackSwitchFailure(failed.operation, reason);
             return;
         }
 
@@ -1371,18 +1362,13 @@ class PlayerEngineMainThread implements PlayerEngine {
         if (!reserved) {
             this._video_track_switch_coordinator.clear();
             this._completeScheduledOperation(failed.operation, 'failed', reason);
-            this._mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS video track switch recovery reservation is missing',
-                reason,
-                transactionId: failed.operation.transactionId,
-                transactionKey: failed.operation.transactionKey,
-            });
+            this._recoverMMTSPlaybackAfterTrackSwitchFailure(failed.operation, reason);
             return;
         }
-        const requestedTime = this._media_element ?
-            Math.max(0, this._media_element.currentTime * 1000) :
-            failed.operation.requestedTimeMilliseconds;
+        // A failed VOD video switch may already have moved currentTime onto the
+        // candidate track's broken timeline. Roll back from the stable switch
+        // anchor instead of chasing that transient position.
+        const requestedTime = Math.max(0, failed.operation.requestedTimeMilliseconds);
         const recoveryOperation = rebindReservedPlaybackOperation(reserved, {
             phase: 'recovery',
             requestedTimeMilliseconds: requestedTime,
@@ -1402,6 +1388,24 @@ class PlayerEngineMainThread implements PlayerEngine {
         }
         this._playback_recovery_roots.delete(recoveryOperation.transactionKey);
         this._completeScheduledOperation(failed.operation, 'failed', reason);
+    }
+
+    private _recoverMMTSPlaybackAfterTrackSwitchFailure(
+        operation: PlaybackOperation,
+        reason: string
+    ): void {
+        if (this._config.isLive || !this._media_element || this._media_element.error) {
+            return;
+        }
+        const currentTime = typeof this._media_element.currentTime === 'number' &&
+            isFinite(this._media_element.currentTime) ? this._media_element.currentTime : 0;
+        const operationTime = Math.max(0, operation.requestedTimeMilliseconds / 1000);
+        const targetTime = Math.max(currentTime, operationTime);
+        Log.w(
+            this.TAG,
+            `Recover MMTS playback after ${operation.kind} failure at ${targetTime.toFixed(3)}s: ${reason}`
+        );
+        void this._requestLatestMMTSSeek(targetTime, `${operation.kind}-recovery`);
     }
 
     private _cancelMMTSVideoTrackSwitchForSeek(): void {
@@ -1676,8 +1680,7 @@ class PlayerEngineMainThread implements PlayerEngine {
         );
         const requestedTimeMilliseconds = failed.strategy === 'live-forward' ?
             this._getAudioTrackSwitchTimelineSeed() :
-            (this._media_element ? Math.max(0, this._media_element.currentTime * 1000) :
-                failed.operation.requestedTimeMilliseconds);
+            Math.max(0, failed.operation.requestedTimeMilliseconds);
         const recoveryDepth = failed.recoveryDepth || 0;
 
         if (recoveryDepth >= 1) {
@@ -1692,16 +1695,7 @@ class PlayerEngineMainThread implements PlayerEngine {
                     failed.operation, 'failed', `audio-recovery:${reason}`
                 );
             }
-            this._mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS audio track switch recovery failed',
-                reason,
-                packetId: failed.targetPacketId,
-                priorCommittedPacketId: failed.priorCommittedPacketId,
-                transactionId: failed.operation.transactionId,
-                transactionKey: failed.operation.transactionKey,
-                attemptKey: failed.operation.attemptKey,
-            });
+            this._recoverMMTSPlaybackAfterTrackSwitchFailure(failed.operation, reason);
             return;
         }
 
@@ -1716,13 +1710,7 @@ class PlayerEngineMainThread implements PlayerEngine {
         if (!reservedRecoveryOperation) {
             this._audio_track_switch_coordinator.clear();
             this._completeScheduledOperation(failed.operation, 'failed', reason);
-            this._mse_buffer_state_machine?.onFatal({
-                code: -1,
-                msg: 'MMTS audio track switch recovery reservation is missing',
-                reason,
-                transactionId: failed.operation.transactionId,
-                transactionKey: failed.operation.transactionKey,
-            });
+            this._recoverMMTSPlaybackAfterTrackSwitchFailure(failed.operation, reason);
             return;
         }
         const recoveryOperation = rebindReservedPlaybackOperation(
@@ -2161,7 +2149,10 @@ class PlayerEngineMainThread implements PlayerEngine {
     }
 
     private _getStallJumpMaxGap(): number | undefined {
-        return this._config.isMMTS ? 2 : undefined;
+        // Recorded MMTS damage can leave a few seconds between the recovery
+        // RAP and the next decodable buffered range. Prefer skipping that hole
+        // to leaving playback parked forever on an otherwise healthy MSE.
+        return this._config.isMMTS ? 5 : undefined;
     }
 
     private _getStallJumpMinBuffer(): number | undefined {

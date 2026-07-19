@@ -1611,7 +1611,7 @@ function testDedicatedVodPostConfirmationTimeoutRetriesThenCleansUp() {
     assert.strictEqual(activeTimers.size, 0);
     assert.strictEqual(
         harness.posted.filter((packet) => packet.msg === 'player_event' && packet.event === 'error').length,
-        1
+        0
     );
 }
 
@@ -1953,7 +1953,7 @@ function testWorkerLiveWatchdogsRecoverMissingAckInitAndMedia() {
         ).map((item) => item.transactionId), [2, 3]);
         assert.strictEqual(harness.posted.filter((message) =>
             message.msg === 'player_event' && message.event === 'error'
-        ).length, 1);
+        ).length, 0);
 
         harness.dispatch({cmd: 'select_audio_track', packet_id: 0xf111, timeline_seed: 11000});
         assert.deepStrictEqual(harness.transmuxer.operations.filter((operation) =>
@@ -3300,7 +3300,7 @@ function testWorkerMSESubmissionFailureUsesReservedRollback() {
     assert.strictEqual(
         harness.posted.filter((message) => message.msg === 'player_event' &&
             message.event === 'error').length,
-        1
+        0
     );
 }
 

@@ -50,8 +50,8 @@ function parseArgs(argv) {
         }
     }
 
-    if (!['linear', 'seek', 'cocktail'].includes(args.mode)) {
-        throw new Error('--mode must be linear, seek, or cocktail');
+    if (!['linear', 'seek', 'tracks', 'cocktail'].includes(args.mode)) {
+        throw new Error('--mode must be linear, seek, tracks, or cocktail');
     }
     if (!Number.isFinite(args.durationSeconds) || args.durationSeconds <= 0 ||
         !Number.isFinite(args.seekIntervalSeconds) || args.seekIntervalSeconds <= 0 ||
@@ -159,6 +159,8 @@ function createHarnessHtml(videoPacketId, fileSize) {
     video.muted = true;
     const state = window.__MMTS_TEST_STATE__ = {
         status: 'booting', failure: null, events: [], mediaInfo: null, durationProbe: null,
+        audioTracks: null, videoTracks: null, switchCount: 0, switchResults: [],
+        operationWarnings: [],
         statistics: null, startedAt: performance.now(), lastProgressAt: performance.now(),
         lastCurrentTime: 0, seekCount: 0,
     };
@@ -180,6 +182,12 @@ function createHarnessHtml(videoPacketId, fileSize) {
     }
     ['loadedmetadata', 'canplay', 'playing', 'waiting', 'stalled', 'seeking', 'seeked', 'pause', 'ended'].forEach((name) => {
         video.addEventListener(name, () => record(name, {readyState: video.readyState, buffered: ranges(video.buffered)}));
+    });
+    ['seeking', 'seeked'].forEach((name) => {
+        video.addEventListener(name, () => {
+            state.lastCurrentTime = video.currentTime;
+            state.lastProgressAt = performance.now();
+        });
     });
     video.addEventListener('error', () => fail('HTMLMediaElement', {
         code: video.error && video.error.code,
@@ -232,15 +240,38 @@ function createHarnessHtml(videoPacketId, fileSize) {
     }
     const player = window.__MMTS_PLAYER__ = mpegts.createPlayer(mediaDataSource, config);
     player.attachMediaElement(video);
-    player.on(mpegts.Events.ERROR, (type, detail, info) => fail('mpegts', {type, detail, info}));
+    player.on(mpegts.Events.ERROR, (type, detail, info) => {
+        const message = info && info.msg ? String(info.msg) : '';
+        const operation = info && info.playbackOperation;
+        const operationKind = operation && operation.kind;
+        const fatalMediaPipeline = /MediaSource entered a fatal state|appendBuffer|HTMLMediaElement\.error|video decode error/i.test(message);
+        const recoverableTrackSwitch = operationKind === 'audio-switch' ||
+            operationKind === 'video-switch' || /track switch/i.test(message);
+        if (recoverableTrackSwitch && !fatalMediaPipeline && !video.error) {
+            const warning = {type, detail, info};
+            state.operationWarnings.push(warning);
+            if (state.operationWarnings.length > 30) state.operationWarnings.shift();
+            record('operation-warning', warning);
+            resumeAfterTrackFailure();
+            return;
+        }
+        fail('mpegts', {type, detail, info});
+    });
     player.on(mpegts.Events.MEDIA_INFO, (info) => {
         if (!state.mediaInfo) record('media-info', info);
         state.mediaInfo = info;
     });
+    player.on(mpegts.Events.MMTS_AUDIO_TRACKS, (tracks) => {
+        state.audioTracks = tracks;
+        record('audio-tracks', tracks);
+    });
+    player.on(mpegts.Events.MMTS_VIDEO_TRACKS, (tracks) => {
+        state.videoTracks = tracks;
+        record('video-tracks', tracks);
+    });
     player.on(mpegts.Events.STATISTICS_INFO, (info) => {
         state.statistics = info;
     });
-    player.load();
     const play = async () => {
         try {
             await player.play();
@@ -250,6 +281,16 @@ function createHarnessHtml(videoPacketId, fileSize) {
             if (video.error) fail('play', {message: error && error.message});
         }
     };
+    const resumeAfterTrackFailure = () => {
+        const atEnd = video.ended || (Number.isFinite(video.duration) &&
+            video.duration > 0 && video.currentTime >= video.duration - 0.05);
+        if (atEnd) {
+            record('track-switch-resume-skipped', {reason: 'playback-ended'});
+            return;
+        }
+        if (video.paused) play();
+    };
+    player.load();
     video.addEventListener('canplay', play, {once: true});
     setTimeout(play, 1000);
     setInterval(() => {
@@ -263,6 +304,67 @@ function createHarnessHtml(videoPacketId, fileSize) {
         record('seek-request', {seconds});
         player.currentTime = seconds;
         play();
+    };
+    window.__mmtsSwitchTrack = async (kind) => {
+        if (video.ended || (Number.isFinite(video.duration) && video.duration > 0 &&
+            video.currentTime >= video.duration - 0.05)) {
+            const skipped = {kind, skipped: true, reason: 'playback-ended'};
+            state.switchResults.push(skipped);
+            if (state.switchResults.length > 30) state.switchResults.shift();
+            record('track-switch-skipped', skipped);
+            return skipped;
+        }
+        const collection = kind === 'audio' ? state.audioTracks : state.videoTracks;
+        const tracks = collection && Array.isArray(collection.tracks) ? collection.tracks : [];
+        const candidates = tracks.filter((track) => track && Number.isInteger(track.packetId) &&
+            track.selected !== true && (kind !== 'audio' || track.supported !== false));
+        if (candidates.length === 0) {
+            const skipped = {kind, skipped: true, reason: 'no-alternative-track'};
+            record('track-switch-skipped', skipped);
+            return skipped;
+        }
+        const target = candidates[state.switchCount % candidates.length];
+        state.switchCount++;
+        record('track-switch-request', {kind, packetId: target.packetId});
+        try {
+            const operation = kind === 'audio' ?
+                player.selectAudioTrack(target.packetId) : player.selectVideoTrack(target.packetId);
+            const outcome = await Promise.race([
+                Promise.resolve(operation).then((result) => ({type: 'result', result})),
+                new Promise((resolve) => video.addEventListener('ended',
+                    () => resolve({type: 'ended'}), {once: true})),
+                // A failed VOD switch can consume one 45s data timeout and a
+                // second recovery timeout before settling back to the old track.
+                new Promise((_, reject) => setTimeout(() => reject(new Error('track switch timeout')), 100000)),
+            ]);
+            if (outcome.type === 'ended') {
+                const item = {kind, packetId: target.packetId, skipped: true, reason: 'playback-ended'};
+                state.switchResults.push(item);
+                if (state.switchResults.length > 30) state.switchResults.shift();
+                record('track-switch-skipped', item);
+                return item;
+            }
+            const result = outcome.result;
+            const item = {kind, packetId: target.packetId, result};
+            state.switchResults.push(item);
+            if (state.switchResults.length > 30) state.switchResults.shift();
+            if (result && result.terminal === true && result.status === 'failed') {
+                state.operationWarnings.push(item);
+                if (state.operationWarnings.length > 30) state.operationWarnings.shift();
+                record('track-switch-failed', item);
+                resumeAfterTrackFailure();
+            } else {
+                record('track-switch-result', item);
+            }
+            return item;
+        } catch (error) {
+            const item = {kind, packetId: target.packetId, error: error && error.message};
+            state.switchResults.push(item);
+            if (state.switchResults.length > 30) state.switchResults.shift();
+            record('track-switch-failed', item);
+            resumeAfterTrackFailure();
+            return item;
+        }
     };
     window.__mmtsSnapshot = () => {
         const quality = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
@@ -280,8 +382,13 @@ function createHarnessHtml(videoPacketId, fileSize) {
             mediaError: video.error ? {code: video.error.code, message: video.error.message} : null,
             mediaInfo: state.mediaInfo,
             durationProbe: state.durationProbe,
+            audioTracks: state.audioTracks,
+            videoTracks: state.videoTracks,
             statistics: state.statistics,
             seekCount: state.seekCount,
+            switchCount: state.switchCount,
+            switchResults: state.switchResults.slice(),
+            operationWarnings: state.operationWarnings.slice(),
             lastProgressAgo: (performance.now() - state.lastProgressAt) / 1000,
             quality: quality && {
                 totalVideoFrames: quality.totalVideoFrames,
@@ -518,6 +625,7 @@ async function runTest(client, args) {
     const started = Date.now();
     let nextSeekAt = started + args.seekIntervalSeconds * 1000;
     let targetIndex = 0;
+    let actionIndex = 0;
     const random = makeRandom(args.seed);
     let lastReportAt = 0;
     while ((Date.now() - started) / 1000 < args.durationSeconds) {
@@ -525,8 +633,8 @@ async function runTest(client, args) {
         if (snapshot.failure || snapshot.mediaError) {
             throw Object.assign(new Error(`media failure at ${snapshot.currentTime}s`), {snapshot, consoleLines});
         }
-        if (!snapshot.seeking && !snapshot.paused &&
-            snapshot.lastProgressAgo > args.stallTimeoutSeconds) {
+        if (snapshot.ended) return {snapshot, consoleLines};
+        if (snapshot.lastProgressAgo > args.stallTimeoutSeconds) {
             throw Object.assign(new Error(`playback stalled for ${snapshot.lastProgressAgo.toFixed(1)}s`), {
                 snapshot,
                 consoleLines,
@@ -539,15 +647,56 @@ async function runTest(client, args) {
                 `ready=${snapshot.readyState} buffered=${JSON.stringify(snapshot.buffered)}`);
         }
         if (args.mode !== 'linear' && Date.now() >= nextSeekAt) {
-            let target;
-            const duration = Number.isFinite(snapshot.duration) ? snapshot.duration : 459;
-            if (args.mode === 'seek') {
-                target = args.targets[targetIndex++ % args.targets.length];
+            const action = args.mode === 'cocktail' ?
+                ['seek', 'audio', 'video'][actionIndex++ % 3] : args.mode;
+            let actionResult;
+            if (action === 'seek') {
+                let target;
+                const duration = Number.isFinite(snapshot.duration) ? snapshot.duration : 459;
+                if (args.mode === 'seek') {
+                    target = args.targets[targetIndex++ % args.targets.length];
+                } else {
+                    target = Math.max(0, random() * Math.max(1, duration - 5));
+                }
+                target = Math.min(target, Math.max(0, duration - 1));
+                await evaluate(client, `window.__mmtsSeek(${JSON.stringify(target)})`);
             } else {
-                target = Math.max(0, random() * Math.max(1, duration - 5));
+                const kind = action === 'tracks' ?
+                    (actionIndex++ % 2 === 0 ? 'audio' : 'video') : action;
+                actionResult = await evaluate(client,
+                    `window.__mmtsSwitchTrack(${JSON.stringify(kind)})`);
             }
-            target = Math.min(target, Math.max(0, duration - 1));
-            await evaluate(client, `window.__mmtsSeek(${JSON.stringify(target)})`);
+            snapshot = await evaluate(client, 'window.__mmtsSnapshot()');
+            if (snapshot.failure || snapshot.mediaError) {
+                throw Object.assign(new Error(`media failure after ${action} action at ` +
+                    `${snapshot.currentTime}s`), {snapshot, consoleLines});
+            }
+            if (snapshot.ended) return {snapshot, consoleLines};
+            if (actionResult && actionResult.skipped === true &&
+                actionResult.reason === 'playback-ended') {
+                return {snapshot, consoleLines};
+            }
+            const failedTrackSwitch = actionResult && (
+                typeof actionResult.error === 'string' ||
+                (actionResult.result && actionResult.result.status === 'failed')
+            );
+            if (failedTrackSwitch) {
+                const recoveryDeadline = Date.now() + 5000;
+                while (snapshot.lastProgressAgo > 2 && !snapshot.failure &&
+                    !snapshot.mediaError && !snapshot.ended && Date.now() < recoveryDeadline) {
+                    await sleep(250);
+                    snapshot = await evaluate(client, 'window.__mmtsSnapshot()');
+                }
+                if (snapshot.failure || snapshot.mediaError) {
+                    throw Object.assign(new Error(`media failure during ${action} recovery at ` +
+                        `${snapshot.currentTime}s`), {snapshot, consoleLines});
+                }
+                if (snapshot.ended) return {snapshot, consoleLines};
+            }
+            if (snapshot.lastProgressAgo > args.stallTimeoutSeconds) {
+                throw Object.assign(new Error(`playback stalled after ${action} action for ` +
+                    `${snapshot.lastProgressAgo.toFixed(1)}s`), {snapshot, consoleLines});
+            }
             nextSeekAt = Date.now() + args.seekIntervalSeconds * 1000;
         }
         await sleep(1000);

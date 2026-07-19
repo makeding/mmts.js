@@ -84,6 +84,7 @@ declare class PlayerEngineMainThread implements PlayerEngine {
     private _publishUnifiedMMTSVideoTrackSwitch;
     private _promoteUnifiedMMTSVideoTrackSwitch;
     private _failUnifiedMMTSVideoTrackSwitch;
+    private _recoverMMTSPlaybackAfterTrackSwitchFailure;
     private _cancelMMTSVideoTrackSwitchForSeek;
     private _transferMMTSVideoSelectionToSeek;
     get mediaInfo(): MediaInfo;
