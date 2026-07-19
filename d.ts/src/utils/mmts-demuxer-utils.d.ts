@@ -5,7 +5,6 @@ import { LOASAACFrame } from '../demux/aac';
 import { MMTSAudioTrackInfo, MMTSSubtitleTrackInfo, MMTSVideoTrackInfo } from '../demux/mmts-track-data';
 export declare function isH265VclNalu(naluType: number): boolean;
 export declare function isH265IrapNalu(naluType: number): boolean;
-export declare function hasVideoParameterSets(units: H265NaluHVC1[]): boolean;
 export declare function hasH265CraNalu(units: H265NaluHVC1[]): boolean;
 export declare function hasH265IdrNalu(units: H265NaluHVC1[]): boolean;
 export declare function hasH265RaslNalu(units: H265NaluHVC1[]): boolean;
@@ -25,7 +24,9 @@ export declare function isSupportedAACChannelConfig(channelConfig: number): bool
 export declare function hasKnownMMTSAudioSupport(info: MMTSAudioTrackInfo | undefined): boolean;
 export declare function isMMTSAudioTrackSelectable(info: MMTSAudioTrackInfo | undefined): boolean;
 export declare function scoreAudioTrack(track: MMTSAudioTrackInfo): number;
+export declare function scoreDeclaredAudioTrack(track: MMTSAudioTrackInfo): number;
 export declare function findPreferredAudioTrack(tracks: MMTSAudioTrackInfo[], requireKnownSupport: boolean): MMTSAudioTrackInfo | undefined;
+export declare function findPreferredDeclaredAudioTrack(tracks: MMTSAudioTrackInfo[]): MMTSAudioTrackInfo | undefined;
 export declare function getSortedAudioTrackInfos(tracksByPacketId: {
     [packetId: number]: MMTSAudioTrackInfo;
 }): MMTSAudioTrackInfo[];

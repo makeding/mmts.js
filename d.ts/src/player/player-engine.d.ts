@@ -1,4 +1,5 @@
 import type MediaInfo from "../core/media-info";
+import type { PlaybackOperationResult } from "./playback-operation-result";
 export default interface PlayerEngine {
     destroy(): void;
     on(event: string, listener: (...args: any[]) => void): void;
@@ -9,11 +10,11 @@ export default interface PlayerEngine {
     unload(): void;
     play(): Promise<void>;
     pause(): void;
-    seek(seconds: number): void;
-    switchPrimaryAudio(): void;
-    switchSecondaryAudio(): void;
-    selectAudioTrack(packetId: number): void;
-    selectVideoTrack(packetId: number): void;
+    seek(seconds: number): Promise<PlaybackOperationResult>;
+    switchPrimaryAudio(): Promise<PlaybackOperationResult>;
+    switchSecondaryAudio(): Promise<PlaybackOperationResult>;
+    selectAudioTrack(packetId: number): Promise<PlaybackOperationResult>;
+    selectVideoTrack(packetId: number): Promise<PlaybackOperationResult>;
     readonly mediaInfo: MediaInfo | undefined;
     readonly statisticsInfo: any | undefined;
 }

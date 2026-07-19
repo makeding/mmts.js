@@ -48,7 +48,7 @@ interface MMTSSubtitleVideoTimeline {
 }
 
 interface MMTSSubtitleAssemblerCallbacks {
-    nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null;
+    getTimestampAtAccessUnit(packetId: number, mpuSequenceNumber: number, auIndex: number): MMTSTimestamp | null;
     getVideoTimeline(): MMTSSubtitleVideoTimeline;
     onSubtitleData?(subtitle: MMTSSubtitleData): void;
     logSubtitleData?(subtitle: MMTSSubtitleData): void;
@@ -66,6 +66,10 @@ export default class MMTSSubtitleAssembler {
     public destroy(): void {
         this.callbacks_ = null;
         this.states_ = null;
+    }
+
+    public reset(): void {
+        this.states_ = {};
     }
 
     public processMfuUnit(packetId: number,
@@ -113,7 +117,9 @@ export default class MMTSSubtitleAssembler {
             ? Math.floor(asset.subtitleReferenceStartTimeUs / 1000)
             : undefined;
 
-        const timestamp = this.callbacks_.nextTimestamp(packetId, mpuSequenceNumber);
+        const timestamp = fragment.sampleNumber !== undefined && fragment.sampleNumber > 0 ?
+            this.callbacks_.getTimestampAtAccessUnit(packetId, mpuSequenceNumber, fragment.sampleNumber - 1) :
+            null;
         if (timestamp !== null) {
             subtitle.rawPts = Math.floor(timestamp.rawPts * 1000 / timestamp.timescale);
             subtitle.rawDts = Math.floor(timestamp.rawDts * 1000 / timestamp.timescale);

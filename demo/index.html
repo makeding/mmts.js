@@ -3,7 +3,7 @@
 
 <head>
     <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
-    <title>mpegts.js demo</title>
+    <title>mmts.js demo</title>
     <link rel="stylesheet" type="text/css" href="demo.css" />
 </head>
 
@@ -20,11 +20,7 @@
                 <div class="options">
                     <label for="mediaType">type</label>
                     <select id="mediaType" onchange="saveSettings()">
-                        <option value="m2ts">m2ts</option>
                         <option value="mmts" selected>mmts</option>
-                        <option value="mpegts">mpegts</option>
-                        <option value="mse">mse</option>
-                        <option value="flv">flv</option>
                     </select>
                     <input type="checkbox" id="isLive" onchange="saveSettings()" checked />
                     <label for="isLive">isLive</label>
@@ -39,14 +35,14 @@
             <div id="mediaSourceURL" class="hidden">
                 <div class="url-input">
                     <label for="msURL">MediaDataSource JsonURL:</label>
-                    <input id="msURL" type="text" value="http://127.0.0.1/flv/7182741.json" onchange="saveSettings()" />
+                    <input id="msURL" type="text" value="http://127.0.0.1/mmts/source.json" onchange="saveSettings()" />
                     <button onclick="switch_url()">Switch to URL</button>
                 </div>
             </div>
         </div>
         <div class="video-container">
             <div>
-                <video name="videoElement" class="centeredVideo" controls autoplay playsinline>
+                <video name="videoElement" class="centeredVideo" controls playsinline>
                     Your browser is too old which doesn't support HTML5 video.
                 </video>
                 <div id="ttmlSubtitleOverlay" class="ttml-subtitle-overlay"></div>
@@ -100,6 +96,7 @@
         var lastMediaInfo = null;
         var lastVideoContentType = 'video/mp4; codecs="hvc1.2.1.L183.B0"';
         var ttmlSubtitleRenderer = null;
+        var ttmlSubtitleRendererUnavailable = false;
         var ttmlSubtitleEventCount = 0;
         var ttmlSubtitleLastStatus = null;
         var ttmlSubtitleDataCache = [];
@@ -107,14 +104,43 @@
         var ttmlCachedFontFaces = [];
         var ttmlCachedFontFaceKeys = {};
         var selectedMMTSSubtitlePacketId = null;
+        var lastStatisticsLogTime = 0;
+        var lastStatisticsLogState = null;
+        var lastLogcatLine = '';
+        var lastLogcatLineTime = 0;
+        var lastMediaInfoLogText = '';
+        var lastMMTSAudioTracksLogText = '';
+        var lastMMTSVideoTracksLogText = '';
+        var lastMMTSSubtitleTracksLogText = '';
+        var lastCapabilityProbeKey = '';
 
-        function logDemo(message) {
+        function shouldLogLibraryLine(type, line) {
+            if (type === 'verbose' || type === 'debug') {
+                return false;
+            }
+            return !/^\[MP4Remuxer\] > Extend video sample duration/.test(line);
+        }
+
+        function appendLogcatLine(line) {
+            var now = Date.now();
+            if (line === lastLogcatLine && now - lastLogcatLineTime < 60000) {
+                return false;
+            }
+            lastLogcatLine = line;
+            lastLogcatLineTime = now;
             var box = document.getElementsByName('logcatbox')[0];
             if (box) {
-                box.value = box.value + '[demo] ' + message + '\n';
+                box.value = box.value + line + '\n';
                 box.scrollTop = box.scrollHeight;
             }
-            console.log('[demo] ' + message);
+            return true;
+        }
+
+        function logDemo(message) {
+            var line = '[demo] ' + message;
+            if (appendLogcatLine(line)) {
+                console.log(line);
+            }
         }
 
         function player_load() {
@@ -148,6 +174,10 @@
         }
 
         function player_load_mds(mediaDataSource) {
+            prepareMediaDataSourceForNativeControls(mediaDataSource, do_player_load_mds);
+        }
+
+        function do_player_load_mds(mediaDataSource) {
             var element = document.getElementsByName('videoElement')[0];
             if (typeof player !== "undefined") {
                 if (player != null) {
@@ -157,12 +187,47 @@
                     player = null;
                 }
             }
+            var isMMTS = mediaDataSource.type === 'mmts';
+            var isMMTSLive = isMMTS && mediaDataSource.isLive === true;
             var config = {
                 enableWorker: true,
-                lazyLoadMaxDuration: 3 * 60,
+                lazyLoad: true,
+                lazyLoadOnLive: isMMTSLive,
+                lazyLoadMaxDuration: isMMTSLive ? 18 : (isMMTS ? 90 : 3 * 60),
+                lazyLoadRecoverDuration: isMMTSLive ? 8 : (isMMTS ? 60 : 30),
+                startupBufferDuration: isMMTSLive ? 3 : 0,
                 seekType: 'range',
+                rangeLoadZeroStart: isMMTS,
                 liveBufferLatencyChasing: document.getElementById('liveBufferLatencyChasing').checked,
             };
+            if (isMMTS) {
+                config.autoCleanupSourceBuffer = true;
+                config.autoCleanupMaxBackwardDuration = isMMTSLive ? 10 : 6;
+                config.autoCleanupMinBackwardDuration = isMMTSLive ? 4 : 2;
+                config.statisticsInfoReportInterval = 1000;
+                config.lazyLoadMaxBytes = isMMTSLive ? 64 * 1024 * 1024 : 112 * 1024 * 1024;
+                config.lazyLoadRecoverBytes = isMMTSLive ? 32 * 1024 * 1024 : 96 * 1024 * 1024;
+                config.mseBufferVideoSoftLimitBytes = isMMTSLive ? 64 * 1024 * 1024 : 112 * 1024 * 1024;
+                config.mseBufferVideoHardLimitBytes = isMMTSLive ? 96 * 1024 * 1024 : 128 * 1024 * 1024;
+                config.mseBufferAudioSoftLimitBytes = isMMTSLive ? 8 * 1024 * 1024 : 8 * 1024 * 1024;
+                config.mseBufferAudioHardLimitBytes = isMMTSLive ? 12 * 1024 * 1024 : 12 * 1024 * 1024;
+                config.mseBufferForwardTargetDuration = isMMTSLive ? 18 : 90;
+                config.mseBufferRecoverForwardDuration = isMMTSLive ? 8 : 60;
+                config.mseAppendTrackLeadLimit = isMMTSLive ? 1.5 : 2;
+                config.mseAppendBatchDuration = isMMTSLive ? 0.35 : 0.5;
+                config.mmtsClampVideoTimestampGap = false;
+                config.mmtsClampAudioTimestampGap = false;
+                logDemo('MMTS 4K/8K buffering: forward=' +
+                    (isMMTSLive ? '18s/64MiB' : '90s/112MiB') +
+                    ', recover=' + (isMMTSLive ? '8s/32MiB' : '60s/96MiB') +
+                    ', cleanup=back ' + (isMMTSLive ? '10/4s' : '6/2s') +
+                    ', startup=' +
+                    (isMMTSLive ? '3s' : '0s') +
+                    ', append_batch=' + (isMMTSLive ? '0.35s' : '0.5s') +
+                    ', append_lead=' + (isMMTSLive ? '1.5s' : '2s') +
+                    ', timeline=preserve-gaps' +
+                    (isMMTSLive ? ', lazyLoadOnLive=true' : ''));
+            }
             var mmtsVideoPacketId = parseOptionalInteger(document.getElementById('mmtsVideoPid').value);
             if (mmtsVideoPacketId != null && mediaDataSource.type === 'mmts') {
                 config.mmtsVideoPacketId = mmtsVideoPacketId;
@@ -174,6 +239,12 @@
             setupMediaElementDebug(element);
             player.attachMediaElement(element);
             setupTTMLSubtitleOverlay(element);
+            lastMediaInfoLogText = '';
+            lastMMTSAudioTracksLogText = '';
+            lastMMTSVideoTracksLogText = '';
+            lastMMTSSubtitleTracksLogText = '';
+            lastStatisticsLogState = null;
+            lastCapabilityProbeKey = '';
             resetVideoInfo();
             resetMMTSVideoTracks();
             resetMMTSAudioTracks();
@@ -184,26 +255,33 @@
             player.on(mpegts.Events.MEDIA_INFO, function(info) {
                 lastMediaInfo = info || null;
                 renderVideoInfo();
-                logDemo('media info: ' + JSON.stringify(info));
+                var mediaInfoLogText = JSON.stringify(info);
+                if (mediaInfoLogText !== lastMediaInfoLogText) {
+                    lastMediaInfoLogText = mediaInfoLogText;
+                    logDemo('media info: ' + mediaInfoLogText);
+                }
                 if (info && info.mimeType && info.videoCodec) {
                     lastVideoContentType = 'video/mp4; codecs="' + info.videoCodec + '"';
-                    probe_video_capability();
+                    probe_video_capability(false);
                 }
+            });
+            player.on(mpegts.Events.STATISTICS_INFO, function(info) {
+                logStatisticsInfo(element, info);
             });
             player.on(mpegts.Events.MMTS_AUDIO_TRACKS, function(data) {
                 mmtsAudioTracks = data;
-                logDemo('mmts audio tracks: ' + JSON.stringify(data));
+                logMMTSTrackChange('audio', data);
                 renderMMTSAudioTracks();
             });
             player.on(mpegts.Events.MMTS_VIDEO_TRACKS, function(data) {
                 mmtsVideoTracks = data;
-                logDemo('mmts video tracks: ' + JSON.stringify(data));
+                logMMTSTrackChange('video', data);
                 renderMMTSVideoTracks();
             });
             if (mpegts.Events.MMTS_SUBTITLE_TRACKS) {
                 player.on(mpegts.Events.MMTS_SUBTITLE_TRACKS, function(data) {
                     mmtsSubtitleTracks = data;
-                    logDemo('mmts subtitle tracks: ' + JSON.stringify(data));
+                    logMMTSTrackChange('subtitle', data);
                     renderMMTSSubtitleTracks();
                 });
             }
@@ -215,8 +293,276 @@
             player.load();
         }
 
+        function prepareMediaDataSourceForNativeControls(mediaDataSource, callback) {
+            if (!shouldPrepareMMTSVODMetadata(mediaDataSource)) {
+                callback(mediaDataSource);
+                return;
+            }
+
+            loadMediaDataSourceFileSize(mediaDataSource, function() {
+                probeMediaDataSourceDuration(mediaDataSource, callback);
+            });
+        }
+
+        function shouldPrepareMMTSVODMetadata(mediaDataSource) {
+            return mediaDataSource &&
+                mediaDataSource.type === 'mmts' &&
+                mediaDataSource.isLive !== true &&
+                !mediaDataSource.segments &&
+                mediaDataSource.url;
+        }
+
+        function loadMediaDataSourceFileSize(mediaDataSource, callback) {
+            if (hasPositiveNumber(mediaDataSource.filesize)) {
+                callback(mediaDataSource);
+                return;
+            }
+
+            var xhr = new XMLHttpRequest();
+            xhr.open('HEAD', mediaDataSource.url, true);
+            xhr.onload = function() {
+                var length = readContentLength(xhr);
+                if (length > 0) {
+                    setMediaDataSourceFileSize(mediaDataSource, length);
+                    callback(mediaDataSource);
+                } else {
+                    loadMediaDataSourceFileSizeByRange(mediaDataSource, callback);
+                }
+            };
+            xhr.onerror = function() {
+                loadMediaDataSourceFileSizeByRange(mediaDataSource, callback);
+            };
+            xhr.send();
+        }
+
+        function probeMediaDataSourceDuration(mediaDataSource, callback) {
+            if (hasPositiveNumber(mediaDataSource.duration) ||
+                !hasPositiveNumber(mediaDataSource.filesize) ||
+                typeof mpegts.probeMMTSDuration !== 'function') {
+                callback(mediaDataSource);
+                return;
+            }
+
+            var options = {
+                filesize: mediaDataSource.filesize,
+                withCredentials: mediaDataSource.withCredentials === true
+            };
+            var mmtsVideoPacketId = parseOptionalInteger(document.getElementById('mmtsVideoPid').value);
+            if (mmtsVideoPacketId != null) {
+                options.videoPacketId = mmtsVideoPacketId;
+            }
+
+            logDemo('probe MMTS VOD duration...');
+            mpegts.probeMMTSDuration(mediaDataSource.url, options).then(function(result) {
+                if (result && hasPositiveNumber(result.duration)) {
+                    setMediaDataSourceDuration(mediaDataSource, result.duration, result);
+                }
+                callback(mediaDataSource);
+            }, function(error) {
+                logDemo('MMTS VOD duration probe failed: ' + (error && error.message ? error.message : error));
+                callback(mediaDataSource);
+            });
+        }
+
+        function loadMediaDataSourceFileSizeByRange(mediaDataSource, callback) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', mediaDataSource.url, true);
+            xhr.setRequestHeader('Range', 'bytes=0-0');
+            xhr.onload = function() {
+                var length = readContentLength(xhr);
+                if (length > 0) {
+                    setMediaDataSourceFileSize(mediaDataSource, length);
+                }
+                callback(mediaDataSource);
+            };
+            xhr.onerror = function() {
+                callback(mediaDataSource);
+            };
+            xhr.send();
+        }
+
+        function readContentLength(xhr) {
+            var range = xhr.getResponseHeader('Content-Range');
+            if (range) {
+                var match = /\/(\d+)$/.exec(range);
+                if (match) {
+                    var total = parseInt(match[1], 10);
+                    if (Number.isFinite(total) && total > 0) {
+                        return total;
+                    }
+                }
+            }
+
+            var length = parseInt(xhr.getResponseHeader('Content-Length'), 10);
+            return Number.isFinite(length) && length > 0 ? length : 0;
+        }
+
+        function hasPositiveNumber(value) {
+            return typeof value === 'number' && Number.isFinite(value) && value > 0;
+        }
+
+        function setMediaDataSourceFileSize(mediaDataSource, length) {
+            mediaDataSource.filesize = length;
+            logDemo('MMTS VOD filesize=' + length);
+        }
+
+        function setMediaDataSourceDuration(mediaDataSource, duration, probeResult) {
+            mediaDataSource.duration = duration;
+            logDemo('MMTS VOD duration=' + (duration / 1000).toFixed(3) + 's' +
+                ', start_offset=' + probeResult.startOffset +
+                ', end_offset=' + probeResult.endOffset);
+        }
+
+        function collectStartupDebugState() {
+            var element = document.getElementsByName('videoElement')[0];
+            var engine = player && player._player_engine;
+            var gate = engine && engine._startup_buffer_gate;
+            var stateMachine = engine && engine._mse_buffer_state_machine;
+            var inflightOperations = stateMachine && stateMachine._inflight_operations;
+            var forwardInfo = stateMachine && element ?
+                stateMachine.getForwardBufferInfo(element.currentTime) : null;
+            function summarizeInflight(operation) {
+                var segment = operation && operation.segment;
+                return operation ? {
+                    kind: operation.kind,
+                    type: segment && segment.type,
+                    startupGroupId: segment && segment.mseStartupGroupId,
+                    startupGroupPart: segment && segment.mseStartupGroupPart
+                } : null;
+            }
+            return {
+                currentTime: element && element.currentTime,
+                paused: element && element.paused,
+                readyState: element && element.readyState,
+                buffered: element ? formatBufferedRanges(element) : '',
+                audioBuffered: formatPlayerSourceBufferRanges('audio'),
+                videoBuffered: formatPlayerSourceBufferRanges('video'),
+                forward: forwardInfo ? {
+                    duration: forwardInfo.forwardDuration,
+                    audioDuration: forwardInfo.audioForwardDuration,
+                    videoDuration: forwardInfo.videoForwardDuration
+                } : null,
+                gate: gate ? {
+                    startupGroupReleased: gate._startup_group_released,
+                    released: gate._released,
+                    resumeRequested: gate._resume_requested,
+                    activationPlayPending: gate._activation_play_pending,
+                    holdingPlayback: gate._holding_playback,
+                    lastStartupJumpTarget: gate._last_startup_jump_target
+                } : null,
+                mse: stateMachine ? {
+                    mainState: stateMachine._main_state,
+                    pendingStartupGroup: !!stateMachine._pending_startup_group,
+                    pendingStartupGroupId: stateMachine._pending_startup_group_id,
+                    pendingStartupMedia: stateMachine._pending_startup_group_media,
+                    inflight: inflightOperations ? {
+                        video: summarizeInflight(inflightOperations.video),
+                        audio: summarizeInflight(inflightOperations.audio)
+                    } : null,
+                    trackState: stateMachine._track_state,
+                    pendingInit: stateMachine._pending_init_segments ? {
+                        video: stateMachine._pending_init_segments.video.length,
+                        audio: stateMachine._pending_init_segments.audio.length
+                    } : null,
+                    pendingMedia: stateMachine._pending_media_segments ? {
+                        video: stateMachine._pending_media_segments.video.length,
+                        audio: stateMachine._pending_media_segments.audio.length
+                    } : null
+                } : null
+            };
+        }
+
+        function logStartupDebugState(label) {
+            logDemo('startup state (' + label + '): ' + JSON.stringify(collectStartupDebugState()));
+        }
+
+        function collectAudioTrackSwitchDebugState() {
+            var element = document.getElementsByName('videoElement')[0];
+            var engine = player && player._player_engine;
+            var coordinator = engine && engine._audio_track_switch_coordinator;
+            var transaction = coordinator && coordinator.active;
+            var stateMachine = engine && engine._mse_buffer_state_machine;
+            var mseContext = stateMachine && stateMachine._track_switch_transaction;
+            var videoWindow = engine && engine._mmts_live_video_rebuild_window;
+            var mseState = engine && engine._mse_controller &&
+                engine._mse_controller.getMediaSourceState ?
+                engine._mse_controller.getMediaSourceState() : null;
+            return {
+                currentTime: element && element.currentTime,
+                paused: element && element.paused,
+                readyState: element && element.readyState,
+                currentSrc: element && element.currentSrc,
+                buffered: element ? formatBufferedRanges(element) : '',
+                loadingPaused: !!(engine && engine._loading_controller &&
+                    engine._loading_controller._paused),
+                operation: engine && engine._active_playback_operation,
+                transaction: transaction ? {
+                    stage: transaction.stage,
+                    transactionId: transaction.operation && transaction.operation.transactionId,
+                    attempt: transaction.operation && transaction.operation.attempt,
+                    requestedTime: transaction.operation &&
+                        transaction.operation.requestedTimeMilliseconds / 1000,
+                    priorPacketId: transaction.priorCommittedPacketId,
+                    targetPacketId: transaction.targetPacketId,
+                    confirmedTrackData: !!transaction.confirmedTrackData,
+                    internalSelectionChanged: transaction.internalSelectionChanged,
+                    selectionMayHaveMutated: transaction.selectionMayHaveMutated
+                } : null,
+                collection: engine ? {
+                    acceptedTime: engine._accepted_audio_track_switch_time,
+                    hasVideoInit: !!(engine._mse_controller &&
+                        typeof engine._mse_controller.getLastInitSegment === 'function' &&
+                        engine._mse_controller.getLastInitSegment('video')),
+                    hasAudioInit: !!engine._pending_audio_track_switch_init_segment,
+                    audioMedia: engine._pending_audio_track_switch_media_segments ?
+                        engine._pending_audio_track_switch_media_segments.length : 0,
+                    hasVideoWindow: !!videoWindow,
+                    videoWindowStart: videoWindow && videoWindow.playableStart,
+                    videoMedia: videoWindow && videoWindow.segments ?
+                        videoWindow.segments.length : 0,
+                    rebuildInProgress: !!engine._mmts_audio_track_switch_rebuild_in_progress
+                } : null,
+                mse: stateMachine ? {
+                    mainState: stateMachine._main_state,
+                    sourceOpened: stateMachine._source_opened,
+                    pauseReason: stateMachine._transmuxer_pause_reason,
+                    trackSwitchNeedsData: stateMachine._track_switch_needs_data,
+                    collectionHold: stateMachine._live_audio_track_switch_collection_hold,
+                    context: mseContext ? {
+                        kind: mseContext.kind,
+                        stage: mseContext.stage,
+                        transactionId: mseContext.transactionId
+                    } : null,
+                    pendingRebuild: !!stateMachine._pending_audio_rebuild_plan,
+                    rebuildTransactionId: stateMachine._pending_audio_rebuild_transaction_id,
+                    pendingInit: stateMachine._pending_init_segments ? {
+                        video: stateMachine._pending_init_segments.video.length,
+                        audio: stateMachine._pending_init_segments.audio.length
+                    } : null,
+                    pendingMedia: stateMachine._pending_media_segments ? {
+                        video: stateMachine._pending_media_segments.video.length,
+                        audio: stateMachine._pending_media_segments.audio.length
+                    } : null,
+                    mediaSource: mseState ? {
+                        readyState: mseState.readyState,
+                        streaming: mseState.streaming,
+                        hasFatalMediaError: mseState.hasFatalMediaError
+                    } : null
+                } : null
+            };
+        }
+
+        function logAudioTrackSwitchDebugState(label) {
+            logDemo('audio switch state (' + label + '): ' +
+                JSON.stringify(collectAudioTrackSwitchDebugState()));
+        }
+
         function player_start() {
+            logStartupDebugState('before start');
             player.play();
+            window.setTimeout(function() {
+                logStartupDebugState('after start');
+            }, 1500);
         }
 
         function player_pause() {
@@ -651,7 +997,18 @@
 
         function player_select_audio_track(packetId) {
             if (player != null && player.selectAudioTrack) {
+                logDemo('select MMTS audio packet_id=' + formatPacketId(packetId));
                 player.selectAudioTrack(packetId);
+                logAudioTrackSwitchDebugState('immediate');
+                window.setTimeout(function() {
+                    logAudioTrackSwitchDebugState('250ms');
+                }, 250);
+                window.setTimeout(function() {
+                    logAudioTrackSwitchDebugState('1s');
+                }, 1000);
+                window.setTimeout(function() {
+                    logAudioTrackSwitchDebugState('3s');
+                }, 3000);
             }
         }
 
@@ -682,15 +1039,23 @@
                 logDemo('loadedmetadata: duration=' + element.duration + ', video=' + element.videoWidth + 'x' + element.videoHeight);
                 renderVideoInfo();
             };
+            element.ondurationchange = function() {
+                logDemo('durationchange: duration=' + element.duration);
+                renderVideoInfo();
+            };
             element.onplaying = function() {
                 logDemo('playing: currentTime=' + element.currentTime);
                 renderVideoInfo();
             };
             element.onstalled = function() {
-                logDemo('stalled: currentTime=' + element.currentTime);
+                logDemo('stalled: currentTime=' + element.currentTime + ', buffered=' + formatBufferedRanges(element) +
+                    ', audio=' + formatPlayerSourceBufferRanges('audio') +
+                    ', video=' + formatPlayerSourceBufferRanges('video'));
             };
             element.onwaiting = function() {
-                logDemo('waiting: currentTime=' + element.currentTime);
+                logDemo('waiting: currentTime=' + element.currentTime + ', buffered=' + formatBufferedRanges(element) +
+                    ', audio=' + formatPlayerSourceBufferRanges('audio') +
+                    ', video=' + formatPlayerSourceBufferRanges('video'));
             };
             element.onseeked = function() {
                 logDemo('seeked: currentTime=' + element.currentTime);
@@ -698,13 +1063,107 @@
             };
         }
 
+        function formatBufferedRanges(element) {
+            return formatTimeRanges(element.buffered);
+        }
+
+        function formatTimeRanges(buffered) {
+            var ranges = [];
+            var maxRanges = 6;
+            for (var i = 0; i < buffered.length && i < maxRanges; i++) {
+                ranges.push(buffered.start(i).toFixed(3) + '-' + buffered.end(i).toFixed(3));
+            }
+            if (buffered.length > maxRanges) {
+                ranges.push('...+' + (buffered.length - maxRanges));
+            }
+            return '[' + ranges.join(',') + ']';
+        }
+
+        function formatPlayerSourceBufferRanges(type) {
+            var sourceBuffers = player &&
+                player._player_engine &&
+                player._player_engine._mse_controller &&
+                player._player_engine._mse_controller._sourceBuffers;
+            var sourceBuffer = sourceBuffers && sourceBuffers[type];
+            if (!sourceBuffer) {
+                return 'n/a';
+            }
+            return formatTimeRanges(sourceBuffer.buffered);
+        }
+
+        function logStatisticsInfo(element, info) {
+            var now = Date.now();
+            var forward = getForwardBufferDuration(element);
+            var state = {
+                forward: Math.floor(forward * 10) / 10,
+                currentTime: Math.floor(element.currentTime),
+                readyState: element.readyState,
+                loader: info && info.loaderType
+            };
+            var unchanged = lastStatisticsLogState &&
+                lastStatisticsLogState.forward === state.forward &&
+                lastStatisticsLogState.currentTime === state.currentTime &&
+                lastStatisticsLogState.readyState === state.readyState &&
+                lastStatisticsLogState.loader === state.loader;
+            var interval = forward <= 0.05 ? 15000 : 5000;
+            if (unchanged || now - lastStatisticsLogTime < interval) {
+                return;
+            }
+            lastStatisticsLogTime = now;
+            lastStatisticsLogState = state;
+
+            logDemo('stats: speed=' + formatNumber(info && info.speed, 0) +
+                'KB/s, forward=' + formatNumber(forward, 3) +
+                's, currentTime=' + formatNumber(element.currentTime, 3) +
+                ', readyState=' + element.readyState +
+                ', loader=' + (info && info.loaderType));
+        }
+
+        function logMMTSTrackChange(type, data) {
+            var text = JSON.stringify(data);
+            if (type === 'audio') {
+                if (text === lastMMTSAudioTracksLogText) {
+                    return;
+                }
+                lastMMTSAudioTracksLogText = text;
+            } else if (type === 'video') {
+                if (text === lastMMTSVideoTracksLogText) {
+                    return;
+                }
+                lastMMTSVideoTracksLogText = text;
+            } else if (type === 'subtitle') {
+                if (text === lastMMTSSubtitleTracksLogText) {
+                    return;
+                }
+                lastMMTSSubtitleTracksLogText = text;
+            }
+            logDemo('mmts ' + type + ' tracks: ' + text);
+        }
+
+        function getForwardBufferDuration(element) {
+            var current = element.currentTime;
+            var buffered = element.buffered;
+            for (var i = 0; i < buffered.length; i++) {
+                var start = buffered.start(i);
+                var end = buffered.end(i);
+                if (current >= start && current <= end) {
+                    return end - current;
+                }
+            }
+            return 0;
+        }
+
         function setupTTMLSubtitleOverlay(element) {
             clearTTMLSubtitleOverlay();
             var overlay = document.getElementById('ttmlSubtitleOverlay');
             if (!window.aribb62js || !window.aribb62js.B62TTMLRenderer) {
-                logDemo('aribb62.js is not loaded');
+                if (!ttmlSubtitleRendererUnavailable) {
+                    ttmlSubtitleRendererUnavailable = true;
+                    logDemo('aribb62.js is not loaded');
+                }
                 return;
             }
+            ttmlSubtitleRendererUnavailable = false;
             ttmlSubtitleRenderer = new window.aribb62js.B62TTMLRenderer({
                 mediaElement: element,
                 overlayElement: overlay,
@@ -733,6 +1192,9 @@
                 return;
             }
             if (!ttmlSubtitleRenderer) {
+                if (ttmlSubtitleRendererUnavailable) {
+                    return;
+                }
                 setupTTMLSubtitleOverlay(video);
                 if (!ttmlSubtitleRenderer) {
                     return;
@@ -1043,9 +1505,20 @@
             return Number.isFinite(packetId) ? '0x' + Number(packetId).toString(16) : 'n/a';
         }
 
-        function probe_video_capability() {
+        function probe_video_capability(force) {
+            if (force !== false) {
+                force = true;
+            }
             var contentType = lastVideoContentType;
             var element = document.getElementsByName('videoElement')[0];
+            var width = lastMediaInfo && lastMediaInfo.width || 7680;
+            var height = lastMediaInfo && lastMediaInfo.height || 4320;
+            var framerate = lastMediaInfo && lastMediaInfo.fps || 60;
+            var probeKey = contentType + '|' + width + 'x' + height + '|' + framerate;
+            if (!force && probeKey === lastCapabilityProbeKey) {
+                return;
+            }
+            lastCapabilityProbeKey = probeKey;
             logDemo('canPlayType(' + contentType + ')=' + element.canPlayType(contentType));
             if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.decodingInfo) {
                 logDemo('mediaCapabilities.decodingInfo unavailable');
@@ -1055,10 +1528,10 @@
                 type: 'media-source',
                 video: {
                     contentType: contentType,
-                    width: lastMediaInfo && lastMediaInfo.width || 7680,
-                    height: lastMediaInfo && lastMediaInfo.height || 4320,
+                    width: width,
+                    height: height,
                     bitrate: 80000000,
-                    framerate: lastMediaInfo && lastMediaInfo.fps || 60
+                    framerate: framerate
                 }
             }).then(function(info) {
                 logDemo('mediaCapabilities: ' + JSON.stringify(info));
@@ -1167,10 +1640,12 @@
             }
         };
 
-        var logcatbox = document.getElementsByName('logcatbox')[0];
+        mpegts.LoggingControl.enableVerbose = false;
+        mpegts.LoggingControl.enableDebug = false;
         mpegts.LoggingControl.addLogListener(function(type, str) {
-            logcatbox.value = logcatbox.value + str + '\n';
-            logcatbox.scrollTop = logcatbox.scrollHeight;
+            if (shouldLogLibraryLine(type, str)) {
+                appendLogcatLine(str);
+            }
         });
 
         document.addEventListener('DOMContentLoaded', function () {

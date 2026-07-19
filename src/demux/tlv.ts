@@ -93,7 +93,9 @@ export default class TLV {
             offset = packetEnd;
         }
 
-        if (packets.length === 0 && data.byteLength < TLV_HEADER_SIZE) {
+        if (!needMoreData &&
+            packets.length < maxPackets &&
+            offset < data.byteLength) {
             needMoreData = true;
         }
 

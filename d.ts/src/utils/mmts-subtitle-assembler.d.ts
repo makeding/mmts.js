@@ -11,7 +11,7 @@ interface MMTSSubtitleVideoTimeline {
     droppedVideoSampleCount: number;
 }
 interface MMTSSubtitleAssemblerCallbacks {
-    nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null;
+    getTimestampAtAccessUnit(packetId: number, mpuSequenceNumber: number, auIndex: number): MMTSTimestamp | null;
     getVideoTimeline(): MMTSSubtitleVideoTimeline;
     onSubtitleData?(subtitle: MMTSSubtitleData): void;
     logSubtitleData?(subtitle: MMTSSubtitleData): void;
@@ -21,6 +21,7 @@ export default class MMTSSubtitleAssembler {
     private states_;
     constructor(callbacks: MMTSSubtitleAssemblerCallbacks);
     destroy(): void;
+    reset(): void;
     processMfuUnit(packetId: number, asset: MMTAsset, mpuSequenceNumber: number, fragment: MFUFragment, unit: Uint8Array): void;
     flush(): void;
     private extractMfuPayload;

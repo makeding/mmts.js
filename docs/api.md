@@ -39,7 +39,7 @@ Create a player instance according to `type` field indicated in `mediaDataSource
 
 | Field              | Type                  | Description                              |
 | ------------------ | --------------------- | ---------------------------------------- |
-| `type`             | `string`              | Indicates media type, `'mse'`, `'mpegts'`, `'m2ts'`, `'flv'` or `'mp4'` |
+| `type`             | `string`              | Indicates media type, `'mse'`, `'mpegts'`, `'m2ts'`, `'mmts'`, `'flv'` or `'mp4'` |
 | `isLive?`          | `boolean`             | Indicates whether the data source is a **live stream** |
 | `cors?`            | `boolean`             | Indicates whether to enable CORS for http fetching |
 | `withCredentials?` | `boolean`             | Indicates whether to do http fetching with cookies |
@@ -83,13 +83,30 @@ In multipart mode, `duration` `filesize` `url` field in `MediaDataSource` struct
 | `liveSyncMinLatency?`            | `number`  | `undefined`                  | Minimum acceptable buffer latency in HTMLMediaElement, in seconds. Effective only if `isLive: true` and `liveSync: true` |
 | `liveSyncMinPlaybackRate?`       | `number`  | `0.95`                       | PlaybackRate limited between [0.5, 1] will be used for latency chasing. Effective only if `isLive: true` and `liveSync: true` |
 | `mmtsVideoPacketId?`             | `number`  | `undefined`                  | Force the MMTS HEVC video packet_id. Useful for service-specific video asset selection. |
+| `mmtsLiveInitialBufferDuration?` | `number`  | `1.5` for MMTS live          | Required forward buffer before initial MMTS live playback starts, in seconds. Kept for MMTS live compatibility. |
+| `mmtsClampAudioTimestampGap?`    | `boolean` | `false`                      | Clamp small positive MMTS AAC timestamp gaps to the expected frame timeline when enabled. By default packet-loss gaps remain on the media timeline. |
+| `mmtsClampVideoTimestampGap?`    | `boolean` | `false`                      | Clamp small positive MMTS HEVC timestamp gaps to the expected frame timeline when enabled. By default packet-loss gaps remain visible as freezes or decoder recovery artifacts. |
+| `mmtsVodSeekLookbackBytes?`      | `number`  | `32MiB`                      | Bytes read before the estimated MMTS VOD target position. If the first RAP is still after the requested time, the lookback is expanded automatically. |
+| `mmtsVodSeekMaxLookbackBytes?`   | `number`  | `256MiB`                     | Maximum adaptive MMTS VOD seek lookback. |
 | `lazyLoad?`                      | `boolean` | `true`                       | Abort the http connection if there's enough data for playback. |
-| `lazyLoadMaxDuration?`           | `number`  | `3 * 60`                     | Indicates how many seconds of data to be kept for `lazyLoad`. |
-| `lazyLoadRecoverDuration?`       | `number`  | `30`                         | Indicates the `lazyLoad` recover time boundary in seconds. |
+| `lazyLoadOnLive?`                | `boolean` | `false`                      | Enable `lazyLoad` pause/resume for live streams. Leave disabled for ordinary low-latency live playback. |
+| `lazyLoadMaxDuration?`           | `number`  | `3 * 60`; `90` for MMTS VOD; `18` for MMTS live | Indicates how many seconds of data to be kept for `lazyLoad`. |
+| `lazyLoadRecoverDuration?`       | `number`  | `30`; `60` for MMTS VOD; `8` for MMTS live | Indicates the `lazyLoad` recover time boundary in seconds. |
+| `lazyLoadMaxBytes?`              | `number`  | `undefined`; `112MiB` for MMTS VOD, `64MiB` for MMTS live | Indicates how many forward buffered bytes to be kept for `lazyLoad`. |
+| `lazyLoadRecoverBytes?`          | `number`  | `undefined`; `96MiB` for MMTS VOD, `32MiB` for MMTS live | Indicates the forward buffered byte boundary for resuming loading. |
+| `mseBufferVideoSoftLimitBytes?`  | `number`  | `undefined`; `112MiB` for MMTS VOD, `64MiB` for MMTS live | Pause MMTS loading when appended and queued video bytes reach this limit. |
+| `mseBufferVideoHardLimitBytes?`  | `number`  | `undefined`; `128MiB` for MMTS VOD, `96MiB` for MMTS live | Stop video append before total buffered video reaches this limit, until played data can be removed. Forward media is never deleted to make room. |
+| `mseBufferAudioSoftLimitBytes?`  | `number`  | `undefined`; `8MiB` for MMTS | Pause MMTS loading when appended and queued audio bytes reach this limit. |
+| `mseBufferAudioHardLimitBytes?`  | `number`  | `undefined`; `12MiB` for MMTS | Stop audio append before total buffered audio reaches this limit, until played data can be removed. |
+| `mseBufferForwardTargetDuration?` | `number` | `undefined`; `90` for MMTS VOD, `18` for MMTS live | Pause loading when the contiguous playable forward window reaches this duration. |
+| `mseBufferRecoverForwardDuration?` | `number` | `undefined`; `60` for MMTS VOD, `8` for MMTS live | Resume loading after the contiguous playable forward window falls below this duration. |
+| `startupBufferDuration?`         | `number`  | `0`; `3` for MMTS live lazy-load | Required forward buffer before initial playback starts, in seconds. Set to 0 to disable. If unset, MMTS live playback falls back to `mmtsLiveInitialBufferDuration`. |
+| `mseAppendBatchDuration?`        | `number`  | `0`; `0.5` for MMTS VOD, `0.35` for MMTS live | Maximum adjacent media duration combined into one MSE append operation. Set to 0 to disable. |
+| `mseAppendTrackLeadLimit?`       | `number`  | `undefined`; `2` for MMTS VOD, `1.5` for MMTS live | Maximum seconds one MSE track may be appended ahead of the other track. |
 | `deferLoadAfterSourceOpen?`      | `boolean` | `true`                       | Do load after MediaSource `sourceopen` event triggered. On Chrome, tabs which be opened in background may not trigger `sourceopen` event until switched to that tab. |
-| `autoCleanupSourceBuffer`        | `boolean` | `false`                      | Do auto cleanup for SourceBuffer         |
-| `autoCleanupMaxBackwardDuration` | `number`  | `3 * 60`                     | When backward buffer duration exceeded this value (in seconds), do auto cleanup for SourceBuffer |
-| `autoCleanupMinBackwardDuration` | `number`  | `2 * 60`                     | Indicates the duration in seconds to reserve for backward buffer when doing auto cleanup. |
+| `autoCleanupSourceBuffer`        | `boolean` | `false`; `true` for MMTS     | Do auto cleanup for SourceBuffer         |
+| `autoCleanupMaxBackwardDuration` | `number`  | `3 * 60`; `6` for MMTS VOD, `10` for MMTS live | When backward buffer duration exceeded this value (in seconds), do auto cleanup for SourceBuffer |
+| `autoCleanupMinBackwardDuration` | `number`  | `2 * 60`; `2` for MMTS VOD, `4` for MMTS live | Indicates the duration in seconds to reserve for backward buffer when doing auto cleanup. MMTS hard-budget or quota recovery caps this emergency reserve at 4 seconds for live or 2 seconds for VOD. |
 | `fixAudioTimestampGap`           | `boolean` | `true`                       | Fill silent audio frames to avoid a/v unsync when detect large audio timestamp gap. |
 | `accurateSeek?`                  | `boolean` | `false`                      | Accurate seek to any frame, not limited to video IDR frame, but may a bit slower. Available on `Chrome > 50`, `FireFox` and `Safari`. |
 | `seekType?`                      | `string`  | `'range'`                    | `'range'` use range request to seek, or `'param'` add params into url to indicate request range. |

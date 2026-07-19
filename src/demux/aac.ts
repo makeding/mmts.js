@@ -186,7 +186,7 @@ export class AACLOASParser {
             let offset = syncword_offset;
 
             let audioMuxLengthBytes = ((data[offset + 1] & 0x1F) << 8) | data[offset + 2];
-            if (offset + 3 + audioMuxLengthBytes >= this.data_.byteLength) {
+            if (offset + 3 + audioMuxLengthBytes > this.data_.byteLength) {
                 // data not enough for extracting last sample
                 this.eof_flag_ = true;
                 this.has_last_incomplete_data = true;
@@ -358,6 +358,9 @@ export class AudioSpecificConfig {
         } else if (userAgent.indexOf('android') !== -1) {
             // android: always use LC-AAC
             audio_object_type = 2;
+            config = new Array(2);
+            extension_sampling_index = sampling_index;
+        } else if (channel_config >= 3) {
             config = new Array(2);
             extension_sampling_index = sampling_index;
         } else {

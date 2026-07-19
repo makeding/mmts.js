@@ -14,6 +14,7 @@ export default class MMTSAudioTimeline {
     clearPacket(packetId: number): void;
     clearPendingSeed(packetId: number): void;
     seed(packetId: number, timelinePts: number): void;
+    setMapping(packetId: number, rawPts: number, mappedPts: number): void;
     hasMapping(packetId: number): boolean;
     mapTimestamp(packetId: number, pts: number, refSampleDuration: number): MMTSAudioTimelineMapping;
 }

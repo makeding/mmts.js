@@ -59,6 +59,14 @@ export interface MMTAsset {
     audioMainComponent?: boolean;
     audioQualityIndicator?: number;
     audioSamplingRateCode?: number;
+    mpeg4AudioProfileLevel?: number;
+    audioSpecificConfig?: Uint8Array;
+    hevcProfileSpace?: number;
+    hevcTierFlag?: boolean;
+    hevcProfileIdc?: number;
+    hevcProfileCompatibility?: number;
+    hevcLevelIdc?: number;
+    hevcHdrWcgIdc?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
     subtitleTag?: number;
@@ -84,8 +92,19 @@ export interface MMTMpuTimestampDescriptor {
 export interface MMTMpuExtendedTimestampDescriptor {
     mpuSequenceNumber: number;
     timescale?: number;
+    ptsOffsetType: number;
+    defaultPtsOffset: number;
     decodingTimeOffset: number;
+    presentationTimeLeapIndicator: number;
     au: MMTMpuTimestampOffset[];
+}
+export interface MMTParsedPackageTable {
+    tableId: number;
+    version: number;
+    mode: number;
+    packageId: string;
+    assets: MMTAsset[];
+    conditionalAccessInfos: MMTConditionalAccessInfo[];
 }
 export interface MMTMpuTimestampOffset {
     dtsPtsOffset: number;
@@ -96,6 +115,7 @@ export interface MMTSIResult {
     conditionalAccessInfos: MMTConditionalAccessInfo[];
     messages: number[];
     tables: number[];
+    mptTables: MMTParsedPackageTable[];
 }
 export interface SignalingFragmentState {
     data: number[];
@@ -131,6 +151,9 @@ export default class MMTSI {
     private static parseMpuExtendedTimestampDescriptor;
     private static parseVideoComponentDescriptor;
     private static parseAudioComponentDescriptor;
+    private static parseMpeg4AudioDescriptor;
+    private static parseMpeg4AudioExtensionDescriptor;
+    private static parseHevcDescriptor;
     private static parseStreamIdentificationDescriptor;
     private static parseDataComponentDescriptor;
     private static parseAdditionalAribSubtitleInfo;
@@ -138,4 +161,5 @@ export default class MMTSI {
     private static readShortDescriptorHeader;
     private static skipDescriptor;
     private static readNtpTimestampUs;
+    private static bytesToKey;
 }

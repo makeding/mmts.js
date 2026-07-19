@@ -3,23 +3,29 @@ import MMTSI, {
     MMTConditionalAccessInfo,
     MMTMpuExtendedTimestampDescriptor,
     MMTMpuTimestampDescriptor,
+    MMTParsedPackageTable,
     SignalingFragmentState
 } from './mmt-si';
 import {MMTPPacket} from './mmtp';
 import MPU, {FragmentationIndicator, MFUFragment, MPUInfo} from './mpu';
+import MMTSTimestampTable, {
+    MMTSMpuPresentationWindow,
+    MMTSTimestamp
+} from './mmts-timestamp-table';
+
+export {MMTSMpuPresentationWindow, MMTSTimestamp};
 
 interface MFUFragmentState {
-    data: number[];
+    chunks: Uint8Array[];
+    length: number;
     firstFragment?: MFUFragment;
-    lastSeq: number;
-    mpuSequenceNumber: number;
+    firstFilePosition?: number;
     randomAccess: boolean;
     state: 'init' | 'not-started' | 'in-fragment' | 'skip';
 }
 
 interface MMTSStreamState {
     lastMpuSequenceNumber?: number;
-    auCount: number;
     firstDts?: number;
 }
 
@@ -27,24 +33,34 @@ interface MMTSPacketContinuityState {
     lastSeq?: number;
 }
 
+interface MPTSubsetState {
+    version: number;
+    mode: number;
+    nextSubsetIndex: number;
+    tablesBySubsetIndex: {[subsetIndex: number]: MMTParsedPackageTable};
+    processedSubsetIndexes: {[subsetIndex: number]: boolean};
+}
+
+export interface MMTSPacketLossInfo {
+    packetSequenceGap: boolean;
+    fragmentedUnitDropped: boolean;
+    duplicatePacket: boolean;
+    expectedSeq?: number;
+    actualSeq?: number;
+}
+
 interface AssembledMFU {
     fragment: MFUFragment;
+    filePosition: number;
     unit: Uint8Array;
     randomAccess: boolean;
 }
 
 const MAX_TIMESTAMP_DESCRIPTORS = 100;
 
-export interface MMTSTimestamp {
-    dts: number;
-    pts: number;
-    rawDts: number;
-    rawPts: number;
-    timescale: number;
-}
-
 export interface MMTSCompletedMfuUnit {
     fragment: MFUFragment;
+    filePosition: number;
     mpuSequenceNumber: number;
     randomAccess: boolean;
     unit: Uint8Array;
@@ -54,25 +70,32 @@ export interface MMTSParsedMpu {
     asset: MMTAsset | undefined;
     mpu: MPUInfo;
     discontinuity: boolean;
+    loss: MMTSPacketLossInfo;
     units: MMTSCompletedMfuUnit[];
 }
 
 class MMTSProgram {
 
     private signaling_fragment_states_: {[packetId: number]: SignalingFragmentState} = {};
-    private mfu_fragment_states_: {[packetId: number]: MFUFragmentState} = {};
+    private mfu_fragment_states_: {[key: string]: MFUFragmentState} = {};
     private mmtp_packet_continuity_states_: {[packetId: number]: MMTSPacketContinuityState} = {};
+    private mpt_subset_states_: {[packageId: string]: MPTSubsetState} = {};
+    private presentation_indexes_by_packet_and_mpu_: {[key: string]: number[]} = {};
     private assets_by_packet_id_: {[packetId: number]: MMTAsset} = {};
     private stream_states_by_packet_id_: {[packetId: number]: MMTSStreamState} = {};
     private conditional_access_info_: MMTConditionalAccessInfo = {};
+    private timestamp_table_: MMTSTimestampTable = new MMTSTimestampTable();
 
     public destroy(): void {
         this.signaling_fragment_states_ = null;
         this.mfu_fragment_states_ = null;
         this.mmtp_packet_continuity_states_ = null;
+        this.mpt_subset_states_ = null;
+        this.presentation_indexes_by_packet_and_mpu_ = null;
         this.assets_by_packet_id_ = null;
         this.stream_states_by_packet_id_ = null;
         this.conditional_access_info_ = null;
+        this.timestamp_table_ = null;
     }
 
     public parseSignalingPacket(packet: MMTPPacket): MMTAsset[] {
@@ -88,9 +111,16 @@ class MMTSProgram {
             state
         );
 
+        const acceptedMptTables = this.acceptMptTables(result.mptTables || []);
         const assets: MMTAsset[] = [];
-        const conditionalAccessUpdated = this.mergeConditionalAccessInfos(result.conditionalAccessInfos);
-        for (const asset of result.assets) {
+        const conditionalAccessInfos = result.conditionalAccessInfos.slice();
+        const parsedAssets = result.assets.slice();
+        for (const table of acceptedMptTables) {
+            conditionalAccessInfos.push(...table.conditionalAccessInfos);
+            parsedAssets.push(...table.assets);
+        }
+        const conditionalAccessUpdated = this.mergeConditionalAccessInfos(conditionalAccessInfos);
+        for (const asset of parsedAssets) {
             if (asset.packetId >= 0) {
                 const merged = this.mergeAsset(asset);
                 this.applyConditionalAccessDefaults(merged);
@@ -119,19 +149,80 @@ class MMTSProgram {
         return assets;
     }
 
-    public parseMpuPacket(packet: MMTPPacket): MMTSParsedMpu | null {
-        const discontinuity = this.checkMmtpPacketDiscontinuity(packet.packetId, packet.packetSequenceNumber);
+    private acceptMptTables(tables: MMTParsedPackageTable[]): MMTParsedPackageTable[] {
+        const accepted: MMTParsedPackageTable[] = [];
+        for (const table of tables) {
+            if (table.tableId === 0x20) {
+                delete this.mpt_subset_states_[table.packageId];
+                accepted.push(table);
+                continue;
+            }
+
+            if (table.mode === 3) {
+                continue;
+            }
+            const subsetIndex = table.tableId - 0x11;
+            let state = this.mpt_subset_states_[table.packageId];
+            if (state === undefined || state.version !== table.version || state.mode !== table.mode) {
+                state = {
+                    version: table.version,
+                    mode: table.mode,
+                    nextSubsetIndex: 0,
+                    tablesBySubsetIndex: {},
+                    processedSubsetIndexes: {}
+                };
+                this.mpt_subset_states_[table.packageId] = state;
+            }
+            state.tablesBySubsetIndex[subsetIndex] = table;
+
+            if (state.mode === 0) {
+                while (state.tablesBySubsetIndex[state.nextSubsetIndex] !== undefined) {
+                    const next = state.tablesBySubsetIndex[state.nextSubsetIndex];
+                    if (!state.processedSubsetIndexes[state.nextSubsetIndex]) {
+                        accepted.push(next);
+                        state.processedSubsetIndexes[state.nextSubsetIndex] = true;
+                    }
+                    state.nextSubsetIndex++;
+                }
+            } else if (state.mode === 1) {
+                if (state.tablesBySubsetIndex[0] === undefined) {
+                    continue;
+                }
+                for (const key of Object.keys(state.tablesBySubsetIndex)) {
+                    const index = Number(key);
+                    if (!state.processedSubsetIndexes[index]) {
+                        accepted.push(state.tablesBySubsetIndex[index]);
+                        state.processedSubsetIndexes[index] = true;
+                    }
+                }
+            } else {
+                accepted.push(table);
+                state.processedSubsetIndexes[subsetIndex] = true;
+            }
+        }
+        return accepted;
+    }
+
+    public parseMpuPacket(packet: MMTPPacket, filePosition: number = 0): MMTSParsedMpu | null {
+        const loss = this.checkMmtpPacketContinuity(packet.packetId, packet.packetSequenceNumber);
+        if (loss.duplicatePacket) {
+            return null;
+        }
         const mpu = MPU.parse(packet.payload);
         if (mpu === null) {
             return null;
         }
+        if (loss.packetSequenceGap) {
+            this.resetMfuFragmentStatesForPacket(packet.packetId, loss);
+        }
 
         const units: MMTSCompletedMfuUnit[] = [];
         for (const fragment of mpu.mfuFragments) {
-            const assembled = this.assembleMfuFragment(packet, mpu.mpuSequenceNumber, fragment);
+            const assembled = this.assembleMfuFragment(packet, mpu.mpuSequenceNumber, fragment, filePosition, loss);
             if (assembled !== null) {
                 units.push({
                     fragment: assembled.fragment,
+                    filePosition: assembled.filePosition,
                     mpuSequenceNumber: mpu.mpuSequenceNumber,
                     randomAccess: assembled.randomAccess,
                     unit: assembled.unit
@@ -142,7 +233,8 @@ class MMTSProgram {
         return {
             asset: this.assets_by_packet_id_[packet.packetId],
             mpu,
-            discontinuity,
+            discontinuity: loss.packetSequenceGap,
+            loss,
             units
         };
     }
@@ -153,107 +245,150 @@ class MMTSProgram {
 
     public resetMpuPacketState(packetId: number): void {
         delete this.mmtp_packet_continuity_states_[packetId];
-        delete this.mfu_fragment_states_[packetId];
+        this.resetMfuFragmentStatesForPacket(packetId);
+    }
+
+    public resetMediaState(preserveTimestampBase: boolean = false): void {
+        const streamStates = this.stream_states_by_packet_id_;
+        this.mfu_fragment_states_ = {};
+        this.mmtp_packet_continuity_states_ = {};
+        this.stream_states_by_packet_id_ = {};
+        this.presentation_indexes_by_packet_and_mpu_ = {};
+        if (preserveTimestampBase) {
+            for (const key of Object.keys(streamStates)) {
+                const state = streamStates[Number(key)];
+                if (state.firstDts !== undefined) {
+                    this.stream_states_by_packet_id_[Number(key)] = {
+                        firstDts: state.firstDts
+                    };
+                }
+            }
+        }
+    }
+
+    public hasTimestampBase(packetId: number): boolean {
+        const state = this.stream_states_by_packet_id_[packetId];
+        return state !== undefined && state.firstDts !== undefined;
     }
 
     public get streamCount(): number {
         return Object.keys(this.assets_by_packet_id_).length;
     }
 
-    public nextTimestamp(packetId: number, mpuSequenceNumber: number): MMTSTimestamp | null {
+    public getTimestampAtAccessUnit(packetId: number,
+                                    mpuSequenceNumber: number,
+                                    auIndex: number): MMTSTimestamp | null {
+        return this.readTimestampAtAccessUnit(packetId, mpuSequenceNumber, auIndex, true);
+    }
+
+    public peekTimestampAtAccessUnit(packetId: number,
+                                     mpuSequenceNumber: number,
+                                     auIndex: number): MMTSTimestamp | null {
+        return this.readTimestampAtAccessUnit(packetId, mpuSequenceNumber, auIndex, false);
+    }
+
+    public getDescriptorAccessUnitCount(packetId: number, mpuSequenceNumber: number): number | null {
+        return this.timestamp_table_.getDescriptorAccessUnitCount(
+            this.assets_by_packet_id_[packetId],
+            mpuSequenceNumber
+        );
+    }
+
+    public getMpuPresentationWindow(packetId: number,
+                                    mpuSequenceNumber: number): MMTSMpuPresentationWindow | null {
+        return this.timestamp_table_.getMpuPresentationWindow(
+            this.assets_by_packet_id_[packetId],
+            mpuSequenceNumber
+        );
+    }
+
+    public getTimestampsForMpu(packetId: number,
+                               mpuSequenceNumber: number,
+                               presentationIndexes: number[]): MMTSTimestamp[] | null {
+        return this.readTimestampsForMpu(packetId, mpuSequenceNumber, presentationIndexes, true);
+    }
+
+    public peekTimestampsForMpu(packetId: number,
+                                mpuSequenceNumber: number,
+                                presentationIndexes: number[]): MMTSTimestamp[] | null {
+        return this.readTimestampsForMpu(packetId, mpuSequenceNumber, presentationIndexes, false);
+    }
+
+    public setPresentationIndexes(packetId: number, mpuSequenceNumber: number, indexes: number[]): void {
+        this.presentation_indexes_by_packet_and_mpu_[this.presentationIndexKey(packetId, mpuSequenceNumber)] = indexes.slice();
+    }
+
+    public clearPresentationIndexes(packetId: number, mpuSequenceNumber: number): void {
+        delete this.presentation_indexes_by_packet_and_mpu_[this.presentationIndexKey(packetId, mpuSequenceNumber)];
+    }
+
+    private readTimestampAtAccessUnit(packetId: number,
+                                      mpuSequenceNumber: number,
+                                      auIndex: number,
+                                      establishBase: boolean): MMTSTimestamp | null {
         const asset = this.assets_by_packet_id_[packetId];
-        if (asset === undefined ||
-            asset.timestampDescriptors === undefined ||
-            asset.extendedTimestampDescriptors === undefined) {
-            return null;
-        }
-
-        const timestampDescriptor = asset.timestampDescriptors.find((descriptor) => {
-            return descriptor.mpuSequenceNumber === mpuSequenceNumber;
-        });
-        const extendedTimestampDescriptor = asset.extendedTimestampDescriptors.find((descriptor) => {
-            return descriptor.mpuSequenceNumber === mpuSequenceNumber;
-        });
-        if (timestampDescriptor === undefined || extendedTimestampDescriptor === undefined) {
-            return null;
-        }
-
         const state = this.getStreamState(packetId);
-        if (state.lastMpuSequenceNumber !== mpuSequenceNumber) {
-            state.lastMpuSequenceNumber = mpuSequenceNumber;
-            state.auCount = 0;
-        }
-
-        const auIndex = state.auCount;
-        if (auIndex >= extendedTimestampDescriptor.au.length) {
+        const timestamp = this.timestamp_table_.getTimestampAtAccessUnit(
+            asset,
+            mpuSequenceNumber,
+            auIndex,
+            state.firstDts,
+            this.presentation_indexes_by_packet_and_mpu_[this.presentationIndexKey(packetId, mpuSequenceNumber)]
+        );
+        if (timestamp === null) {
             return null;
         }
-
-        const timescale = extendedTimestampDescriptor.timescale || 90000;
-        let dts = Math.round(timestampDescriptor.presentationTimeUs * timescale / 1000000) -
-            extendedTimestampDescriptor.decodingTimeOffset;
-        for (let i = 0; i < auIndex; i++) {
-            dts += this.getPtsOffset(asset, extendedTimestampDescriptor.au[i].ptsOffset, timescale);
+        if (establishBase) {
+            if (state.firstDts === undefined) {
+                state.firstDts = timestamp.rawDts;
+            }
+            if (state.lastMpuSequenceNumber === undefined ||
+                mpuSequenceNumber > state.lastMpuSequenceNumber) {
+                state.lastMpuSequenceNumber = mpuSequenceNumber;
+            }
         }
-
-        const pts = dts + extendedTimestampDescriptor.au[auIndex].dtsPtsOffset;
-        const rawDts = dts;
-        const rawPts = pts;
-        if (state.firstDts === undefined) {
-            state.firstDts = dts;
-        }
-        dts -= state.firstDts;
-        const normalizedPts = pts - state.firstDts;
-        state.auCount++;
-        return {dts, pts: normalizedPts, rawDts, rawPts, timescale};
+        return timestamp;
     }
 
-    private getPtsOffset(asset: MMTAsset, ptsOffset: number, timescale: number): number {
-        if (ptsOffset > 0 || asset.mediaType !== 'video') {
-            return ptsOffset;
+    private readTimestampsForMpu(packetId: number,
+                                 mpuSequenceNumber: number,
+                                 presentationIndexes: number[],
+                                 establishBase: boolean): MMTSTimestamp[] | null {
+        const asset = this.assets_by_packet_id_[packetId];
+        const state = this.getStreamState(packetId);
+        const timestamps = this.timestamp_table_.getTimestampsForMpu(
+            asset,
+            mpuSequenceNumber,
+            state.firstDts,
+            presentationIndexes
+        );
+        if (timestamps === null || timestamps.length === 0) {
+            return null;
         }
-
-        return this.getVideoFrameDuration(asset.videoFrameRate, timescale);
-    }
-
-    private getVideoFrameDuration(videoFrameRate: number | undefined, timescale: number): number {
-        switch (videoFrameRate) {
-            case 1:
-                return Math.round(timescale / 15);
-            case 2:
-                return Math.round(timescale * 1001 / 24000);
-            case 3:
-                return Math.round(timescale / 24);
-            case 4:
-                return Math.round(timescale / 25);
-            case 5:
-                return Math.round(timescale * 1001 / 30000);
-            case 6:
-                return Math.round(timescale / 30);
-            case 7:
-                return Math.round(timescale / 50);
-            case 8:
-                return Math.round(timescale * 1001 / 60000);
-            case 9:
-                return Math.round(timescale / 60);
-            case 10:
-                return Math.round(timescale / 100);
-            case 11:
-                return Math.round(timescale * 1001 / 120000);
-            case 12:
-                return Math.round(timescale / 120);
-            default:
-                return 0;
+        if (establishBase) {
+            if (state.firstDts === undefined) {
+                state.firstDts = timestamps[0].rawDts;
+            }
+            if (state.lastMpuSequenceNumber === undefined ||
+                mpuSequenceNumber > state.lastMpuSequenceNumber) {
+                state.lastMpuSequenceNumber = mpuSequenceNumber;
+            }
+            this.setPresentationIndexes(packetId, mpuSequenceNumber, presentationIndexes);
         }
+        return timestamps;
     }
 
     private getStreamState(packetId: number): MMTSStreamState {
         let state = this.stream_states_by_packet_id_[packetId];
         if (state === undefined) {
-            state = {auCount: 0};
+            state = {};
             this.stream_states_by_packet_id_[packetId] = state;
         }
         return state;
+    }
+
+    private presentationIndexKey(packetId: number, mpuSequenceNumber: number): string {
+        return `${packetId}:${mpuSequenceNumber}`;
     }
 
     private mergeConditionalAccessInfos(infos: MMTConditionalAccessInfo[]): boolean {
@@ -406,69 +541,57 @@ class MMTSProgram {
 
     private assembleMfuFragment(packet: MMTPPacket,
                                 mpuSequenceNumber: number,
-                                fragment: MFUFragment): AssembledMFU | null {
+                                fragment: MFUFragment,
+                                filePosition: number,
+                                loss: MMTSPacketLossInfo): AssembledMFU | null {
         const packetId = packet.packetId;
-        const packetSequenceNumber = packet.packetSequenceNumber;
-        let state = this.mfu_fragment_states_[packetId];
+        const stateKey = this.getMfuFragmentStateKey(packetId, mpuSequenceNumber, fragment);
+        let state = this.mfu_fragment_states_[stateKey];
         if (state === undefined) {
             state = {
-                data: [],
+                chunks: [],
+                length: 0,
                 firstFragment: undefined,
-                lastSeq: 0,
-                mpuSequenceNumber: 0,
+                firstFilePosition: undefined,
                 randomAccess: false,
                 state: 'init'
             };
-            this.mfu_fragment_states_[packetId] = state;
+            this.mfu_fragment_states_[stateKey] = state;
         }
 
         if (state.state === 'init') {
             state.state = 'skip';
-        } else if (((state.lastSeq + 1) >>> 0) !== packetSequenceNumber) {
-            state.data = [];
-            state.firstFragment = undefined;
-            state.randomAccess = false;
-            state.state = 'skip';
         }
-        state.lastSeq = packetSequenceNumber;
-
-        if (state.mpuSequenceNumber !== 0 && state.mpuSequenceNumber !== mpuSequenceNumber && state.state === 'in-fragment') {
-            state.data = [];
-            state.firstFragment = undefined;
-            state.randomAccess = false;
-            state.state = 'skip';
-        }
-        state.mpuSequenceNumber = mpuSequenceNumber;
 
         switch (fragment.fragmentationIndicator) {
             case FragmentationIndicator.NotFragmented:
-                state.data = [];
-                state.firstFragment = undefined;
-                state.randomAccess = false;
-                state.state = 'not-started';
+                if (state.state === 'in-fragment') {
+                    loss.fragmentedUnitDropped = true;
+                }
+                this.resetMfuFragmentState(state);
+                delete this.mfu_fragment_states_[stateKey];
                 return {
                     fragment,
+                    filePosition,
                     unit: fragment.payload,
                     randomAccess: packet.rapFlag
                 };
             case FragmentationIndicator.FirstFragment:
                 if (state.state === 'in-fragment') {
-                    state.data = [];
-                    state.firstFragment = undefined;
-                    state.randomAccess = false;
-                    state.state = 'skip';
-                    return null;
+                    loss.fragmentedUnitDropped = true;
+                    this.resetMfuFragmentState(state);
                 }
-                state.data = Array.prototype.slice.call(fragment.payload);
+                state.chunks = [fragment.payload];
+                state.length = fragment.payload.byteLength;
                 state.firstFragment = fragment;
+                state.firstFilePosition = filePosition;
                 state.randomAccess = packet.rapFlag;
                 state.state = 'in-fragment';
                 return null;
             case FragmentationIndicator.MiddleFragment:
                 if (state.state !== 'in-fragment') {
-                    state.data = [];
-                    state.firstFragment = undefined;
-                    state.randomAccess = false;
+                    loss.fragmentedUnitDropped = true;
+                    this.resetMfuFragmentState(state);
                     state.state = 'skip';
                     return null;
                 }
@@ -477,15 +600,14 @@ class MMTSProgram {
                 return null;
             case FragmentationIndicator.LastFragment:
                 if (state.state !== 'in-fragment') {
-                    state.data = [];
-                    state.firstFragment = undefined;
-                    state.randomAccess = false;
+                    loss.fragmentedUnitDropped = true;
+                    this.resetMfuFragmentState(state);
                     state.state = 'skip';
                     return null;
                 }
                 state.randomAccess = state.randomAccess || packet.rapFlag;
                 this.appendToState(state, fragment.payload);
-                const completeUnit = new Uint8Array(state.data);
+                const completeUnit = this.flattenMfuFragmentState(state);
                 const firstFragment = state.firstFragment;
                 const completeFragment: MFUFragment = {
                     ...fragment,
@@ -498,12 +620,13 @@ class MMTSProgram {
                         firstFragment.nalUnitLength : fragment.nalUnitLength
                 };
                 const randomAccess = state.randomAccess;
-                state.data = [];
-                state.firstFragment = undefined;
-                state.randomAccess = false;
+                const firstFilePosition = state.firstFilePosition !== undefined ? state.firstFilePosition : filePosition;
+                this.resetMfuFragmentState(state);
                 state.state = 'not-started';
+                delete this.mfu_fragment_states_[stateKey];
                 return {
                     fragment: completeFragment,
+                    filePosition: firstFilePosition,
                     unit: completeUnit,
                     randomAccess
                 };
@@ -512,7 +635,32 @@ class MMTSProgram {
         }
     }
 
-    private checkMmtpPacketDiscontinuity(packetId: number, packetSequenceNumber: number): boolean {
+    private getMfuFragmentStateKey(packetId: number,
+                                   mpuSequenceNumber: number,
+                                   fragment: MFUFragment): string {
+        return [
+            packetId,
+            mpuSequenceNumber,
+            fragment.sampleNumber !== undefined ? fragment.sampleNumber : 'n',
+            fragment.offset !== undefined ? fragment.offset : 'n'
+        ].join(':');
+    }
+
+    private resetMfuFragmentStatesForPacket(packetId: number, loss?: MMTSPacketLossInfo): void {
+        const prefix = `${packetId}:`;
+        for (const key of Object.keys(this.mfu_fragment_states_)) {
+            if (!key.startsWith(prefix)) {
+                continue;
+            }
+            const state = this.mfu_fragment_states_[key];
+            if (loss !== undefined && state.state === 'in-fragment') {
+                loss.fragmentedUnitDropped = true;
+            }
+            delete this.mfu_fragment_states_[key];
+        }
+    }
+
+    private checkMmtpPacketContinuity(packetId: number, packetSequenceNumber: number): MMTSPacketLossInfo {
         let state = this.mmtp_packet_continuity_states_[packetId];
         if (state === undefined) {
             state = {};
@@ -520,18 +668,53 @@ class MMTSProgram {
         }
 
         const lastSeq = state.lastSeq;
-        state.lastSeq = packetSequenceNumber;
+        const loss: MMTSPacketLossInfo = {
+            packetSequenceGap: false,
+            fragmentedUnitDropped: false,
+            duplicatePacket: false
+        };
         if (lastSeq === undefined) {
-            return false;
+            state.lastSeq = packetSequenceNumber;
+            return loss;
         }
 
-        return ((lastSeq + 1) >>> 0) !== packetSequenceNumber;
+        if (lastSeq === packetSequenceNumber) {
+            loss.duplicatePacket = true;
+            return loss;
+        }
+
+        state.lastSeq = packetSequenceNumber;
+        const expectedSeq = (lastSeq + 1) >>> 0;
+        if (expectedSeq !== packetSequenceNumber) {
+            loss.packetSequenceGap = true;
+            loss.expectedSeq = expectedSeq;
+            loss.actualSeq = packetSequenceNumber;
+        }
+
+        return loss;
     }
 
     private appendToState(state: MFUFragmentState, data: Uint8Array): void {
-        for (let i = 0; i < data.byteLength; i++) {
-            state.data.push(data[i]);
+        state.chunks.push(data);
+        state.length += data.byteLength;
+    }
+
+    private flattenMfuFragmentState(state: MFUFragmentState): Uint8Array {
+        const unit = new Uint8Array(state.length);
+        let offset = 0;
+        for (const chunk of state.chunks) {
+            unit.set(chunk, offset);
+            offset += chunk.byteLength;
         }
+        return unit;
+    }
+
+    private resetMfuFragmentState(state: MFUFragmentState): void {
+        state.chunks = [];
+        state.length = 0;
+        state.firstFragment = undefined;
+        state.firstFilePosition = undefined;
+        state.randomAccess = false;
     }
 
 }

@@ -61,6 +61,7 @@ class RangeLoader extends BaseLoader {
         this._currentRequestURL = null;
         this._currentRedirectedURL = null;
         this._currentRequestRange = null;
+        this._currentRequestRequiresRangeResponse = false;
         this._totalLength = null;  // size of the entire file
         this._contentLength = null;  // Content-Length of entire request range
         this._receivedLength = 0;  // total received bytes
@@ -136,6 +137,7 @@ class RangeLoader extends BaseLoader {
 
         let seekConfig = this._seekHandler.getConfig(sourceURL, range);
         this._currentRequestURL = seekConfig.url;
+        this._currentRequestRequiresRangeResponse = this._shouldRequireRangeResponse(seekConfig.headers, range);
 
         let xhr = this._xhr = new XMLHttpRequest();
         xhr.open('GET', seekConfig.url, true);
@@ -206,6 +208,30 @@ class RangeLoader extends BaseLoader {
 
             if ((xhr.status >= 200 && xhr.status <= 299)) {
                 if (this._waitForTotalLength) {
+                    let totalLength = this._parseContentRangeTotal(xhr.getResponseHeader('Content-Range'));
+                    if (totalLength !== null) {
+                        this._totalLength = totalLength;
+                        this._totalLengthReceived = true;
+                        this._waitForTotalLength = false;
+                        this._internalAbort();
+                        this._openSubRange();
+                    }
+                    return;
+                }
+                let totalLength = this._parseContentRangeTotal(xhr.getResponseHeader('Content-Range'));
+                if (totalLength !== null) {
+                    this._totalLength = totalLength;
+                    this._totalLengthReceived = true;
+                }
+                if (this._currentRequestRequiresRangeResponse && xhr.status !== 206) {
+                    this._status = LoaderStatus.kError;
+                    this._internalAbort();
+                    if (this._onError) {
+                        this._onError(LoaderErrors.HTTP_STATUS_CODE_INVALID, {
+                            code: xhr.status,
+                            msg: `Range request not honored, status = ${xhr.status}`
+                        });
+                    }
                     return;
                 }
                 this._status = LoaderStatus.kBuffering;
@@ -253,7 +279,7 @@ class RangeLoader extends BaseLoader {
                 return;
             }
             if (this._onContentLengthKnown) {
-                this._onContentLengthKnown(this._contentLength);
+                this._onContentLengthKnown(this._contentLength, this._totalLength);
             }
         }
 
@@ -320,16 +346,23 @@ class RangeLoader extends BaseLoader {
 
         let reportComplete = false;
 
-        if (this._contentLength != null && this._receivedLength < this._contentLength) {
-            // continue load next chunk
-            this._openSubRange();
-        } else {
+        if (this._contentLength == null || this._receivedLength >= this._contentLength) {
             reportComplete = true;
         }
 
         // dispatch received chunk
         if (this._onDataArrival) {
             this._onDataArrival(chunk, byteStart, this._receivedLength);
+        }
+
+        if (!reportComplete) {
+            this._waitForThrottle(chunk.byteLength, () => {
+                if (this._requestAbort === true) {
+                    return;
+                }
+                this._openSubRange();
+            });
+            return;
         }
 
         if (reportComplete) {
@@ -359,6 +392,33 @@ class RangeLoader extends BaseLoader {
         } else {
             throw new RuntimeException(info.msg);
         }
+    }
+
+    _shouldRequireRangeResponse(headers, range) {
+        if (!range || (range.from === 0 && range.to === -1) || typeof headers !== 'object') {
+            return false;
+        }
+
+        for (let key in headers) {
+            if (headers.hasOwnProperty(key) && key.toLowerCase() === 'range') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    _parseContentRangeTotal(contentRange) {
+        if (contentRange == null) {
+            return null;
+        }
+
+        let match = /\/(\d+)$/.exec(contentRange);
+        if (match === null) {
+            return null;
+        }
+
+        let total = parseInt(match[1]);
+        return isNaN(total) || total <= 0 ? null : total;
     }
 
 }

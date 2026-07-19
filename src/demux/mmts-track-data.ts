@@ -23,6 +23,8 @@ export interface MMTSAudioTrackInfo {
     channelCount?: number;
     channelLayout?: string;
     audioSampleRate?: number;
+    supported?: boolean;
+    unsupportedReason?: 'als';
     selected: boolean;
 }
 
@@ -84,6 +86,8 @@ export interface MMTSSubtitleTrackInfo {
     subtitleResolution?: number;
     subtitleCompressionType?: number;
     subtitleReferenceStartTime?: number;
+    supported?: boolean;
+    unsupportedReason?: 'exi';
 }
 
 export class MMTSAudioTrackList {

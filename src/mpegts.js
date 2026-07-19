@@ -24,6 +24,7 @@ import NativePlayer from './player/native-player.js';
 import PlayerEvents from './player/player-events';
 import {ErrorTypes, ErrorDetails} from './player/player-errors.js';
 import LoggingControl from './utils/logging-control.js';
+import probeMMTSDuration from './utils/mmts-duration-probe';
 import {InvalidArgumentException} from './utils/exception.js';
 
 // here are all the interfaces
@@ -77,6 +78,7 @@ mpegts.createPlayer = createPlayer;
 mpegts.isSupported = isSupported;
 mpegts.getFeatureList = getFeatureList;
 mpegts.supportWorkerForMSEH265Playback = supportWorkerForMSEH265Playback;
+mpegts.probeMMTSDuration = probeMMTSDuration;
 
 mpegts.BaseLoader = BaseLoader;
 mpegts.LoaderStatus = LoaderStatus;
