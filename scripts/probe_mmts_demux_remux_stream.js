@@ -342,6 +342,7 @@ function createStats() {
             video: {total: 0, byReason: {}, byMpu: {}, samples: [], recentSamples: [], samplesByMpu: {}}
         },
         rejectedVideoMpus: {total: 0, byReason: {}, byPacketId: {}, samples: []},
+        videoMpuAccessUnitCounts: [],
         discontinuities: [],
         firstDemuxVideoSamples: [],
         firstSegments: [],
@@ -1034,6 +1035,21 @@ function main() {
             return originalRejectVideoMpu.call(this, accessUnits, reason);
         };
     }
+    const originalFlushPendingVideoAccessUnits = demuxer.flushPendingVideoAccessUnits;
+    if (typeof originalFlushPendingVideoAccessUnits === 'function') {
+        demuxer.flushPendingVideoAccessUnits = function() {
+            const pending = Array.isArray(this.pending_video_access_units_) ?
+                this.pending_video_access_units_ : [];
+            if (pending.length > 0) {
+                stats.videoMpuAccessUnitCounts.push({
+                    packetId: pending[0].packetId,
+                    mpuSequenceNumber: pending[0].mpuSequenceNumber,
+                    accessUnitCount: pending.length,
+                });
+            }
+            return originalFlushPendingVideoAccessUnits.call(this);
+        };
+    }
     const originalActivateVideoParameterSetChain = demuxer.activateVideoParameterSetChain;
     if (typeof originalActivateVideoParameterSetChain === 'function') {
         demuxer.activateVideoParameterSetChain = function(chain) {
@@ -1544,6 +1560,7 @@ function main() {
     }
     printDropSummary(stats);
     console.log(`rejected_video_mpus=${JSON.stringify(stats.rejectedVideoMpus)}`);
+    console.log(`video_mpu_access_unit_counts=${JSON.stringify(stats.videoMpuAccessUnitCounts)}`);
     console.log(`discontinuities=${JSON.stringify(stats.discontinuities)}`);
     console.log(`errors=${stats.errors.length}`);
     for (const error of stats.errors) {

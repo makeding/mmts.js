@@ -154,6 +154,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private appendVideoAccessUnit;
     private flushPendingVideoAccessUnits;
     private prepareVideoReferenceRecovery;
+    private shouldDropShortVideoMpuPicture;
     private parseHEVCVideoAccessUnit;
     private validateVideoMpuTimestamps;
     private mapVideoDescriptorTimestamp;

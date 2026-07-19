@@ -95,6 +95,7 @@ interface MMTSTimedVideoAccessUnit extends MMTSVideoAccessUnit {
     mseRandomAccessSafe?: boolean;
     isLeading?: boolean;
     outputAllowed?: boolean;
+    dropReason?: string;
 }
 
 interface HEVCParameterSetEntry {
@@ -1412,6 +1413,8 @@ class MMTSDemuxer extends BaseDemuxer {
             }
             parsedAccessUnits.push(parsed);
         }
+        const shortMpu = this.nominal_video_mpu_access_unit_count_ > 0 &&
+            accessUnits.length < this.nominal_video_mpu_access_unit_count_;
         const referenceRecovery = this.prepareVideoReferenceRecovery(
             accessUnits.length,
             parsedAccessUnits[0].input.nalUnitType
@@ -1472,6 +1475,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.activateVideoParameterSetChain(chain);
             }
             const recoveredPicture = prepared.pictures[i];
+            const dropShortMpuTail = this.shouldDropShortVideoMpuPicture(shortMpu, i);
             const timedAccessUnit: MMTSTimedVideoAccessUnit = {
                 ...accessUnits[i],
                 keyframe: isH265IrapNalu(recoveredPicture.nalUnitType),
@@ -1480,7 +1484,8 @@ class MMTSDemuxer extends BaseDemuxer {
                     recoveredPicture.noRaslOutput,
                 isLeading: recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_N ||
                     recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_R,
-                outputAllowed: recoveredPicture.outputAllowed
+                outputAllowed: recoveredPicture.outputAllowed && !dropShortMpuTail,
+                dropReason: dropShortMpuTail ? 'hevc-short-mpu-tail' : undefined
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
         }
@@ -1504,6 +1509,13 @@ class MMTSDemuxer extends BaseDemuxer {
         this.nominal_video_mpu_access_unit_count_ = Math.max(previousNominal, accessUnitCount);
         this.video_reference_recovery_pending_ = shortMpu;
         return recoverReferences;
+    }
+
+    private shouldDropShortVideoMpuPicture(shortMpu: boolean, decodingIndex: number): boolean {
+        // Keep only the CRA at a truncated GOP boundary.  Even non-RASL tail
+        // pictures in a damaged short MPU may reference pictures omitted by
+        // the splice, which VideoToolbox reports as ReferenceMissing.
+        return shortMpu && decodingIndex > 0;
     }
 
     private parseHEVCVideoAccessUnit(accessUnit: MMTSVideoAccessUnit): ParsedHEVCVideoAccessUnit | null {
@@ -1742,7 +1754,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 mpuSequenceNumber,
                 units,
                 accessUnit.descriptorTimestamp,
-                'hevc-no-rasl-output'
+                accessUnit.dropReason || 'hevc-no-rasl-output'
             );
             return;
         }

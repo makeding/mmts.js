@@ -3072,6 +3072,9 @@ function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
         false
     );
     assert.strictEqual(resetCount, 2);
+    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 0), false);
+    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 1), true);
+    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(false, 1), false);
 }
 
 function testRemuxerAttachesParserResetInitToRecoveryRap() {

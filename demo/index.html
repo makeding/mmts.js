@@ -1031,10 +1031,13 @@
         }
 
         function setupMediaElementDebug(element) {
-            element.onerror = function() {
+            element.addEventListener('error', function() {
                 var error = element.error;
-                logDemo('video error: code=' + (error && error.code) + ', message=' + (error && error.message));
-            };
+                logDemo('video error: code=' + (error && error.code) + ', message=' + (error && error.message) +
+                    ', currentTime=' + element.currentTime + ', buffered=' + formatBufferedRanges(element) +
+                    ', audio=' + formatSourceBufferRanges('audio') +
+                    ', video=' + formatSourceBufferRanges('video'));
+            });
             element.onloadedmetadata = function() {
                 logDemo('loadedmetadata: duration=' + element.duration + ', video=' + element.videoWidth + 'x' + element.videoHeight);
                 renderVideoInfo();
