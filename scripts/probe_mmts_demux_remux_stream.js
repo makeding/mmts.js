@@ -44,6 +44,8 @@ function parseArgs(argv) {
         seekAfterSeconds: 2,
         seekLookbackBytes: 32 * 1024 * 1024,
         seekMaxReadBytes: 256 * 1024 * 1024,
+        inspectVideoStartSeconds: undefined,
+        inspectVideoEndSeconds: undefined,
     };
 
     for (let i = 2; i < argv.length; i++) {
@@ -112,6 +114,10 @@ function parseArgs(argv) {
             args.seekLookbackBytes = Number(argv[++i]);
         } else if (arg === '--seek-max-read-bytes') {
             args.seekMaxReadBytes = Number(argv[++i]);
+        } else if (arg === '--inspect-video-start-seconds') {
+            args.inspectVideoStartSeconds = Number(argv[++i]);
+        } else if (arg === '--inspect-video-end-seconds') {
+            args.inspectVideoEndSeconds = Number(argv[++i]);
         } else if (!args.file) {
             args.file = arg;
         } else {
@@ -149,6 +155,15 @@ function parseArgs(argv) {
         !Number.isFinite(args.seekLookbackBytes) || args.seekLookbackBytes < 0 ||
         !Number.isFinite(args.seekMaxReadBytes) || args.seekMaxReadBytes <= 0) {
         throw new Error('seek probe limits must be finite non-negative values');
+    }
+    const hasInspectVideoWindow = args.inspectVideoStartSeconds !== undefined ||
+        args.inspectVideoEndSeconds !== undefined;
+    if (hasInspectVideoWindow &&
+        (!Number.isFinite(args.inspectVideoStartSeconds) ||
+         !Number.isFinite(args.inspectVideoEndSeconds) ||
+         args.inspectVideoStartSeconds < 0 ||
+         args.inspectVideoEndSeconds <= args.inspectVideoStartSeconds)) {
+        throw new Error('video inspection requires a finite increasing start/end window');
     }
     if (args.audioSwitchRebuildFromSeek &&
         (args.live || !Number.isFinite(args.audioSwitchPacketId) ||
@@ -317,6 +332,7 @@ function createStats() {
                 gaps: [],
                 lastSource: null,
                 randomAccessSafeSegments: [],
+                parserResetSegments: [],
             }
         },
         demux: {
@@ -337,6 +353,9 @@ function createStats() {
         audioSwitchMediaSegments: [],
         videoSwitchInitSegments: [],
         videoSwitchMediaSegments: [],
+        videoParameterSetChanges: [],
+        videoParameterSetTransitions: {},
+        inspectedVideoSamples: [],
         errors: []
     };
 }
@@ -409,6 +428,16 @@ function recordSegment(stats, type, segment, gapThresholdMs) {
     }
     if (type === 'video' && segment.mmtsRandomAccessSafe === true) {
         track.randomAccessSafeSegments.push({beginDts: begin, endDts: end, source});
+    }
+    if (type === 'video' && segment.resetParserState === true) {
+        track.parserResetSegments.push({
+            beginDts: begin,
+            endDts: end,
+            sampleCount: segment.sampleCount || 0,
+            codec: segment.codec,
+            referenceRecovery: segment.mmtsVideoReferenceRecovery === true,
+            source
+        });
     }
 
     if (stats.firstSegments.length < stats.printFirstSegmentsLimit) {
@@ -498,6 +527,23 @@ function recordDemuxVideoTrack(stats, videoTrack, gapThresholdMs) {
                 isKeyframe: sample.isKeyframe,
                 length: sample.length,
                 naluTypes: Array.isArray(sample.units) ? sample.units.map((unit) => unit.type) : [],
+                source
+            });
+        }
+        if (Number.isFinite(stats.inspectVideoStartMs) &&
+            Number.isFinite(stats.inspectVideoEndMs) &&
+            sample.pts >= stats.inspectVideoStartMs &&
+            sample.pts < stats.inspectVideoEndMs) {
+            stats.inspectedVideoSamples.push({
+                dts: sample.dts,
+                pts: sample.pts,
+                cts: sample.cts,
+                duration: sample.duration,
+                isKeyframe: sample.isKeyframe === true,
+                mmtsRandomAccessSafe: sample.mmtsRandomAccessSafe === true,
+                length: sample.length,
+                naluTypes: Array.isArray(sample.units) ? sample.units.map((unit) => unit.type) : [],
+                naluSizes: Array.isArray(sample.units) ? sample.units.map((unit) => unit.data.byteLength) : [],
                 source
             });
         }
@@ -871,6 +917,10 @@ function main() {
     const demuxer = new MMTSDemuxer(probeData, config);
     const remuxer = new MP4Remuxer(config);
     const stats = createStats();
+    stats.inspectVideoStartMs = Number.isFinite(args.inspectVideoStartSeconds) ?
+        args.inspectVideoStartSeconds * 1000 : undefined;
+    stats.inspectVideoEndMs = Number.isFinite(args.inspectVideoEndSeconds) ?
+        args.inspectVideoEndSeconds * 1000 : undefined;
     const firstAudioSwitchProbe = Number.isFinite(args.audioSwitchPacketId) ?
         createAudioSwitchProbe(
             'first',
@@ -982,6 +1032,41 @@ function main() {
                 });
             }
             return originalRejectVideoMpu.call(this, accessUnits, reason);
+        };
+    }
+    const originalActivateVideoParameterSetChain = demuxer.activateVideoParameterSetChain;
+    if (typeof originalActivateVideoParameterSetChain === 'function') {
+        demuxer.activateVideoParameterSetChain = function(chain) {
+            const previousSignature = this.active_video_parameter_set_signature_;
+            const result = originalActivateVideoParameterSetChain.call(this, chain);
+            if (previousSignature !== this.active_video_parameter_set_signature_) {
+                const details = this.video_metadata_ && this.video_metadata_.details;
+                const change = {
+                    previousSignature,
+                    signature: this.active_video_parameter_set_signature_,
+                    sampleEntryType: this.video_sample_entry_type_,
+                    lastDts: this.last_video_dts_,
+                    lastPts: this.last_video_pts_,
+                    vpsBytes: chain.vps.nalu.data.byteLength,
+                    spsBytes: chain.sps.nalu.data.byteLength,
+                    ppsBytes: chain.pps.nalu.data.byteLength,
+                    codec: details && details.codec_mimetype,
+                    codedSize: details && details.codec_size,
+                    presentSize: details && details.present_size
+                };
+                if (!stats.videoParameterSetChanges.some((item) =>
+                    item.signature === change.signature)) {
+                    stats.videoParameterSetChanges.push(change);
+                }
+                if (Number.isFinite(stats.inspectVideoStartMs) &&
+                    change.lastPts >= stats.inspectVideoStartMs &&
+                    change.lastPts < stats.inspectVideoEndMs) {
+                    const transition = `${previousSignature || 'none'}->${change.signature}`;
+                    stats.videoParameterSetTransitions[transition] =
+                        (stats.videoParameterSetTransitions[transition] || 0) + 1;
+                }
+            }
+            return result;
         };
     }
     const originalHandleMpuDiscontinuity = demuxer.handleMpuDiscontinuity;
@@ -1445,6 +1530,12 @@ function main() {
     }
     printTrackSummary('video', stats.media.video);
     console.log(`video_random_access_safe=${JSON.stringify(stats.media.video.randomAccessSafeSegments)}`);
+    console.log(`video_parser_resets=${JSON.stringify(stats.media.video.parserResetSegments)}`);
+    console.log(`video_parameter_set_changes=${JSON.stringify(stats.videoParameterSetChanges)}`);
+    console.log(`video_parameter_set_transitions=${JSON.stringify(stats.videoParameterSetTransitions)}`);
+    if (Number.isFinite(stats.inspectVideoStartMs)) {
+        console.log(`inspected_video_samples=${JSON.stringify(stats.inspectedVideoSamples)}`);
+    }
     printTrackSummary('audio', stats.media.audio);
     printDemuxVideoSummary(stats.demux.video);
     if (args.printFirstSegments > 0) {

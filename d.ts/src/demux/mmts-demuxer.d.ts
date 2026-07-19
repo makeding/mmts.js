@@ -69,6 +69,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logged_audio_discontinuity_count_;
     private logged_subtitle_data_count_;
     private logged_video_recovery_gap_count_;
+    private logged_video_reference_recovery_count_;
     private logged_stale_video_timestamp_count_;
     private logged_stale_audio_timestamp_count_;
     private last_video_dts_;
@@ -118,6 +119,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private active_video_parameter_set_signature_;
     private hevc_poc_recovery_;
     private rejected_video_mpus_;
+    private nominal_video_mpu_access_unit_count_;
+    private video_reference_recovery_pending_;
     constructor(probeData: any, config: any);
     destroy(): void;
     static probe(buffer: ArrayBuffer): import("./tlv").TLVProbeResult;
@@ -150,6 +153,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private flushCurrentVideoAccessUnit;
     private appendVideoAccessUnit;
     private flushPendingVideoAccessUnits;
+    private prepareVideoReferenceRecovery;
     private parseHEVCVideoAccessUnit;
     private validateVideoMpuTimestamps;
     private mapVideoDescriptorTimestamp;

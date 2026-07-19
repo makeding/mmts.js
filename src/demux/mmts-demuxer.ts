@@ -285,6 +285,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private logged_audio_discontinuity_count_: number = 0;
     private logged_subtitle_data_count_: number = 0;
     private logged_video_recovery_gap_count_: number = 0;
+    private logged_video_reference_recovery_count_: number = 0;
     private logged_stale_video_timestamp_count_: number = 0;
     private logged_stale_audio_timestamp_count_: number = 0;
     private last_video_dts_: number = -1;
@@ -353,6 +354,8 @@ class MMTSDemuxer extends BaseDemuxer {
     private active_video_parameter_set_signature_: string | undefined;
     private hevc_poc_recovery_: HEVCPocRecovery = new HEVCPocRecovery();
     private rejected_video_mpus_: {[key: string]: boolean} = {};
+    private nominal_video_mpu_access_unit_count_: number = 0;
+    private video_reference_recovery_pending_: boolean = false;
 
     public constructor(probeData: any, config: any) {
         super();
@@ -1408,6 +1411,10 @@ class MMTSDemuxer extends BaseDemuxer {
             }
             parsedAccessUnits.push(parsed);
         }
+        const referenceRecovery = this.prepareVideoReferenceRecovery(
+            accessUnits.length,
+            parsedAccessUnits[0].input.nalUnitType
+        );
         const endOfSequenceAfterMpu = parsedAccessUnits.some((parsed) => parsed.endOfSequence);
         const prepared = this.hevc_poc_recovery_.prepareMpu(
             parsedAccessUnits.map((parsed) => parsed.input),
@@ -1440,6 +1447,24 @@ class MMTSDemuxer extends BaseDemuxer {
 
         this.program_.setPresentationIndexes(packetId, mpuSequenceNumber, prepared.presentationIndexes);
         delete this.rejected_video_mpus_[this.videoMpuKey(packetId, mpuSequenceNumber)];
+        if (referenceRecovery && this.logged_video_reference_recovery_count_ < 8) {
+            this.logged_video_reference_recovery_count_++;
+            Log.w(
+                this.TAG,
+                `Recover MMTS HEVC references at short-MPU boundary, ` +
+                `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
+                `au_count=${accessUnits.length}, nominal=${this.nominal_video_mpu_access_unit_count_}; ` +
+                `drop leading RASL pictures`
+            );
+        }
+        if (referenceRecovery) {
+            // Flush everything preceding the splice, then make the recovery
+            // CRA the first sample after a real SourceBuffer parser reset.
+            // Merely marking it as sync does not clear VideoToolbox's DPB.
+            this.dispatchVideoMediaSegment(true);
+            this.onVideoDiscontinuity && this.onVideoDiscontinuity();
+            this.dispatchVideoInitSegment(true);
+        }
         for (let i = 0; i < accessUnits.length; i++) {
             const chain = parsedAccessUnits[i].chain;
             if (this.active_video_parameter_set_signature_ !== chain.signature) {
@@ -1456,6 +1481,26 @@ class MMTSDemuxer extends BaseDemuxer {
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
         }
+    }
+
+    private prepareVideoReferenceRecovery(accessUnitCount: number, firstNalUnitType: number): boolean {
+        const previousNominal = this.nominal_video_mpu_access_unit_count_;
+        const shortMpu = previousNominal > 0 && accessUnitCount < previousNominal;
+        const startsWithRandomAccess = isH265IrapNalu(firstNalUnitType);
+        const recoverReferences = startsWithRandomAccess &&
+            (shortMpu || this.video_reference_recovery_pending_);
+
+        if (recoverReferences) {
+            // A shortened GOP at an MMTS splice may omit pictures referenced by
+            // the leading RASL pictures of this or the following CRA.  Resetting
+            // POC recovery makes the CRA a no-RASL-output boundary, so those
+            // undecodable leading pictures never reach MSE/VideoToolbox.
+            this.hevc_poc_recovery_.reset(true);
+        }
+
+        this.nominal_video_mpu_access_unit_count_ = Math.max(previousNominal, accessUnitCount);
+        this.video_reference_recovery_pending_ = shortMpu;
+        return recoverReferences;
     }
 
     private parseHEVCVideoAccessUnit(accessUnit: MMTSVideoAccessUnit): ParsedHEVCVideoAccessUnit | null {
@@ -3217,6 +3262,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.logged_video_discontinuity_count_ = 0;
         this.logged_video_sample_count_ = 0;
         this.logged_video_recovery_gap_count_ = 0;
+        this.logged_video_reference_recovery_count_ = 0;
         this.logged_stale_video_timestamp_count_ = 0;
         this.logged_stale_audio_timestamp_count_ = 0;
         this.video_mpu_assembler_.reset();
@@ -3229,6 +3275,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.active_video_parameter_set_signature_ = undefined;
         this.hevc_poc_recovery_.reset(true);
         this.rejected_video_mpus_ = {};
+        this.nominal_video_mpu_access_unit_count_ = 0;
+        this.video_reference_recovery_pending_ = false;
         this.video_waiting_random_access_ = true;
         this.video_recovery_gap_pending_ = false;
         this.seed_audio_after_video_bootstrap_ = false;
@@ -3826,7 +3874,7 @@ class MMTSDemuxer extends BaseDemuxer {
         };
     }
 
-    private dispatchVideoInitSegment(): void {
+    private dispatchVideoInitSegment(referenceRecovery: boolean = false): void {
         const details = this.video_metadata_.details;
         const meta: any = {};
 
@@ -3846,6 +3894,9 @@ class MMTSDemuxer extends BaseDemuxer {
         meta.frameRate = details.frame_rate || {fps_num: 60, fps_den: 1, fps: 60};
         meta.refSampleDuration = 1000 * (meta.frameRate.fps_den / meta.frameRate.fps_num);
         meta.codec = details.codec_mimetype.replace(/^hvc1/, this.video_sample_entry_type_);
+        if (referenceRecovery) {
+            meta.mmtsVideoReferenceRecovery = true;
+        }
         if (this.pending_video_track_switch_ !== null) {
             meta.mmtsVideoTrackSwitch = Object.assign({}, this.pending_video_track_switch_);
         }

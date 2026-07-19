@@ -201,7 +201,10 @@ function loadDemuxer(options = {}) {
             });
         },
         hasKnownMMTSAudioSupport() { return true; },
-        isH265IrapNalu() { return false; },
+        isH265IrapNalu(type) {
+            return typeof options.isH265IrapNalu === 'function' ?
+                options.isH265IrapNalu(type) : false;
+        },
         isH265VclNalu(type) { return type >= 0 && type <= 31; },
         isMMTSAudioTrackSelectable(info) {
             return typeof options.audioTrackSelectable === 'function' ?
@@ -3025,6 +3028,102 @@ function testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint() {
     assert.strictEqual(demuxer.video_track_.samples[0].mmtsRandomAccessSafe, undefined);
 }
 
+function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
+    const MMTSDemuxer = loadDemuxer({
+        isH265IrapNalu(type) {
+            return type >= 16 && type <= 23;
+        }
+    });
+    const demuxer = Object.create(MMTSDemuxer.prototype);
+    let resetCount = 0;
+    demuxer.hevc_poc_recovery_ = {
+        reset(requireRandomAccess) {
+            assert.strictEqual(requireRandomAccess, true);
+            resetCount++;
+        }
+    };
+    demuxer.nominal_video_mpu_access_unit_count_ = 0;
+    demuxer.video_reference_recovery_pending_ = false;
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
+        false
+    );
+    assert.strictEqual(resetCount, 0);
+    assert.strictEqual(demuxer.nominal_video_mpu_access_unit_count_, 32);
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(8, TEST_H265_NALU_TYPE.CRA_NUT),
+        true
+    );
+    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
+        true
+    );
+    assert.strictEqual(resetCount, 2);
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
+        false
+    );
+    assert.strictEqual(resetCount, 2);
+}
+
+function testRemuxerAttachesParserResetInitToRecoveryRap() {
+    const MP4Remuxer = loadRemuxer();
+    const remuxer = new MP4Remuxer({
+        isLive: false,
+        isMMTS: true,
+        mmtsClampVideoTimestampGap: false,
+        mmtsVideoTailStashDuration: 0,
+        fixAudioTimestampGap: false,
+    });
+    remuxer._dtsBase = 0;
+    remuxer._dtsBaseInited = true;
+    const initSegments = [];
+    const mediaSegments = [];
+    remuxer.onInitSegment = (_type, segment) => initSegments.push(segment);
+    remuxer.onMediaSegment = (_type, segment) => mediaSegments.push(segment);
+
+    remuxer._onTrackMetadataReceived('video', {
+        codec: 'hev1.2.4.L183.B0',
+        refSampleDuration: 17,
+        mmtsVideoReferenceRecovery: true,
+    });
+    assert.strictEqual(initSegments.length, 0);
+    assert.ok(remuxer._pendingMMTSVideoReferenceRecoveryInit);
+
+    const unit = {data: new Uint8Array([0, 0, 0, 1])};
+    remuxer._remuxVideo({
+        type: 'video',
+        id: 1,
+        sequenceNumber: 0,
+        samples: [{
+            units: [unit],
+            length: unit.data.byteLength,
+            dts: 1000,
+            pts: 1000,
+            cts: 0,
+            isKeyframe: true,
+            mmtsRandomAccessSafe: true,
+        }],
+        length: unit.data.byteLength,
+    }, true);
+
+    assert.strictEqual(mediaSegments.length, 1);
+    assert.strictEqual(mediaSegments[0].resetParserState, true);
+    assert.strictEqual(mediaSegments[0].container, 'video/mp4');
+    assert.strictEqual(mediaSegments[0].codec, 'hev1.2.4.L183.B0');
+    assert.strictEqual(mediaSegments[0].mmtsVideoReferenceRecovery, true);
+    assert.strictEqual(mediaSegments[0].mmtsRandomAccessSafe, true);
+    assert.strictEqual(new Uint8Array(mediaSegments[0].data)[0], 0);
+    assert.strictEqual(remuxer._pendingMMTSVideoReferenceRecoveryInit, null);
+}
+
 testProbeRejectsStructuredAudioSelectionFailure();
 testDemuxerAcceptsNormalDescriptorTimeline();
 testDemuxerMapsSwitchedVideoToExistingRawTimeline();
@@ -3073,5 +3172,7 @@ testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint();
+testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice();
+testRemuxerAttachesParserResetInitToRecoveryRap();
 
 console.log('mmts demux/remux timeline tests passed');

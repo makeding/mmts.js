@@ -45,6 +45,7 @@ class MP4Remuxer {
         this._videoLastCompositionEnd = -1;
         this._videoStartupSegmentEmitted = false;
         this._pendingMMTSVideoTrackSwitch = null;
+        this._pendingMMTSVideoReferenceRecoveryInit = null;
         this._loggedVideoFreezeGapCount = 0;
         this._loggedVideoPreservedGapCount = 0;
         this._loggedAudioFrameDropCount = 0;
@@ -80,6 +81,7 @@ class MP4Remuxer {
         this._audioMeta = null;
         this._videoMeta = null;
         this._pendingMMTSVideoTrackSwitch = null;
+        this._pendingMMTSVideoReferenceRecoveryInit = null;
         this._audioSegmentInfoList.clear();
         this._audioSegmentInfoList = null;
         this._videoSegmentInfoList.clear();
@@ -134,6 +136,7 @@ class MP4Remuxer {
         this._videoLastCompositionEnd = -1;
         this._audioNextDts = this._videoNextDts = undefined;
         this._loggedAudioFrameDropCount = 0;
+        this._pendingMMTSVideoReferenceRecoveryInit = null;
         if (this._isMMTS) {
             this._videoStartupSegmentEmitted = false;
         }
@@ -152,6 +155,7 @@ class MP4Remuxer {
         this._videoNextDts = undefined;
         this._videoSegmentInfoList.clear();
         this._pendingMMTSVideoTrackSwitch = null;
+        this._pendingMMTSVideoReferenceRecoveryInit = null;
         if (this._isMMTS) {
             this._videoStartupSegmentEmitted = false;
         }
@@ -165,6 +169,7 @@ class MP4Remuxer {
         this._audioSegmentInfoList.clear();
         this._loggedAudioFrameDropCount = 0;
         this._pendingMMTSVideoTrackSwitch = null;
+        this._pendingMMTSVideoReferenceRecoveryInit = null;
         if (this._isMMTS) {
             this._videoStartupSegmentEmitted = false;
         }
@@ -226,6 +231,14 @@ class MP4Remuxer {
             initSegment.mmtsVideoTrackSwitch = this._cloneMMTSVideoTrackSwitchContext(
                 metadata.mmtsVideoTrackSwitch
             );
+        }
+        if (type === 'video' && metadata.mmtsVideoReferenceRecovery === true) {
+            // Keep the init segment attached to the exact recovery media
+            // boundary.  A separately queued init can overtake older media in
+            // the MSE state machine and reset the parser too early.
+            initSegment.mmtsVideoReferenceRecovery = true;
+            this._pendingMMTSVideoReferenceRecoveryInit = initSegment;
+            return;
         }
         this._onInitSegment(type, initSegment);
     }
@@ -1015,6 +1028,18 @@ class MP4Remuxer {
             sampleCount: mp4Samples.length,
             info: info
         };
+        const recoveryInit = this._pendingMMTSVideoReferenceRecoveryInit;
+        if (recoveryInit && mp4Samples[0].isKeyframe) {
+            segment.data = this._mergeBoxes(
+                new Uint8Array(recoveryInit.data),
+                new Uint8Array(segment.data)
+            ).buffer;
+            segment.resetParserState = true;
+            segment.container = recoveryInit.container;
+            segment.codec = recoveryInit.codec;
+            segment.mmtsVideoReferenceRecovery = true;
+            this._pendingMMTSVideoReferenceRecoveryInit = null;
+        }
         if (mp4Samples[0].isKeyframe) {
             segment.firstPlayableWindow = this._makeFirstVideoPlayableWindow(mp4Samples);
         }
