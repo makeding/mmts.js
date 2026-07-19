@@ -41,6 +41,7 @@ export declare class H265NaluHVC1 {
     type: H265NaluType;
     data: Uint8Array;
     constructor(nalu: H265NaluPayload);
+    static fromLengthPrefixedData(data: Uint8Array, type: H265NaluType): H265NaluHVC1;
 }
 export declare class H265AnnexBParser {
     private readonly TAG;

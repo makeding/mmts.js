@@ -1,4 +1,5 @@
 import Log from "../utils/logger";
+import {IllegalStateException} from '../utils/exception';
 
 export enum H265NaluType {
     kSliceTRAIL_N = 0,
@@ -56,6 +57,20 @@ export class H265NaluHVC1 {
         v.setUint32(0, nalu_size);
         // Copy payload
         this.data.set(nalu.data, 4);
+    }
+
+    public static fromLengthPrefixedData(data: Uint8Array, type: H265NaluType): H265NaluHVC1 {
+        if (data.byteLength < 6) {
+            throw new IllegalStateException('Invalid length-prefixed HEVC NAL unit');
+        }
+        const declaredSize = new DataView(data.buffer, data.byteOffset, 4).getUint32(0);
+        if (declaredSize !== data.byteLength - 4) {
+            throw new IllegalStateException('HEVC NAL unit length does not match its prefix');
+        }
+        const nalu = Object.create(H265NaluHVC1.prototype) as H265NaluHVC1;
+        nalu.type = type;
+        nalu.data = data;
+        return nalu;
     }
 }
 

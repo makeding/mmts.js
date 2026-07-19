@@ -337,18 +337,14 @@ class MP4Remuxer {
             return;
         }  // else if (force === true) do remux
 
-        let offset = 0;
-        let mdatbox = null;
         let mdatBytes = 0;
 
         // calculate initial mdat size
         if (mpegRawTrack) {
             // for raw mpeg buffer
-            offset = 0;
             mdatBytes = track.length;
         } else {
             // for fmp4 mdat box
-            offset = 8;  // size + type
             mdatBytes = 8 + track.length;
         }
 
@@ -572,29 +568,6 @@ class MP4Remuxer {
             return;
         }
 
-        // allocate mdatbox
-        if (mpegRawTrack) {
-            // allocate for raw mpeg buffer
-            mdatbox = new Uint8Array(mdatBytes);
-        } else {
-            // allocate for fmp4 mdat box
-            mdatbox = new Uint8Array(mdatBytes);
-            // size field
-            mdatbox[0] = (mdatBytes >>> 24) & 0xFF;
-            mdatbox[1] = (mdatBytes >>> 16) & 0xFF;
-            mdatbox[2] = (mdatBytes >>>  8) & 0xFF;
-            mdatbox[3] = (mdatBytes) & 0xFF;
-            // type field (fourCC)
-            mdatbox.set(MP4.types.mdat, 4);
-        }
-
-        // Write samples into mdatbox
-        for (let i = 0; i < mp4Samples.length; i++) {
-            let unit = mp4Samples[i].unit;
-            mdatbox.set(unit, offset);
-            offset += unit.byteLength;
-        }
-
         let latest = mp4Samples[mp4Samples.length - 1];
         lastDts = latest.dts + latest.duration;
         //this._audioNextDts = lastDts;
@@ -637,9 +610,17 @@ class MP4Remuxer {
         track.samples = [];
         track.length = 0;
 
+        const segmentData = this._buildMediaSegmentData(moofbox, mdatBytes, !mpegRawTrack, (result, payloadOffset) => {
+            let writeOffset = payloadOffset;
+            for (let i = 0; i < mp4Samples.length; i++) {
+                const unit = mp4Samples[i].unit;
+                result.set(unit, writeOffset);
+                writeOffset += unit.byteLength;
+            }
+        });
         let segment = {
             type: 'audio',
-            data: this._mergeBoxes(moofbox, mdatbox).buffer,
+            data: segmentData.buffer,
             sampleCount: mp4Samples.length,
             info: info
         };
@@ -855,10 +836,6 @@ class MP4Remuxer {
             }
         }
 
-        let offset = 8;
-        let mdatbox = null;
-
-
         let firstSampleOriginalDts = samples[0].dts - this._dtsBase;
 
         // calculate dtsCorrection
@@ -955,25 +932,6 @@ class MP4Remuxer {
             });
         }
 
-        // allocate mdatbox
-        mdatbox = new Uint8Array(mdatBytes);
-        mdatbox[0] = (mdatBytes >>> 24) & 0xFF;
-        mdatbox[1] = (mdatBytes >>> 16) & 0xFF;
-        mdatbox[2] = (mdatBytes >>>  8) & 0xFF;
-        mdatbox[3] = (mdatBytes) & 0xFF;
-        mdatbox.set(MP4.types.mdat, 4);
-
-        // Write samples into mdatbox
-        for (let i = 0; i < mp4Samples.length; i++) {
-            let units = mp4Samples[i].units;
-            while (units.length) {
-                let unit = units.shift();
-                let data = unit.data;
-                mdatbox.set(data, offset);
-                offset += data.byteLength;
-            }
-        }
-
         let latest = mp4Samples[mp4Samples.length - 1];
         lastDts = latest.dts + latest.duration;
         lastPts = latest.pts + latest.duration;
@@ -1025,9 +983,20 @@ class MP4Remuxer {
         track.length = 0;
 
         const mmtsSourceInfo = this._makeSegmentMMTSSourceInfo(mp4Samples);
+        const segmentData = this._buildMediaSegmentData(moofbox, mdatBytes, true, (result, payloadOffset) => {
+            let writeOffset = payloadOffset;
+            for (let i = 0; i < mp4Samples.length; i++) {
+                const units = mp4Samples[i].units;
+                for (let j = 0; j < units.length; j++) {
+                    const data = units[j].data;
+                    result.set(data, writeOffset);
+                    writeOffset += data.byteLength;
+                }
+            }
+        });
         const segment = {
             type: 'video',
-            data: this._mergeBoxes(moofbox, mdatbox).buffer,
+            data: segmentData.buffer,
             sampleCount: mp4Samples.length,
             info: info
         };
@@ -1217,6 +1186,22 @@ class MP4Remuxer {
         let result = new Uint8Array(moof.byteLength + mdat.byteLength);
         result.set(moof, 0);
         result.set(mdat, moof.byteLength);
+        return result;
+    }
+
+    _buildMediaSegmentData(moof, mdatBytes, includeMdatHeader, writePayload) {
+        const result = new Uint8Array(moof.byteLength + mdatBytes);
+        result.set(moof, 0);
+        let payloadOffset = moof.byteLength;
+        if (includeMdatHeader) {
+            result[payloadOffset] = (mdatBytes >>> 24) & 0xFF;
+            result[payloadOffset + 1] = (mdatBytes >>> 16) & 0xFF;
+            result[payloadOffset + 2] = (mdatBytes >>> 8) & 0xFF;
+            result[payloadOffset + 3] = mdatBytes & 0xFF;
+            result.set(MP4.types.mdat, payloadOffset + 4);
+            payloadOffset += 8;
+        }
+        writePayload(result, payloadOffset);
         return result;
     }
 

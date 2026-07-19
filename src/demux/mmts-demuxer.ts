@@ -709,10 +709,10 @@ class MMTSDemuxer extends BaseDemuxer {
 
         const naluType = (naluData[0] >> 1) & 0x3f;
         this.logVideoNalu(packetId, mpuSequenceNumber, fragment, naluType, randomAccess, unit.byteLength);
-        const naluPayload = new H265NaluPayload();
-        naluPayload.type = naluType;
-        naluPayload.data = naluData;
-        const hvc1 = new H265NaluHVC1(naluPayload);
+        // The MFU is already encoded as a four-byte-length-prefixed HEVC NAL.
+        // Keep the assembled storage as the sample shadow instead of copying the
+        // complete 4K payload into another HVC1 buffer before remuxing.
+        const hvc1 = H265NaluHVC1.fromLengthPrefixedData(unit, naluType);
 
         if (naluType === H265NaluType.kSliceVPS) {
             this.parseAndUpdateVideoParameterSet('vps', hvc1, naluData);
