@@ -244,6 +244,7 @@ function loadDemuxer(options = {}) {
         './base-demuxer': {__esModule: true, default: BaseDemuxer},
         './tlv': {__esModule: true, default: {}},
         './compressed-ip': {__esModule: true, default: {}},
+        './ip': {__esModule: true, default: {}},
         './mmtp': {__esModule: true, default: {}, MMTPPayloadType: {}},
         './mmt-si': {},
         './mpu': {__esModule: true, default: mpuStub, FragmentationIndicator: {}, MFUFragment: {}, MPUInfo: {}},

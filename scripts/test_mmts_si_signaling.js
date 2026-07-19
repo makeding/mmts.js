@@ -85,8 +85,8 @@ function testAssetDescriptorsAndHvc1() {
     const MMTSI = loadModule('src/demux/mmt-si.ts', {}).default;
     const hevc = descriptor(0x800a, bytes(
         0x21, ...u32(0x60000000),
-        0, 0, 0, 0, 0, 0,
-        0xb7, 0x02
+        0xf0, 0, 0, 0, 0, 0,
+        0xb7, 0xe0, 0x05, 0x07
     ));
     const audioComponent = descriptor(0x8014, bytes(
         0x03, 0x03, 0x00, 0x10, 0x1c, 0x00, 0x4e,
@@ -112,6 +112,15 @@ function testAssetDescriptorsAndHvc1() {
     assert.strictEqual(assets[0].codec, 'hevc');
     assert.strictEqual(assets[0].hevcProfileIdc, 1);
     assert.strictEqual(assets[0].hevcLevelIdc, 0xb7);
+    assert.strictEqual(assets[0].hevcProgressiveSourceFlag, true);
+    assert.strictEqual(assets[0].hevcInterlacedSourceFlag, true);
+    assert.strictEqual(assets[0].hevcNonPackedConstraintFlag, true);
+    assert.strictEqual(assets[0].hevcFrameOnlyConstraintFlag, true);
+    assert.strictEqual(assets[0].hevcTemporalLayerSubsetFlag, true);
+    assert.strictEqual(assets[0].hevcStillPresentFlag, true);
+    assert.strictEqual(assets[0].hevc24HourPicturePresentFlag, true);
+    assert.strictEqual(assets[0].hevcTemporalIdMin, 5);
+    assert.strictEqual(assets[0].hevcTemporalIdMax, 7);
     assert.strictEqual(assets[1].codec, 'aac');
     assert.strictEqual(assets[1].audioStreamType, 0x1c);
     assert.deepStrictEqual(Array.from(assets[1].audioSpecificConfig), [0x11, 0x90]);
@@ -203,9 +212,22 @@ function testFragmentedSignalingUsesFirstFragmentPosition() {
     assert.strictEqual(program.getTimestampRestartFilePosition(0x141, 21), 4096);
 }
 
+function testDuplicateSignalingPacketIsIgnored() {
+    const MMTSI = loadModule('src/demux/mmt-si.ts', {}).default;
+    const state = MMTSI.createFragmentState();
+    const payload = signalingPacket(mpt(0x20, 4, 2, [asset('hvc1', 0x150, bytes())]));
+    const first = MMTSI.parseSignalingPayload(payload, 100, state);
+    const duplicate = MMTSI.parseSignalingPayload(payload, 100, state);
+
+    assert.strictEqual(first.mptTables.length, 1);
+    assert.strictEqual(duplicate.mptTables.length, 0);
+    assert.strictEqual(duplicate.messages.length, 0);
+}
+
 testAssetDescriptorsAndHvc1();
 testOrderedMptSubsets();
 testTimestampRestartUsesEarliestDescriptorSignalingPosition();
 testFragmentedSignalingUsesFirstFragmentPosition();
+testDuplicateSignalingPacketIsIgnored();
 
 console.log('mmts SI signaling tests passed');

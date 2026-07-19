@@ -1,6 +1,7 @@
 import BaseDemuxer from './base-demuxer';
 import TLV from './tlv';
 import CompressedIP from './compressed-ip';
+import IP from './ip';
 import MMTP, {MMTPPayloadType} from './mmtp';
 import {MMTAsset} from './mmt-si';
 import MPU, {FragmentationIndicator, MFUFragment, MPUInfo} from './mpu';
@@ -556,16 +557,26 @@ class MMTSDemuxer extends BaseDemuxer {
 
         for (const packet of result.packets) {
             const packetFilePosition = inputByteStart + packet.startOffset;
-            if (packet.packetType !== 0x03) {
+            let mmtpData: Uint8Array | null = null;
+            if (packet.packetType === 0x03) {
+                const compressedIP = CompressedIP.parse(packet.payload);
+                if (compressedIP !== null) {
+                    mmtpData = packet.payload.subarray(compressedIP.payloadOffset);
+                }
+            } else if (packet.packetType === 0x01 || packet.packetType === 0x02) {
+                const udp = IP.parseUdpPayload(packet.payload, packet.packetType === 0x01 ? 4 : 6);
+                if (udp !== null) {
+                    mmtpData = packet.payload.subarray(
+                        udp.payloadOffset,
+                        udp.payloadOffset + udp.payloadLength
+                    );
+                }
+            }
+            if (mmtpData === null) {
                 continue;
             }
 
-            const compressedIP = CompressedIP.parse(packet.payload);
-            if (compressedIP === null) {
-                continue;
-            }
-
-            const mmtp = MMTP.parse(packet.payload.subarray(compressedIP.payloadOffset));
+            const mmtp = MMTP.parse(mmtpData);
             if (mmtp === null) {
                 continue;
             }

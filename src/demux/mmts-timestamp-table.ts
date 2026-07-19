@@ -216,37 +216,57 @@ export default class MMTSTimestampTable {
         if (!Number.isSafeInteger(anchorPts)) {
             return null;
         }
-        const timestamps: RawTimestamp[] = descriptor.au.map(() => ({
-            rawDts: 0,
-            rawPts: 0,
-            timescale,
-            presentationIndex: 0,
-            presentationTimeLeapIndicator: leapIndicator
-        }));
-        let rawDts = anchorPts - descriptor.decodingTimeOffset;
+        // ARIB STD-B60 7.4.3.35 defines pts_offset as the presentation
+        // duration of the corresponding AU.  Descriptor entries themselves
+        // are in decoding order, so durations must first be projected onto
+        // presentation order.  Advancing DTS directly by pts_offset only
+        // happens to work for constant-duration streams.
+        const durationsByPresentationIndex: number[] = new Array(descriptor.au.length);
         for (let decodingIndex = 0; decodingIndex < descriptor.au.length; decodingIndex++) {
             const descriptorAu = descriptor.au[decodingIndex];
             if (!Number.isInteger(descriptorAu.dtsPtsOffset) || descriptorAu.dtsPtsOffset < 0) {
                 return null;
             }
-            const timestamp = timestamps[decodingIndex];
-            timestamp.rawDts = rawDts;
-            timestamp.rawPts = rawDts + descriptorAu.dtsPtsOffset;
-            timestamp.presentationIndex = indexes[decodingIndex];
-            if (!Number.isSafeInteger(timestamp.rawDts) || !Number.isSafeInteger(timestamp.rawPts)) {
+            const duration = this.getPtsOffset(asset, descriptor, decodingIndex, timescale);
+            if (duration === null || duration <= 0) {
                 return null;
             }
+            durationsByPresentationIndex[indexes[decodingIndex]] = duration;
+        }
 
-            if (decodingIndex + 1 < descriptor.au.length) {
-                const ptsOffset = this.getPtsOffset(asset, descriptor, decodingIndex, timescale);
-                if (ptsOffset === null || ptsOffset <= 0) {
-                    return null;
-                }
-                rawDts += ptsOffset;
-                if (!Number.isSafeInteger(rawDts)) {
-                    return null;
-                }
+        const ptsByPresentationIndex: number[] = new Array(descriptor.au.length);
+        let rawPts = anchorPts;
+        for (let presentationIndex = 0; presentationIndex < descriptor.au.length; presentationIndex++) {
+            ptsByPresentationIndex[presentationIndex] = rawPts;
+            rawPts += durationsByPresentationIndex[presentationIndex];
+            if (!Number.isSafeInteger(rawPts)) {
+                return null;
             }
+        }
+
+        const timestamps: RawTimestamp[] = descriptor.au.map((descriptorAu, decodingIndex) => {
+            const presentationIndex = indexes[decodingIndex];
+            const accessUnitPts = ptsByPresentationIndex[presentationIndex];
+            return {
+                rawDts: accessUnitPts - descriptorAu.dtsPtsOffset,
+                rawPts: accessUnitPts,
+                timescale,
+                presentationIndex,
+                presentationTimeLeapIndicator: leapIndicator
+            };
+        });
+        if (timestamps.some((timestamp) => {
+            return !Number.isSafeInteger(timestamp.rawDts) || !Number.isSafeInteger(timestamp.rawPts);
+        })) {
+            return null;
+        }
+
+        // The first decoding timestamp is redundantly described by the MPU
+        // decoding-time offset.  Allow one tick because the NTP anchor is
+        // represented internally in integer microseconds before scaling.
+        const declaredFirstDts = anchorPts - descriptor.decodingTimeOffset;
+        if (Math.abs(timestamps[0].rawDts - declaredFirstDts) > 1) {
+            return null;
         }
 
         for (let i = 1; i < timestamps.length; i++) {

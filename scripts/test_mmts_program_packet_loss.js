@@ -236,10 +236,53 @@ function testDuplicateMiddleFragmentIsNotAppendedTwice() {
     assert.deepStrictEqual(Array.from(completed.units[0].unit), [1, 2, 3, 4, 5, 6]);
 }
 
+function testFragmentedMfuAllowsSpecCompliantIncreasingOffsets() {
+    const program = loadProgram();
+    const firstPayload = makeTimedMfuPayload({
+        mpuSequenceNumber: 104,
+        movieFragmentSequenceNumber: 8,
+        sampleNumber: 3,
+        offset: 100,
+        fragmentationIndicator: 1,
+        fragmentCounter: 2,
+        media: new Uint8Array([1, 2])
+    });
+    const middlePayload = makeTimedMfuPayload({
+        mpuSequenceNumber: 104,
+        movieFragmentSequenceNumber: 8,
+        sampleNumber: 3,
+        offset: 102,
+        fragmentationIndicator: 2,
+        fragmentCounter: 1,
+        media: new Uint8Array([3, 4])
+    });
+    const lastPayload = makeTimedMfuPayload({
+        mpuSequenceNumber: 104,
+        movieFragmentSequenceNumber: 8,
+        sampleNumber: 3,
+        offset: 104,
+        fragmentationIndicator: 3,
+        fragmentCounter: 0,
+        media: new Uint8Array([5, 6])
+    });
+
+    program.parseMpuPacket(makeMmtpPacket(50, firstPayload), 1000);
+    program.parseMpuPacket(makeMmtpPacket(51, middlePayload), 2000);
+    const completed = program.parseMpuPacket(makeMmtpPacket(52, lastPayload), 3000);
+
+    assert.notStrictEqual(completed, null);
+    assert.strictEqual(completed.loss.fragmentedUnitDropped, false);
+    assert.strictEqual(completed.units.length, 1);
+    assert.strictEqual(completed.units[0].fragment.movieFragmentSequenceNumber, 8);
+    assert.strictEqual(completed.units[0].fragment.offset, 100);
+    assert.deepStrictEqual(Array.from(completed.units[0].unit), [1, 2, 3, 4, 5, 6]);
+}
+
 testPacketSequenceGapDropsOpenFragmentedMfu();
 testSequentialPacketsDoNotReportLoss();
 testVodSeekPreservesTimestampBaseButResetsMpuCursor();
 testDuplicateUnfragmentedPacketIsDropped();
 testDuplicateMiddleFragmentIsNotAppendedTwice();
+testFragmentedMfuAllowsSpecCompliantIncreasingOffsets();
 
 console.log('mmts program packet loss tests passed');

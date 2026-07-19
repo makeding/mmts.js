@@ -25,7 +25,14 @@ export default class CompressedIP {
 
         switch (headerType) {
             case ContextHeaderType.ContextIdPartialIpv4AndPartialUdp:
+                // ARIB STD-B32 Part 3, 3.7.2.1 / 3.7.2.3:
+                // partial IPv4 is 16 bytes and partial UDP is 4 bytes.
+                payloadOffset += 16 + 4;
+                break;
             case ContextHeaderType.ContextIdIpv4Identifier:
+                // ARIB STD-B32 Part 3, 3.7.2.2: IPv4 identifier is 2 bytes.
+                payloadOffset += 2;
+                break;
             case ContextHeaderType.ContextIdNoCompressedHeader:
                 break;
             case ContextHeaderType.ContextIdPartialIpv6AndPartialUdp:

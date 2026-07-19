@@ -87,6 +87,17 @@ function loadRemuxer() {
     });
 }
 
+function loadMMTSDemuxerUtils() {
+    return loadModule('src/utils/mmts-demuxer-utils.ts', {
+        '../demux/mmt-si': {},
+        '../demux/mmtp': {MMTPEncryptionFlag: {}, MMTPPayloadType: {}},
+        '../demux/mpu': {__esModule: true, default: {}},
+        '../demux/h265': {H265NaluType: {}},
+        '../demux/aac': {},
+        '../demux/mmts-track-data': {},
+    });
+}
+
 function containsAscii(buffer, text) {
     const bytes = Buffer.from(buffer);
     return bytes.indexOf(Buffer.from(text, 'ascii')) >= 0;
@@ -103,6 +114,35 @@ function testFivePointOneAACKeepsLCProfile() {
     assert.strictEqual(asc.original_codec_mimetype, 'mp4a.40.2');
     assert.strictEqual(asc.channel_count, 6);
     assert.strictEqual(asc.config.length, 2);
+}
+
+function testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected() {
+    const utils = loadMMTSDemuxerUtils();
+    assert.strictEqual(utils.audioLayoutFromAacConfig(11), '6.1ch');
+    assert.strictEqual(utils.audioLayoutFromAacConfig(12), '7.1ch');
+    assert.strictEqual(utils.audioLayoutFromAacConfig(13), '22.2ch');
+    assert.strictEqual(utils.audioLayoutFromAacConfig(14), '7.1ch');
+    assert.strictEqual(utils.audioChannelCountFromAacConfig(13), 24);
+
+    const declared = utils.createMMTSAudioTrackInfo({
+        packetId: 0xf110,
+        assetType: 'mp4a',
+        mediaType: 'audio',
+        codec: 'aac-latm',
+        audioComponentType: 0x11
+    }, undefined, false);
+    assert.strictEqual(declared.supported, false);
+    assert.strictEqual(declared.unsupportedReason, 'channel-layout');
+    assert.strictEqual(utils.isMMTSAudioTrackSelectable(declared), false);
+
+    const parsed = utils.updateMMTSAudioTrackInfoFromFrame(0xf110, {
+        channel_config: 13,
+        sampling_frequency: 48000
+    }, declared, false);
+    assert.strictEqual(parsed.channelLayout, '22.2ch');
+    assert.strictEqual(parsed.channelCount, 24);
+    assert.strictEqual(parsed.supported, false);
+    assert.strictEqual(parsed.unsupportedReason, 'aac-channel-config');
 }
 
 function testMMTSDefaultsPreserveAudioAndVideoGaps() {
@@ -204,6 +244,7 @@ function testFirstVideoPlayableWindowUsesRemuxedTimeline() {
 }
 
 testFivePointOneAACKeepsLCProfile();
+testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected();
 testMMTSDefaultsPreserveAudioAndVideoGaps();
 testHEVCInitUsesHvc1SampleEntry();
 testHEVCInitUsesHev1SampleEntry();

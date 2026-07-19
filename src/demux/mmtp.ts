@@ -51,6 +51,9 @@ export default class MMTP {
         let byte = data[offset++];
 
         const version = (byte & 0xc0) >> 6;
+        if (version !== 0) {
+            return null;
+        }
         const packetCounterFlag = ((byte & 0x20) >> 5) !== 0;
         const fecType = (byte & 0x18) >> 3;
         const extensionHeaderFlag = ((byte & 0x02) >> 1) !== 0;
@@ -112,7 +115,10 @@ export default class MMTP {
         let payloadEnd = data.byteLength;
         const authenticatedPayloadLength = packet.extensionHeaderScrambling &&
             packet.extensionHeaderScrambling.authenticatedPayloadLength;
-        if (authenticatedPayloadLength !== undefined && offset + authenticatedPayloadLength <= data.byteLength) {
+        if (authenticatedPayloadLength !== undefined) {
+            if (offset + authenticatedPayloadLength > data.byteLength) {
+                return null;
+            }
             payloadEnd = offset + authenticatedPayloadLength;
             packet.messageAuthenticationCode = data.subarray(payloadEnd);
         }
@@ -170,11 +176,17 @@ export default class MMTP {
             scramblingInitialCounterValue: byte & 0x01
         };
 
-        if (scrambleSystemControl !== 0 && offset < field.byteLength) {
+        if (scrambleSystemControl !== 0) {
+            if (offset >= field.byteLength) {
+                return undefined;
+            }
             info.scrambleSystemId = field[offset++];
         }
 
-        if (messageAuthenticationControl !== 0 && offset + 2 <= field.byteLength) {
+        if (messageAuthenticationControl !== 0) {
+            if (offset + 2 > field.byteLength) {
+                return undefined;
+            }
             info.authenticatedPayloadLength = MMTP.readBe16(field, offset);
         }
 

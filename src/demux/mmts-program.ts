@@ -680,6 +680,9 @@ class MMTSProgram {
                 const completeFragment: MFUFragment = {
                     ...fragment,
                     payload: completeUnit,
+                    movieFragmentSequenceNumber: firstFragment &&
+                        firstFragment.movieFragmentSequenceNumber !== undefined ?
+                        firstFragment.movieFragmentSequenceNumber : fragment.movieFragmentSequenceNumber,
                     sampleNumber: firstFragment && firstFragment.sampleNumber !== undefined ?
                         firstFragment.sampleNumber : fragment.sampleNumber,
                     offset: firstFragment && firstFragment.offset !== undefined ?
@@ -709,8 +712,8 @@ class MMTSProgram {
         return [
             packetId,
             mpuSequenceNumber,
+            fragment.movieFragmentSequenceNumber !== undefined ? fragment.movieFragmentSequenceNumber : 'n',
             fragment.sampleNumber !== undefined ? fragment.sampleNumber : 'n',
-            fragment.offset !== undefined ? fragment.offset : 'n'
         ].join(':');
     }
 

@@ -299,6 +299,13 @@ export function audioLayoutFromAacConfig(channelConfig: number): string | undefi
             return '5.1ch';
         case 7:
             return '7.1ch';
+        case 11:
+            return '6.1ch';
+        case 12:
+        case 14:
+            return '7.1ch';
+        case 13:
+            return '22.2ch';
         default:
             return undefined;
     }
@@ -308,7 +315,13 @@ export function audioChannelCountFromAacConfig(channelConfig: number): number | 
     if (channelConfig >= 1 && channelConfig <= 7) {
         return channelConfig === 7 ? 8 : channelConfig;
     }
-    return undefined;
+    switch (channelConfig) {
+        case 11: return 7;
+        case 12:
+        case 14: return 8;
+        case 13: return 24;
+        default: return undefined;
+    }
 }
 
 export function isSupportedAACChannelConfig(channelConfig: number): boolean {
@@ -440,6 +453,10 @@ export function createMMTSVideoTrackInfo(asset: MMTAsset,
 export function createMMTSAudioTrackInfo(asset: MMTAsset,
                                          previous: MMTSAudioTrackInfo | undefined,
                                          selected: boolean): MMTSAudioTrackInfo {
+    const declaredChannelCount = audioChannelCountFromComponentType(asset.audioComponentType);
+    const declaredChannelLayout = audioLayoutFromComponentType(asset.audioComponentType);
+    const unsupportedChannelLayout = declaredChannelCount !== undefined && declaredChannelCount > 8;
+    const codecSupported = asset.codec !== 'mp4als';
     return {
         ...previous,
         packetId: asset.packetId,
@@ -463,10 +480,11 @@ export function createMMTSAudioTrackInfo(asset: MMTAsset,
         qualityIndicator: asset.audioQualityIndicator,
         samplingRateCode: asset.audioSamplingRateCode,
         audioSampleRate: audioSampleRateFromCode(asset.audioSamplingRateCode),
-        channelLayout: audioLayoutFromComponentType(asset.audioComponentType),
-        channelCount: audioChannelCountFromComponentType(asset.audioComponentType),
-        supported: asset.codec !== 'mp4als',
-        unsupportedReason: asset.codec === 'mp4als' ? 'als' : undefined,
+        channelLayout: declaredChannelLayout,
+        channelCount: declaredChannelCount,
+        supported: codecSupported && !unsupportedChannelLayout,
+        unsupportedReason: !codecSupported ? 'als' :
+            (unsupportedChannelLayout ? 'channel-layout' : undefined),
         selected
     };
 }
@@ -503,7 +521,7 @@ export function createMMTSSubtitleTrackInfo(asset: MMTAsset,
         subtitleCompressionType: asset.subtitleCompressionType,
         supported: asset.subtitleCompressionType === undefined || asset.subtitleCompressionType === 0,
         unsupportedReason: asset.subtitleCompressionType !== undefined && asset.subtitleCompressionType !== 0 ?
-            'exi' : undefined,
+            'compression' : undefined,
         subtitleReferenceStartTime: asset.subtitleReferenceStartTimeUs !== undefined
             ? Math.floor(asset.subtitleReferenceStartTimeUs / 1000)
             : undefined
@@ -514,6 +532,8 @@ export function updateMMTSAudioTrackInfoFromFrame(packetId: number,
                                                   frame: LOASAACFrame,
                                                   previous: MMTSAudioTrackInfo | undefined,
                                                   selected: boolean): MMTSAudioTrackInfo {
+    const codecSupported = previous === undefined || previous.codec !== 'mp4als';
+    const channelConfigSupported = isSupportedAACChannelConfig(frame.channel_config);
     return {
         ...previous,
         packetId,
@@ -527,6 +547,9 @@ export function updateMMTSAudioTrackInfoFromFrame(packetId: number,
             (previous && previous.channelLayout) ||
             audioLayoutFromComponentType(previous && previous.componentType),
         audioSampleRate: frame.sampling_frequency,
+        supported: codecSupported && channelConfigSupported,
+        unsupportedReason: !codecSupported ? 'als' :
+            (channelConfigSupported ? undefined : 'aac-channel-config'),
         selected
     };
 }

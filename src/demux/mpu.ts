@@ -27,6 +27,7 @@ export interface MFUFragment {
     timed: boolean;
     fragmentationIndicator: FragmentationIndicator;
     payload: Uint8Array;
+    movieFragmentSequenceNumber?: number;
     sampleNumber?: number;
     offset?: number;
     nalUnitLength?: number;
@@ -79,7 +80,20 @@ export default class MPU {
         };
 
         if (fragmentType === MPUFragmentType.Mfu) {
-            info.mfuFragments = MPU.parseMfuFragments(payload, dataOffset, timed, fragmentationIndicator, aggregationFlag);
+            if (aggregationFlag && fragmentationIndicator !== FragmentationIndicator.NotFragmented) {
+                return null;
+            }
+            const fragments = MPU.parseMfuFragments(
+                payload,
+                dataOffset,
+                timed,
+                fragmentationIndicator,
+                aggregationFlag
+            );
+            if (fragments === null) {
+                return null;
+            }
+            info.mfuFragments = fragments;
             if (!aggregationFlag) {
                 info.mfu = MPU.parseMfu(payload, dataOffset, timed);
             }
@@ -99,16 +113,17 @@ export default class MPU {
                                      offset: number,
                                      timed: boolean,
                                      fragmentationIndicator: FragmentationIndicator,
-                                     aggregationFlag: boolean): MFUFragment[] {
+                                     aggregationFlag: boolean): MFUFragment[] | null {
         if (!aggregationFlag) {
             const mfu = MPU.parseMfu(payload, offset, timed);
             if (mfu === undefined) {
-                return [];
+                return null;
             }
             return [{
                 timed,
                 fragmentationIndicator,
                 payload: payload.subarray(mfu.payloadOffset, mfu.payloadOffset + mfu.payloadLength),
+                movieFragmentSequenceNumber: mfu.movieFragmentSequenceNumber,
                 sampleNumber: mfu.sampleNumber,
                 offset: mfu.offset,
                 nalUnitLength: mfu.nalUnitLength
@@ -118,25 +133,30 @@ export default class MPU {
         const fragments: MFUFragment[] = [];
         let cursor = offset;
 
-        while (cursor + 2 <= payload.byteLength) {
+        while (cursor < payload.byteLength) {
+            if (cursor + 2 > payload.byteLength) {
+                return null;
+            }
             const unitLength = MPU.readU16(payload, cursor);
             cursor += 2;
             if (cursor + unitLength > payload.byteLength) {
-                break;
+                return null;
             }
 
             const unit = payload.subarray(cursor, cursor + unitLength);
             const mfu = MPU.parseMfu(unit, 0, timed);
-            if (mfu !== undefined) {
-                fragments.push({
-                    timed,
-                    fragmentationIndicator: FragmentationIndicator.NotFragmented,
-                    payload: unit.subarray(mfu.payloadOffset, mfu.payloadOffset + mfu.payloadLength),
-                    sampleNumber: mfu.sampleNumber,
-                    offset: mfu.offset,
-                    nalUnitLength: mfu.nalUnitLength
-                });
+            if (mfu === undefined) {
+                return null;
             }
+            fragments.push({
+                timed,
+                fragmentationIndicator: FragmentationIndicator.NotFragmented,
+                payload: unit.subarray(mfu.payloadOffset, mfu.payloadOffset + mfu.payloadLength),
+                movieFragmentSequenceNumber: mfu.movieFragmentSequenceNumber,
+                sampleNumber: mfu.sampleNumber,
+                offset: mfu.offset,
+                nalUnitLength: mfu.nalUnitLength
+            });
 
             cursor += unitLength;
         }

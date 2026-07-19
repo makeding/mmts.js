@@ -68,8 +68,16 @@ export interface MMTAsset {
     hevcTierFlag?: boolean;
     hevcProfileIdc?: number;
     hevcProfileCompatibility?: number;
+    hevcProgressiveSourceFlag?: boolean;
+    hevcInterlacedSourceFlag?: boolean;
+    hevcNonPackedConstraintFlag?: boolean;
+    hevcFrameOnlyConstraintFlag?: boolean;
     hevcLevelIdc?: number;
-    hevcHdrWcgIdc?: number;
+    hevcTemporalLayerSubsetFlag?: boolean;
+    hevcStillPresentFlag?: boolean;
+    hevc24HourPicturePresentFlag?: boolean;
+    hevcTemporalIdMin?: number;
+    hevcTemporalIdMax?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
     subtitleTag?: number;
@@ -172,9 +180,14 @@ export default class MMTSI {
         const fragmentationIndicator = flags >> 6;
         const lengthExtensionFlag = ((flags >> 1) & 0x01) !== 0;
         const aggregationFlag = (flags & 0x01) !== 0;
+        // Some deployed ARIB streams transmit zero even for fragmented
+        // messages, despite STD-B60 6.3.2 defining a remaining-fragment
+        // counter.  Packet sequence continuity is therefore authoritative.
         reader.skip(1); // fragment_counter
 
-        MMTSI.checkFragmentState(fragmentState, packetSequenceNumber);
+        if (!MMTSI.checkFragmentState(fragmentState, packetSequenceNumber)) {
+            return result;
+        }
 
         if (!aggregationFlag) {
             const completed = MMTSI.assembleFragment(
@@ -220,15 +233,18 @@ export default class MMTSI {
     }
 
     private static checkFragmentState(state: SignalingFragmentState,
-                                      packetSequenceNumber: number): void {
+                                      packetSequenceNumber: number): boolean {
         if (state.state === 'init') {
             state.state = 'skip';
+        } else if (state.lastSeq === packetSequenceNumber) {
+            return false;
         } else if (((state.lastSeq + 1) >>> 0) !== packetSequenceNumber) {
             state.data = [];
             state.firstFilePosition = undefined;
             state.state = 'skip';
         }
         state.lastSeq = packetSequenceNumber;
+        return true;
     }
 
     private static assembleFragment(state: SignalingFragmentState,
@@ -954,10 +970,21 @@ export default class MMTSI {
         asset.hevcTierFlag = ((profile >> 5) & 0x01) !== 0;
         asset.hevcProfileIdc = profile & 0x1f;
         asset.hevcProfileCompatibility = descriptor.readU32();
-        descriptor.skip(6); // constraint flags and copied_44bits
+        const constraints = descriptor.readU8();
+        asset.hevcProgressiveSourceFlag = (constraints & 0x80) !== 0;
+        asset.hevcInterlacedSourceFlag = (constraints & 0x40) !== 0;
+        asset.hevcNonPackedConstraintFlag = (constraints & 0x20) !== 0;
+        asset.hevcFrameOnlyConstraintFlag = (constraints & 0x10) !== 0;
+        descriptor.skip(5); // reserved_zero_44bits
         asset.hevcLevelIdc = descriptor.readU8();
         const flags = descriptor.readU8();
-        asset.hevcHdrWcgIdc = flags & 0x03;
+        asset.hevcTemporalLayerSubsetFlag = (flags & 0x80) !== 0;
+        asset.hevcStillPresentFlag = (flags & 0x40) !== 0;
+        asset.hevc24HourPicturePresentFlag = (flags & 0x20) !== 0;
+        if (asset.hevcTemporalLayerSubsetFlag && descriptor.canRead(2)) {
+            asset.hevcTemporalIdMin = descriptor.readU8() & 0x07;
+            asset.hevcTemporalIdMax = descriptor.readU8() & 0x07;
+        }
     }
 
     private static parseStreamIdentificationDescriptor(asset: MMTAsset, reader: ByteReader): void {
