@@ -3012,6 +3012,19 @@ function testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition() 
     assert.strictEqual(demuxer.last_media_info_duration_, 1440);
 }
 
+function testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint() {
+    const demuxer = makeVideoSampleAppendHarness();
+    const accessUnit = makeTimedOutputAccessUnit(0x100, 11, 1, 0, 120000, 5200);
+    accessUnit.keyframe = true;
+    accessUnit.mseRandomAccessSafe = false;
+
+    demuxer.appendTimedVideoAccessUnit(accessUnit);
+
+    assert.strictEqual(demuxer.video_track_.samples.length, 1);
+    assert.strictEqual(demuxer.video_track_.samples[0].isKeyframe, false);
+    assert.strictEqual(demuxer.video_track_.samples[0].mmtsRandomAccessSafe, undefined);
+}
+
 testProbeRejectsStructuredAudioSelectionFailure();
 testDemuxerAcceptsNormalDescriptorTimeline();
 testDemuxerMapsSwitchedVideoToExistingRawTimeline();
@@ -3059,5 +3072,6 @@ testDemuxerReusesExactParameterSetVersion();
 testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
+testContinuousCraWithLeadingRaslIsNotExposedAsMseSyncPoint();
 
 console.log('mmts demux/remux timeline tests passed');

@@ -92,6 +92,7 @@ interface MappedVideoDescriptorTimestamp {
 
 interface MMTSTimedVideoAccessUnit extends MMTSVideoAccessUnit {
     descriptorTimestamp: MMTSTimestamp | null;
+    mseRandomAccessSafe?: boolean;
     outputAllowed?: boolean;
 }
 
@@ -1449,6 +1450,8 @@ class MMTSDemuxer extends BaseDemuxer {
                 ...accessUnits[i],
                 keyframe: isH265IrapNalu(recoveredPicture.nalUnitType),
                 descriptorTimestamp: committedTimestamps[i],
+                mseRandomAccessSafe: isH265IrapNalu(recoveredPicture.nalUnitType) &&
+                    recoveredPicture.noRaslOutput,
                 outputAllowed: recoveredPicture.outputAllowed
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
@@ -1681,6 +1684,7 @@ class MMTSDemuxer extends BaseDemuxer {
         const units = normalizedAccessUnit.units;
         const length = normalizedAccessUnit.length;
         const keyframe = accessUnit.keyframe;
+        const mseRandomAccessSafe = keyframe && accessUnit.mseRandomAccessSafe !== false;
 
         if (accessUnit.outputAllowed === false) {
             this.dropped_video_sample_count_++;
@@ -1780,7 +1784,10 @@ class MMTSDemuxer extends BaseDemuxer {
         const sample: any = {
             units,
             length,
-            isKeyframe: keyframe,
+            // A CRA with output-leading RASL pictures is an IRAP for indexing,
+            // but it is not a safe MSE sync sample.  Marking it sync lets the
+            // browser restart decoding there without the preceding pictures.
+            isKeyframe: mseRandomAccessSafe,
             dts,
             pts,
             cts: pts - dts,
@@ -1788,7 +1795,7 @@ class MMTSDemuxer extends BaseDemuxer {
             fileposition: filePosition,
             mmtsSourceInfo: sourceInfo
         };
-        const randomAccessSafe = keyframe && this.video_random_access_safe_pending_;
+        const randomAccessSafe = mseRandomAccessSafe && this.video_random_access_safe_pending_;
         if (randomAccessSafe) {
             sample.mmtsRandomAccessSafe = true;
         }
