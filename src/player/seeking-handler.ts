@@ -124,6 +124,12 @@ class SeekingHandler {
     }
 
     public directSeek(seconds: number): void {
+        if (this._media_element &&
+            typeof this._media_element.currentTime === 'number' &&
+            isFinite(this._media_element.currentTime) &&
+            Math.abs(this._media_element.currentTime - seconds) < 0.001) {
+            return;
+        }
         this._request_set_current_time = true;
         this._media_element.currentTime = seconds;
     }

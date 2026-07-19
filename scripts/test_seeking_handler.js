@@ -59,10 +59,20 @@ function makeRanges(ranges = []) {
 
 class FakeMediaElement {
     constructor() {
-        this.currentTime = 0;
+        this._currentTime = 0;
+        this.currentTimeAssignments = 0;
         this.buffered = makeRanges();
         this.seekable = makeRanges();
         this.listeners = new Map();
+    }
+
+    get currentTime() {
+        return this._currentTime;
+    }
+
+    set currentTime(value) {
+        this._currentTime = value;
+        this.currentTimeAssignments++;
     }
 
     addEventListener(type, listener) {
@@ -201,11 +211,23 @@ function testRejectedControlledSeekUsesUnbufferedFallback() {
     assert.strictEqual(h.media.currentTime, 15);
 }
 
+function testDirectSeekDoesNotReassignIdenticalTarget() {
+    const h = makeHarness(() => true);
+    h.media.currentTime = 49.610417;
+    const assignments = h.media.currentTimeAssignments;
+
+    h.handler.directSeek(49.6104174);
+    assert.strictEqual(h.media.currentTimeAssignments, assignments);
+    h.handler.directSeek(49.7);
+    assert.strictEqual(h.media.currentTimeAssignments, assignments + 1);
+}
+
 function main() {
     testMediaSeeksDispatchOnlyLastTarget();
     testApiSeekDispatchesImmediately();
     testDestroyCancelsPendingMediaSeek();
     testRejectedControlledSeekUsesUnbufferedFallback();
+    testDirectSeekDoesNotReassignIdenticalTarget();
     console.log('seeking-handler tests passed');
 }
 

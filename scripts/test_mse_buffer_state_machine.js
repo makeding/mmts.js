@@ -333,6 +333,9 @@ function makeHarness(overrides) {
         onStartupGroupAppended(startupGroup) {
             log.push(['startupGroupAppended', startupGroup]);
         },
+        onPlaybackOperationComplete(operation, result) {
+            log.push(['playbackOperationComplete', operation, result]);
+        },
         onAudioTrackSwitchRebuildComplete(operation) {
             log.push(['audioTrackSwitchRebuildComplete', operation]);
         },
@@ -2243,6 +2246,75 @@ function testStartupGroupSeeksToFirstActualTrackIntersection() {
     );
 }
 
+function testSeekStartupGroupPrerollsWithoutIntermediateRapSeek() {
+    const h = makeHarness({config: {isMMTS: true}});
+    const operation = makePlaybackOperation(
+        'seek',
+        2,
+        undefined,
+        0,
+        'queued',
+        49610.417
+    );
+    assert.strictEqual(h.sm.setPlaybackOperation(operation), true);
+    h.sm.onRecommendedSeekPoint(49.610417);
+
+    const startupGroup = attachStartupGroupOperation({
+        videoInitSegment: makeInit('video'),
+        audioInitSegment: makeInit('audio'),
+        videoMediaSegment: makeSegment('video', 49.282, 49.55, 1024),
+        audioMediaSegment: makeSegment('audio', 49.25, 49.55, 1024),
+        startupTime: 49.282,
+        videoDecodeStart: 49.282,
+        videoCompositionStart: 49.282,
+        audioStart: 49.25,
+        audioEnd: 49.55,
+        syncPoint: 49.282,
+        playableStart: 49.282,
+        playableEnd: 49.55,
+        hasAudio: true,
+        hasVideo: true,
+    }, operation);
+    h.sm.onStartupGroup(startupGroup);
+    h.updateEnd('video');
+    h.updateEnd('audio');
+    h.updateEnd('video');
+    h.ranges.video.push({start: 49.282, end: 49.55});
+    h.ranges.audio.push({start: 49.25, end: 49.55});
+    h.updateEnd('audio');
+
+    assert.strictEqual(
+        h.log.some((entry) =>
+            entry[0] === 'seekMedia' && entry[2] === 'STARTUP_GROUP'
+        ),
+        false
+    );
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'playbackOperationComplete'),
+        false
+    );
+
+    h.sm.onMediaSegment(
+        'video',
+        attachPlaybackOperation(makeSegment('video', 49.55, 50, 1024), operation)
+    );
+    h.sm.onMediaSegment(
+        'audio',
+        attachPlaybackOperation(makeSegment('audio', 49.55, 50, 1024), operation)
+    );
+    h.ranges.video[0].end = 50;
+    h.updateEnd('video');
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'seekMedia'), false);
+    h.ranges.audio[0].end = 50;
+    h.updateEnd('audio');
+
+    const seeks = h.log.filter((entry) => entry[0] === 'seekMedia');
+    assert.deepStrictEqual(seeks, [['seekMedia', 49.610417, 'RECOMMEND_SEEKPOINT']]);
+    const completions = h.log.filter((entry) => entry[0] === 'playbackOperationComplete');
+    assert.strictEqual(completions.length, 1);
+    assert.strictEqual(completions[0][2].committedTimeMilliseconds, 49610.417);
+}
+
 function testStartupGroupRejectsMissingRequiredAudioSegment() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onStartupGroup(attachStartupGroupOperation({
@@ -3067,6 +3139,7 @@ testNonMMTSDirectSeekKeepsRequestedTime();
 testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease();
 testOverlappingStartupAppendsKeepPerTrackCompletionIdentity();
 testStartupGroupSeeksToFirstActualTrackIntersection();
+testSeekStartupGroupPrerollsWithoutIntermediateRapSeek();
 testStartupGroupRejectsMissingRequiredAudioSegment();
 testStartupGroupAppendWatchdogIsAbsoluteAndFencesLateUpdateEnd();
 testStartupGroupCompleteAppendClearsWatchdogBeforeRelease();

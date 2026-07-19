@@ -1551,6 +1551,9 @@ class MSEBufferStateMachine {
 
         const startupGroup = this._pending_startup_group;
         const startupTime = this._resolveStartupSeekTime(startupGroup);
+        const operation = startupGroup.playbackOperation;
+        const seekOperation = isPlaybackOperation(operation) && operation.kind === 'seek' ?
+            operation : null;
         const appendedGroup = startupTime === startupGroup.startupTime ?
             startupGroup :
             Object.assign({}, startupGroup, {startupTime});
@@ -1561,16 +1564,25 @@ class MSEBufferStateMachine {
             );
         }
         this._clearPendingStartupGroup();
-        this._current_time = startupTime;
-        if (this._output.seekMedia) {
-            this._output.seekMedia(startupTime, 'STARTUP_GROUP');
+        if (seekOperation !== null) {
+            if (this._pending_media_seek_target == null) {
+                const requestedTarget = seekOperation.requestedTimeMilliseconds / 1000;
+                this._pending_media_seek_target = requestedTarget;
+                this._pending_media_seek_reason = 'RECOMMEND_SEEKPOINT';
+                this._pending_media_seek_min_forward = 0.05;
+            }
+            this._main_state = 'SEEKING';
+        } else {
+            this._current_time = startupTime;
+            if (this._output.seekMedia) {
+                this._output.seekMedia(startupTime, 'STARTUP_GROUP');
+            }
         }
         if (this._output.onStartupGroupAppended) {
             this._output.onStartupGroupAppended(appendedGroup);
         }
-        const operation = appendedGroup.playbackOperation;
         if (isPlaybackOperation(operation) &&
-            (operation.kind === 'startup' || operation.kind === 'seek')) {
+            operation.kind === 'startup') {
             this._output.onPlaybackOperationComplete?.(operation, {
                 committedTimeMilliseconds: startupTime * 1000,
             });
@@ -3318,6 +3330,13 @@ class MSEBufferStateMachine {
             this._timeline_seek_target_time = null;
             if (this._output.seekMedia) {
                 this._output.seekMedia(playableTarget, reason);
+            }
+            const operation = this._playback_operation;
+            if (reason === 'RECOMMEND_SEEKPOINT' &&
+                isPlaybackOperation(operation) && operation.kind === 'seek') {
+                this._output.onPlaybackOperationComplete?.(operation, {
+                    committedTimeMilliseconds: playableTarget * 1000,
+                });
             }
             if (reason === 'AUDIO_TRACK_SWITCH_REBUILD') {
                 const pendingOperation = this._pending_audio_rebuild_operation;
