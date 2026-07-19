@@ -123,7 +123,7 @@ declare namespace Mpegts {
         /**
          * @desc Enable IO stash buffer. Set to false if you need realtime (minimal latency) for live stream
          *          playback, but may stalled if there's network jittering.
-         * @defaultvalue true; false for MMTS VOD
+         * @defaultvalue true
          */
         enableStashBuffer?: boolean;
         /**
@@ -184,11 +184,6 @@ declare namespace Mpegts {
          * @desc Force the MMTS HEVC video packet_id. Useful for choosing an alternate video asset.
          */
         mmtsVideoPacketId?: number;
-        /**
-         * @desc Number of HEVC samples accumulated before remuxing an MMTS media segment.
-         * @defaultvalue undefined; 16 for MMTS VOD; 8 for MMTS live
-         */
-        mmtsVideoSegmentSampleCount?: number;
 
         /**
          * @desc Defer initial MMTS HEVC video SourceBuffer creation until the audio init segment has arrived.
@@ -356,12 +351,12 @@ declare namespace Mpegts {
         /**
          * @desc Required forward buffer before initial playback starts, in seconds. Set to 0 to disable.
          *       If unset, MMTS live playback falls back to `mmtsLiveInitialBufferDuration`.
-         * @defaultvalue 0; 4 for MMTS VOD; 3 for MMTS live lazy-load
+         * @defaultvalue 0; 3 for MMTS live lazy-load
          */
         startupBufferDuration?: number;
         /**
          * @desc Maximum media duration to combine into one MSE appendBuffer call, in seconds. Set to 0 to disable.
-         * @defaultvalue 0 for MMTS VOD; 0.35 for MMTS live
+         * @defaultvalue 0; 0.5 for MMTS VOD; 0.35 for MMTS live
          */
         mseAppendBatchDuration?: number;
         /**

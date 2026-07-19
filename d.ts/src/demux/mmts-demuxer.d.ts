@@ -95,7 +95,6 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private audio_init_segment_dispatched_;
     private audio_init_segment_pending_;
     private video_init_segment_dispatched_;
-    private video_initial_media_segment_pending_;
     private video_sample_entry_type_;
     private audio_last_sample_pts_;
     private aac_last_incomplete_data_;
@@ -167,7 +166,6 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private videoMpuKey;
     private takePendingVideoRecoveryGap;
     private appendTimedVideoAccessUnit;
-    private getVideoSegmentSampleCount;
     private initializeVideoOutputBases;
     private updateVodMediaInfoIndex;
     private applyPlaybackModeMediaInfo;

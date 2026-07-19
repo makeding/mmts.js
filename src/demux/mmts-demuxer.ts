@@ -4,7 +4,7 @@ import CompressedIP from './compressed-ip';
 import MMTP, {MMTPPayloadType} from './mmtp';
 import {MMTAsset} from './mmt-si';
 import MPU, {FragmentationIndicator, MFUFragment, MPUInfo} from './mpu';
-import MMTSProgram, {MMTSByteSpanList, MMTSPacketLossInfo, MMTSTimestamp} from './mmts-program';
+import MMTSProgram, {MMTSPacketLossInfo, MMTSTimestamp} from './mmts-program';
 import {AACLOASParser, AudioSpecificConfig, LOASAACFrame} from './aac';
 import {MPEG4AudioObjectTypes, MPEG4SamplingFrequencyIndex} from './mpeg4-audio';
 import {H265NaluHVC1, H265NaluPayload, H265NaluType, HEVCDecoderConfigurationRecord} from './h265';
@@ -49,6 +49,7 @@ import {
     isMMTSVideoFallback,
     isSupportedAACChannelConfig,
     payloadTypeName,
+    readH265NaluType,
     scramblingName,
     toHex,
     updateMMTSAudioTrackInfoFromFrame,
@@ -69,7 +70,7 @@ interface PendingMFUUnit {
     filePosition: number;
     mpuSequenceNumber: number;
     randomAccess: boolean;
-    unit: MMTSByteSpanList;
+    unit: Uint8Array;
 }
 
 interface VideoTimestamp {
@@ -323,7 +324,6 @@ class MMTSDemuxer extends BaseDemuxer {
     private audio_init_segment_dispatched_: boolean = false;
     private audio_init_segment_pending_: boolean = false;
     private video_init_segment_dispatched_: boolean = false;
-    private video_initial_media_segment_pending_: boolean = true;
     private video_sample_entry_type_: 'hvc1' | 'hev1' = 'hvc1';
     private audio_last_sample_pts_: number | undefined;
     private aac_last_incomplete_data_: Uint8Array = null;
@@ -474,7 +474,6 @@ class MMTSDemuxer extends BaseDemuxer {
         this.audio_parse_states_by_packet_id_ = {};
         this.audio_switch_cache_by_packet_id_ = {};
         this.video_mpu_assembler_.reset();
-        this.video_initial_media_segment_pending_ = true;
         this.subtitle_assembler_.reset();
         this.audio_timeline_ && this.audio_timeline_.destroy();
         this.audio_timeline_ = new MMTSAudioTimeline();
@@ -663,7 +662,7 @@ class MMTSDemuxer extends BaseDemuxer {
                                    fragment: MFUFragment,
                                    filePosition: number,
                                    randomAccess: boolean,
-                                   unit: MMTSByteSpanList): void {
+                                   unit: Uint8Array): void {
         if (asset === undefined) {
             this.cachePendingMfuUnit(packetId, mpuSequenceNumber, fragment, filePosition, randomAccess, unit);
             return;
@@ -674,7 +673,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.logUnsupportedMMTSAudioTrack(packetId, this.audio_track_infos_by_packet_id_[packetId]);
                 return;
             }
-            this.processAudioMfuUnit(packetId, asset, mpuSequenceNumber, fragment, unit.toUint8Array());
+            this.processAudioMfuUnit(packetId, asset, mpuSequenceNumber, fragment, unit);
             return;
         }
 
@@ -683,9 +682,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.logUnsupportedMMTSSubtitleTrack(packetId, asset);
                 return;
             }
-            this.subtitle_assembler_.processMfuUnit(
-                packetId, asset, mpuSequenceNumber, fragment, unit.toUint8Array()
-            );
+            this.subtitle_assembler_.processMfuUnit(packetId, asset, mpuSequenceNumber, fragment, unit);
             return;
         }
 
@@ -700,29 +697,22 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         this.video_sample_entry_type_ = asset.assetType === 'hev1' ? 'hev1' : 'hvc1';
 
-        const unitLength = unit.readUint32BE(0);
+        const unitLength = MPU.readLengthPrefixedUnitLength(unit);
         if (unitLength === undefined || unitLength !== unit.byteLength - 4) {
             return;
         }
 
-        const firstNaluByte = unit.readUint8(4);
-        if (firstNaluByte === undefined || unit.byteLength < 6) {
+        const naluData = unit.subarray(4);
+        if (naluData.byteLength < 2) {
             return;
         }
 
-        const naluType = (firstNaluByte >> 1) & 0x3f;
+        const naluType = (naluData[0] >> 1) & 0x3f;
         this.logVideoNalu(packetId, mpuSequenceNumber, fragment, naluType, randomAccess, unit.byteLength);
-        const parameterSet = naluType === H265NaluType.kSliceVPS ||
-            naluType === H265NaluType.kSliceSPS ||
-            naluType === H265NaluType.kSlicePPS;
-        // Parameter sets are small and live beyond the current sample, so keep
-        // them contiguous. Large VCL/SEI payloads stay as immutable source spans
-        // and carry only a small parsing prefix until the final fMP4 write.
-        const contiguousUnit = parameterSet ? unit.toUint8Array() : null;
-        const hvc1 = contiguousUnit !== null ?
-            H265NaluHVC1.fromLengthPrefixedData(contiguousUnit, naluType) :
-            H265NaluHVC1.fromLengthPrefixedSpans(unit.spans, unit.byteLength, naluType);
-        const naluData = contiguousUnit !== null ? contiguousUnit.subarray(4) : hvc1.getPayloadPrefix();
+        // The MFU is already encoded as a four-byte-length-prefixed HEVC NAL.
+        // Keep the assembled storage as the sample shadow instead of copying the
+        // complete 4K payload into another HVC1 buffer before remuxing.
+        const hvc1 = H265NaluHVC1.fromLengthPrefixedData(unit, naluType);
 
         if (naluType === H265NaluType.kSliceVPS) {
             this.parseAndUpdateVideoParameterSet('vps', hvc1, naluData);
@@ -787,7 +777,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         const keyframe = isH265IrapNalu(naluType);
-        this.bindVideoNaluParameterSetChain(hvc1);
+        this.bindVideoNaluParameterSetChain(hvc1, naluData);
 
         if (fragment.sampleNumber === undefined) {
             const completed = this.video_mpu_assembler_.appendStandaloneAccessUnit(
@@ -796,7 +786,7 @@ class MMTSDemuxer extends BaseDemuxer {
                 undefined,
                 filePosition,
                 [hvc1],
-                hvc1.byteLength,
+                hvc1.data.byteLength,
                 keyframe
             );
             for (const accessUnit of completed) {
@@ -994,8 +984,8 @@ class MMTSDemuxer extends BaseDemuxer {
         };
     }
 
-    private bindVideoNaluParameterSetChain(nalu: H265NaluHVC1): void {
-        const prefix = (H265Parser as any).parseSliceHeaderPrefix(nalu.getPayloadPrefix());
+    private bindVideoNaluParameterSetChain(nalu: H265NaluHVC1, naluData: Uint8Array): void {
+        const prefix = (H265Parser as any).parseSliceHeaderPrefix(naluData);
         if (prefix === null || prefix === undefined) {
             return;
         }
@@ -1590,10 +1580,10 @@ class MMTSDemuxer extends BaseDemuxer {
 
         for (let i = 0; i < vclUnits.length; i++) {
             const unit = vclUnits[i];
-            if (unit.byteLength < 7) {
+            if (unit.data.byteLength < 7) {
                 return null;
             }
-            const nalu = unit.getPayloadPrefix();
+            const nalu = unit.data.subarray(4);
             const prefix = (H265Parser as any).parseSliceHeaderPrefix(nalu);
             if (prefix === null || prefix === undefined) {
                 return null;
@@ -1941,19 +1931,9 @@ class MMTSDemuxer extends BaseDemuxer {
         this.maybeSeedAudioAfterVideoBootstrap(sourceDts);
         this.logVideoSample(packetId, mpuSequenceNumber, units, keyframe, dts, pts, videoTimestamp);
 
-        const segmentSampleCount = this.video_initial_media_segment_pending_ ?
-            8 : this.getVideoSegmentSampleCount();
-        if (this.video_track_.samples.length >= segmentSampleCount) {
+        if (this.video_track_.samples.length >= 8) {
             this.dispatchVideoMediaSegment();
         }
-    }
-
-    private getVideoSegmentSampleCount(): number {
-        const value = this.config_.mmtsVideoSegmentSampleCount;
-        if (Number.isInteger(value) && value > 0) {
-            return value;
-        }
-        return this.config_.isLive ? 8 : 16;
     }
 
     private initializeVideoOutputBases(videoTimestamp: VideoTimestamp): void {
@@ -3277,8 +3257,7 @@ class MMTSDemuxer extends BaseDemuxer {
 
         let score = 0;
         for (const pendingUnit of pending) {
-            const firstNaluByte = pendingUnit.unit.readUint8(4);
-            const naluType = firstNaluByte === undefined ? -1 : (firstNaluByte >> 1) & 0x3f;
+            const naluType = readH265NaluType(pendingUnit.unit);
             switch (naluType) {
                 case H265NaluType.kSliceVPS:
                     score += 100;
@@ -3335,7 +3314,6 @@ class MMTSDemuxer extends BaseDemuxer {
         };
         this.video_track_ = {type: 'video', id: 1, sequenceNumber: this.video_track_.sequenceNumber, samples: [], length: 0};
         this.video_init_segment_dispatched_ = false;
-        this.video_initial_media_segment_pending_ = true;
         this.video_sample_entry_type_ = 'hvc1';
         this.video_sample_index_ = 0;
         this.video_started_ = false;
@@ -3741,17 +3719,13 @@ class MMTSDemuxer extends BaseDemuxer {
                                 fragment: MFUFragment,
                                 filePosition: number,
                                 randomAccess: boolean,
-                                unit: MMTSByteSpanList): void {
-        const unitLength = unit.readUint32BE(0);
+                                unit: Uint8Array): void {
+        const unitLength = MPU.readLengthPrefixedUnitLength(unit);
         if (unitLength === undefined || unitLength !== unit.byteLength - 4 || unit.byteLength < 6) {
             return;
         }
 
-        const firstNaluByte = unit.readUint8(4);
-        if (firstNaluByte === undefined) {
-            return;
-        }
-        const naluType = (firstNaluByte >> 1) & 0x3f;
+        const naluType = (unit[4] >> 1) & 0x3f;
         if (!isH265VclNalu(naluType) &&
             naluType !== H265NaluType.kSliceVPS &&
             naluType !== H265NaluType.kSliceSPS &&
@@ -3772,11 +3746,13 @@ class MMTSDemuxer extends BaseDemuxer {
             pending.shift();
         }
 
+        const unitCopy = new Uint8Array(unit.byteLength);
+        unitCopy.set(unit);
         pending.push({
             fragment: {
                 timed: fragment.timed,
                 fragmentationIndicator: fragment.fragmentationIndicator,
-                payload: fragment.payload,
+                payload: unitCopy,
                 sampleNumber: fragment.sampleNumber,
                 offset: fragment.offset,
                 nalUnitLength: fragment.nalUnitLength
@@ -3784,7 +3760,7 @@ class MMTSDemuxer extends BaseDemuxer {
             filePosition,
             mpuSequenceNumber,
             randomAccess,
-            unit
+            unit: unitCopy
         });
     }
 
@@ -3818,16 +3794,18 @@ class MMTSDemuxer extends BaseDemuxer {
                                   fragment: MFUFragment,
                                   filePosition: number,
                                   randomAccess: boolean,
-                                  unit: MMTSByteSpanList): void {
+                                  unit: Uint8Array): void {
         if (this.pre_init_video_units_.length >= 256) {
             this.pre_init_video_units_.shift();
         }
 
+        const unitCopy = new Uint8Array(unit.byteLength);
+        unitCopy.set(unit);
         this.pre_init_video_units_.push({
             fragment: {
                 timed: fragment.timed,
                 fragmentationIndicator: fragment.fragmentationIndicator,
-                payload: fragment.payload,
+                payload: unitCopy,
                 sampleNumber: fragment.sampleNumber,
                 offset: fragment.offset,
                 nalUnitLength: fragment.nalUnitLength
@@ -3835,7 +3813,7 @@ class MMTSDemuxer extends BaseDemuxer {
             filePosition,
             mpuSequenceNumber,
             randomAccess,
-            unit
+            unit: unitCopy
         });
     }
 
@@ -4043,7 +4021,6 @@ class MMTSDemuxer extends BaseDemuxer {
             (this.video_track_ as any).mmtsVideoTrackSwitch = Object.assign({}, this.pending_video_track_switch_);
         }
         this.onDataAvailable && this.onDataAvailable(null, this.video_track_, force);
-        this.video_initial_media_segment_pending_ = false;
         this.pending_video_track_switch_ = null;
         this.video_track_ = {
             type: 'video',

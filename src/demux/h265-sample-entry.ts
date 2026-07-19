@@ -50,7 +50,7 @@ export function normalizeH265AccessUnitForSampleEntry(sampleEntryType: H265Sampl
             if (normalizedUnits === null) {
                 normalizedUnits = units.slice(0, index);
             }
-            removedLength += unit.byteLength || unit.data.byteLength;
+            removedLength += unit.data.byteLength;
         } else if (normalizedUnits !== null) {
             normalizedUnits.push(unit);
         }

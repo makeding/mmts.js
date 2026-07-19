@@ -66,7 +66,6 @@ export const defaultConfig = {
     fixAudioTimestampGap: true,
 
     mmtsVideoPacketId: undefined,
-    mmtsVideoSegmentSampleCount: undefined,
     mmtsDeferHevcVideoInitUntilAudio: false,
     mmtsPreserveRemuxerTimestampOnPacketDiscontinuity: false,
     mmtsClampAudioTimestampGap: false,
@@ -106,13 +105,6 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
     }
 
     config.isMMTS = true;
-    if (!customConfig || customConfig.enableStashBuffer === undefined) {
-        // MMTS demuxing already preserves the few unconsumed TLV bytes between
-        // reads. VOD can therefore keep source chunks immutable and reference
-        // them from shadow spans instead of copying the whole stream through
-        // the generic IO stash first.
-        config.enableStashBuffer = config.isLive;
-    }
     if (!customConfig || customConfig.mmtsDeferHevcVideoInitUntilAudio === undefined) {
         config.mmtsDeferHevcVideoInitUntilAudio = !config.isLive && !Browser.firefox;
     }
@@ -159,10 +151,7 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
         config.mseAppendTrackLeadLimit = config.isLive ? 1.5 : 2;
     }
     if (!customConfig || customConfig.mseAppendBatchDuration === undefined) {
-        config.mseAppendBatchDuration = config.isLive ? 0.35 : 0;
-    }
-    if (!customConfig || customConfig.mmtsVideoSegmentSampleCount === undefined) {
-        config.mmtsVideoSegmentSampleCount = config.isLive ? 8 : 16;
+        config.mseAppendBatchDuration = config.isLive ? 0.35 : 0.5;
     }
     if (!customConfig || customConfig.autoCleanupSourceBuffer === undefined) {
         config.autoCleanupSourceBuffer = true;
@@ -195,7 +184,7 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
     }
     if ((!config.isLive || config.lazyLoadOnLive) &&
         (!customConfig || customConfig.startupBufferDuration === undefined)) {
-        config.startupBufferDuration = config.isLive ? 3 : 4;
+        config.startupBufferDuration = config.isLive ? 3 : 0;
     }
     if (config.isLive && (!customConfig || customConfig.mmtsLiveInitialBufferDuration === undefined)) {
         config.mmtsLiveInitialBufferDuration = 1.5;

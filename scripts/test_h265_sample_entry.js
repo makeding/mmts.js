@@ -64,7 +64,6 @@ function loadNormalizer() {
 function loadH265() {
     return loadModule('src/demux/h265.ts', {
         '../utils/logger': {__esModule: true, default: {e() {}, v() {}, w() {}, i() {}, d() {}}},
-        '../utils/exception': {IllegalStateException: class IllegalStateException extends Error {}},
     });
 }
 
@@ -158,31 +157,10 @@ function testHev1ConfigurationAllowsInBandParameterSets() {
     assert.strictEqual(inBand[35] & 0x80, 0);
 }
 
-function testShadowLengthPrefixedNaluCopiesOnlyOnFinalWrite() {
-    const {H265NaluHVC1, H265NaluType} = loadH265();
-    const bytes = new Uint8Array(10004);
-    new DataView(bytes.buffer).setUint32(0, 10000);
-    bytes[4] = 2;
-    for (let i = 5; i < bytes.length; i++) {
-        bytes[i] = i & 0xff;
-    }
-    const spans = [bytes.subarray(0, 317), bytes.subarray(317, 4099), bytes.subarray(4099)];
-    const nalu = H265NaluHVC1.fromLengthPrefixedSpans(spans, bytes.byteLength, H265NaluType.kSliceTRAIL_R, 128);
-
-    assert.strictEqual(nalu.isShadow, true);
-    assert.strictEqual(nalu.byteLength, bytes.byteLength);
-    assert.strictEqual(nalu.data.byteLength, 128);
-    assert.deepStrictEqual(Array.from(nalu.getPayloadPrefix(32)), Array.from(bytes.subarray(4, 36)));
-    const output = new Uint8Array(bytes.byteLength + 7);
-    nalu.copyTo(output, 7);
-    assert.deepStrictEqual(Array.from(output.subarray(7)), Array.from(bytes));
-}
-
 testHvc1RemovesParameterSetsAndPreservesOrder();
 testHvc1LeavesConformantAccessUnitUntouched();
 testHev1RetainsParameterSets();
 testUnsupportedSampleEntryIsRejected();
 testHev1ConfigurationAllowsInBandParameterSets();
-testShadowLengthPrefixedNaluCopiesOnlyOnFinalWrite();
 
 console.log('h265 sample-entry tests passed');

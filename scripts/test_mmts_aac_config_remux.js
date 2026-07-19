@@ -112,23 +112,16 @@ function testMMTSDefaultsPreserveAudioAndVideoGaps() {
     assert.strictEqual(vodConfig.mmtsDeferHevcVideoInitUntilAudio, true);
     assert.strictEqual(vodConfig.mmtsClampAudioTimestampGap, false);
     assert.strictEqual(vodConfig.mmtsClampVideoTimestampGap, false);
-    assert.strictEqual(vodConfig.enableStashBuffer, false);
     assert.strictEqual(vodConfig.lazyLoadRecoverBytes, 96 * 1024 * 1024);
-    assert.strictEqual(vodConfig.mseAppendBatchDuration, 0);
-    assert.strictEqual(vodConfig.mmtsVideoSegmentSampleCount, 16);
-    assert.strictEqual(vodConfig.startupBufferDuration, 4);
+    assert.strictEqual(vodConfig.mseAppendBatchDuration, 0.5);
 
     const liveConfig = configModule.createDefaultConfig();
     configModule.applyMediaDataSourceConfig(liveConfig, {type: 'mmts', isLive: true}, undefined);
     assert.strictEqual(liveConfig.mmtsDeferHevcVideoInitUntilAudio, false);
     assert.strictEqual(liveConfig.mmtsClampAudioTimestampGap, false);
     assert.strictEqual(liveConfig.mmtsClampVideoTimestampGap, false);
-    assert.strictEqual(liveConfig.enableStashBuffer, true);
     assert.strictEqual(liveConfig.lazyLoadRecoverBytes, 32 * 1024 * 1024);
     assert.strictEqual(liveConfig.mseAppendBatchDuration, 0.35);
-    assert.strictEqual(liveConfig.mmtsVideoSegmentSampleCount, 8);
-    assert.strictEqual(liveConfig.startupBufferDuration, undefined);
-    assert.strictEqual(liveConfig.mmtsLiveInitialBufferDuration, 1.5);
 }
 
 function testHEVCInitUsesHvc1SampleEntry() {
