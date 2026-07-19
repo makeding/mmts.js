@@ -3055,24 +3055,24 @@ function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(8, TEST_H265_NALU_TYPE.CRA_NUT),
-        true
+        false
     );
-    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(resetCount, 0);
     assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
         true
     );
-    assert.strictEqual(resetCount, 2);
+    assert.strictEqual(resetCount, 1);
     assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
         false
     );
-    assert.strictEqual(resetCount, 2);
-    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 0), false);
+    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 0), true);
     assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 1), true);
     assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(false, 1), false);
 }

@@ -1496,13 +1496,13 @@ class MMTSDemuxer extends BaseDemuxer {
         const shortMpu = previousNominal > 0 && accessUnitCount < previousNominal;
         const startsWithRandomAccess = isH265IrapNalu(firstNalUnitType);
         const recoverReferences = startsWithRandomAccess &&
-            (shortMpu || this.video_reference_recovery_pending_);
+            this.video_reference_recovery_pending_;
 
         if (recoverReferences) {
             // A shortened GOP at an MMTS splice may omit pictures referenced by
-            // the leading RASL pictures of this or the following CRA.  Resetting
-            // POC recovery makes the CRA a no-RASL-output boundary, so those
-            // undecodable leading pictures never reach MSE/VideoToolbox.
+            // the following CRA.  Recover only at the next complete MPU: the
+            // shortened MPU itself is discarded and must never reach the
+            // decoder, including its nominal CRA.
             this.hevc_poc_recovery_.reset(true);
         }
 
@@ -1512,10 +1512,10 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private shouldDropShortVideoMpuPicture(shortMpu: boolean, decodingIndex: number): boolean {
-        // Keep only the CRA at a truncated GOP boundary.  Even non-RASL tail
-        // pictures in a damaged short MPU may reference pictures omitted by
-        // the splice, which VideoToolbox reports as ReferenceMissing.
-        return shortMpu && decodingIndex > 0;
+        // The CRA carried by a truncated MPU is not a trustworthy decoder
+        // refresh point.  Drop the complete MPU and recover at the next full
+        // random-access MPU instead.
+        return shortMpu;
     }
 
     private parseHEVCVideoAccessUnit(accessUnit: MMTSVideoAccessUnit): ParsedHEVCVideoAccessUnit | null {
