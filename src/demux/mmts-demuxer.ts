@@ -1106,6 +1106,14 @@ class MMTSDemuxer extends BaseDemuxer {
                                 fragment: MFUFragment,
                                 unit: Uint8Array): void {
         this.maybeSelectPrimaryAudioAsset(asset);
+        const declaredTrack = this.audio_track_infos_by_packet_id_[packetId];
+        if (declaredTrack !== undefined && declaredTrack.supported === false) {
+            // Do not repeatedly parse and copy a declared 22.2ch/ALS stream
+            // that the current MSE output path cannot select.  The component
+            // descriptor already provides the layout shown to the player.
+            this.logUnsupportedMMTSAudioTrack(packetId, declaredTrack);
+            return;
+        }
         const state = this.getAudioParseState(packetId);
         const loas = asset.audioStreamType === 0x1c ?
             this.wrapRawAacPayloadWithLoasHeader(unit, asset.audioSpecificConfig) :

@@ -24,7 +24,7 @@ export interface MMTSAudioTrackInfo {
     channelLayout?: string;
     audioSampleRate?: number;
     supported?: boolean;
-    unsupportedReason?: 'als';
+    unsupportedReason?: 'als' | 'channel-layout' | 'aac-channel-config';
     selected: boolean;
 }
 export interface MMTSVideoTrackInfo {
@@ -85,7 +85,7 @@ export interface MMTSSubtitleTrackInfo {
     subtitleCompressionType?: number;
     subtitleReferenceStartTime?: number;
     supported?: boolean;
-    unsupportedReason?: 'exi';
+    unsupportedReason?: 'compression';
 }
 export declare class MMTSAudioTrackList {
     tracks: MMTSAudioTrackInfo[];

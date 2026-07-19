@@ -24,6 +24,7 @@ export interface MFUFragment {
     timed: boolean;
     fragmentationIndicator: FragmentationIndicator;
     payload: Uint8Array;
+    movieFragmentSequenceNumber?: number;
     sampleNumber?: number;
     offset?: number;
     nalUnitLength?: number;

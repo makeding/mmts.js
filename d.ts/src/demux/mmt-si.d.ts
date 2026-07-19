@@ -65,8 +65,16 @@ export interface MMTAsset {
     hevcTierFlag?: boolean;
     hevcProfileIdc?: number;
     hevcProfileCompatibility?: number;
+    hevcProgressiveSourceFlag?: boolean;
+    hevcInterlacedSourceFlag?: boolean;
+    hevcNonPackedConstraintFlag?: boolean;
+    hevcFrameOnlyConstraintFlag?: boolean;
     hevcLevelIdc?: number;
-    hevcHdrWcgIdc?: number;
+    hevcTemporalLayerSubsetFlag?: boolean;
+    hevcStillPresentFlag?: boolean;
+    hevc24HourPicturePresentFlag?: boolean;
+    hevcTemporalIdMin?: number;
+    hevcTemporalIdMax?: number;
     dataComponentId?: number;
     dataComponentInfo?: Uint8Array;
     subtitleTag?: number;
