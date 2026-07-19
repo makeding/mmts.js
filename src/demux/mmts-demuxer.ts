@@ -78,6 +78,9 @@ interface VideoTimestamp {
     pts: number;
     rawDts?: number;
     rawPts?: number;
+    rawDtsTicks?: number;
+    rawPtsTicks?: number;
+    timescale?: number;
     decodingIndex?: number;
     presentationIndex?: number;
     source: 'descriptor';
@@ -88,6 +91,9 @@ interface MappedVideoDescriptorTimestamp {
     pts: number;
     rawDts: number;
     rawPts: number;
+    rawDtsTicks: number;
+    rawPtsTicks: number;
+    timescale: number;
 }
 
 interface MMTSTimedVideoAccessUnit extends MMTSVideoAccessUnit {
@@ -127,6 +133,9 @@ interface MMTSSampleSourceInfo {
     restartFilePosition?: number;
     rawDts?: number;
     rawPts?: number;
+    rawDtsTicks?: number;
+    rawPtsTicks?: number;
+    timescale?: number;
     decodingIndex?: number;
     presentationIndex?: number;
     dts: number;
@@ -296,6 +305,8 @@ class MMTSDemuxer extends BaseDemuxer {
     private last_video_source_info_: MMTSSampleSourceInfo | null = null;
     private output_video_dts_base_: number = -1;
     private output_video_raw_dts_base_: number = -1;
+    private output_video_raw_dts_base_ticks_: number = -1;
+    private video_timestamp_timescale_: number = 0;
     private primary_video_packet_id_: number = -1;
     private primary_audio_packet_id_: number = -1;
     private manually_selected_audio_packet_id_: number = -1;
@@ -457,6 +468,8 @@ class MMTSDemuxer extends BaseDemuxer {
         const preserveTimestampBase = !this.config_.isLive;
         const outputVideoDtsBase = this.output_video_dts_base_;
         const outputVideoRawDtsBase = this.output_video_raw_dts_base_;
+        const outputVideoRawDtsBaseTicks = this.output_video_raw_dts_base_ticks_;
+        const videoTimestampTimescale = this.video_timestamp_timescale_;
         const preserveVideoBase = preserveTimestampBase &&
             this.primary_video_packet_id_ >= 0 &&
             this.program_.hasTimestampBase(this.primary_video_packet_id_) &&
@@ -484,6 +497,8 @@ class MMTSDemuxer extends BaseDemuxer {
         if (preserveVideoBase) {
             this.output_video_dts_base_ = outputVideoDtsBase;
             this.output_video_raw_dts_base_ = outputVideoRawDtsBase;
+            this.output_video_raw_dts_base_ticks_ = outputVideoRawDtsBaseTicks;
+            this.video_timestamp_timescale_ = videoTimestampTimescale;
         }
         this.audio_init_segment_dispatched_ = false;
         this.audio_init_segment_pending_ = true;
@@ -755,6 +770,10 @@ class MMTSDemuxer extends BaseDemuxer {
 
         if (!this.video_init_segment_dispatched_) {
             this.cachePreInitVideoUnit(mpuSequenceNumber, fragment, filePosition, randomAccess, unit);
+            const timescale = this.program_.getTimestampTimescale(packetId, mpuSequenceNumber);
+            if (timescale !== null) {
+                this.video_timestamp_timescale_ = timescale;
+            }
             this.tryActivateLatestCompleteParameterSet();
             return;
         }
@@ -998,6 +1017,9 @@ class MMTSDemuxer extends BaseDemuxer {
     private activateVideoParameterSetChain(chain: HEVCParameterSetChain): void {
         const signatureChanged = this.active_video_parameter_set_signature_ !== chain.signature;
         if (!signatureChanged && this.video_metadata_.details !== undefined) {
+            if (!this.video_init_segment_dispatched_) {
+                this.dispatchVideoInitSegment();
+            }
             return;
         }
         const details = {
@@ -1460,6 +1482,10 @@ class MMTSDemuxer extends BaseDemuxer {
             this.rejectVideoMpu(accessUnits, 'timestamp-or-poc-commit-failed');
             return;
         }
+        this.video_timestamp_timescale_ = committedTimestamps[0].timescale;
+        if (!this.video_init_segment_dispatched_ && this.video_metadata_.details !== undefined) {
+            this.dispatchVideoInitSegment();
+        }
 
         this.program_.setPresentationIndexes(packetId, mpuSequenceNumber, prepared.presentationIndexes);
         delete this.rejected_video_mpus_[this.videoMpuKey(packetId, mpuSequenceNumber)];
@@ -1701,7 +1727,15 @@ class MMTSDemuxer extends BaseDemuxer {
             !Number.isFinite(rawDts) || !Number.isFinite(rawPts)) {
             return null;
         }
-        return {dts, pts, rawDts, rawPts};
+        return {
+            dts,
+            pts,
+            rawDts,
+            rawPts,
+            rawDtsTicks: timestamp.rawDts,
+            rawPtsTicks: timestamp.rawPts,
+            timescale: timestamp.timescale
+        };
     }
 
     private rejectVideoMpu(accessUnits: MMTSVideoAccessUnit[], reason: string): void {
@@ -1859,6 +1893,12 @@ class MMTSDemuxer extends BaseDemuxer {
         const sourceDts = videoTimestamp.dts - this.output_video_dts_base_;
         const dts = sourceDts;
         const pts = videoTimestamp.pts - this.output_video_dts_base_;
+        const exactDts = videoTimestamp.rawDtsTicks !== undefined &&
+            this.output_video_raw_dts_base_ticks_ >= 0 ?
+            videoTimestamp.rawDtsTicks - this.output_video_raw_dts_base_ticks_ : undefined;
+        const exactPts = videoTimestamp.rawPtsTicks !== undefined &&
+            this.output_video_raw_dts_base_ticks_ >= 0 ?
+            videoTimestamp.rawPtsTicks - this.output_video_raw_dts_base_ticks_ : undefined;
         const timestampRestartFilePosition = this.program_ &&
             typeof this.program_.getTimestampRestartFilePosition === 'function' ?
             this.program_.getTimestampRestartFilePosition(packetId, mpuSequenceNumber) : null;
@@ -1880,6 +1920,9 @@ class MMTSDemuxer extends BaseDemuxer {
             restartFilePosition,
             rawDts: videoTimestamp.rawDts,
             rawPts: videoTimestamp.rawPts,
+            rawDtsTicks: videoTimestamp.rawDtsTicks,
+            rawPtsTicks: videoTimestamp.rawPtsTicks,
+            timescale: videoTimestamp.timescale,
             decodingIndex: videoTimestamp.decodingIndex,
             presentationIndex: videoTimestamp.presentationIndex,
             dts,
@@ -1902,6 +1945,9 @@ class MMTSDemuxer extends BaseDemuxer {
             dts,
             pts,
             cts: pts - dts,
+            mmtsDts: exactDts,
+            mmtsPts: exactPts,
+            mmtsTimescale: videoTimestamp.timescale,
             file_position: filePosition,
             fileposition: filePosition,
             mmtsSourceInfo: sourceInfo
@@ -1953,6 +1999,19 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.output_video_raw_dts_base_ = videoTimestamp.rawDts;
             }
             this.subtitle_assembler_.flush();
+        }
+
+        if (this.output_video_raw_dts_base_ticks_ < 0 &&
+            videoTimestamp.rawDtsTicks !== undefined &&
+            videoTimestamp.timescale !== undefined &&
+            videoTimestamp.timescale > 0) {
+            if (seekMediaTime !== undefined && !this.seek_preserved_video_timestamp_base_) {
+                this.output_video_raw_dts_base_ticks_ = videoTimestamp.rawDtsTicks -
+                    Math.round(seekMediaTime * videoTimestamp.timescale / 1000);
+            } else {
+                this.output_video_raw_dts_base_ticks_ = videoTimestamp.rawDtsTicks;
+            }
+            this.video_timestamp_timescale_ = videoTimestamp.timescale;
         }
 
         if (this.output_video_dts_base_ >= 0 &&
@@ -2423,6 +2482,9 @@ class MMTSDemuxer extends BaseDemuxer {
         let dts: number;
         let rawPts: number | undefined;
         let rawDts: number | undefined;
+        let rawPtsTicks: number | undefined;
+        let rawDtsTicks: number | undefined;
+        let timescale: number | undefined;
         let decodingIndex: number | undefined;
         let presentationIndex: number | undefined;
 
@@ -2435,6 +2497,9 @@ class MMTSDemuxer extends BaseDemuxer {
             dts = mappedTimestamp.dts;
             rawPts = mappedTimestamp.rawPts;
             rawDts = mappedTimestamp.rawDts;
+            rawPtsTicks = mappedTimestamp.rawPtsTicks;
+            rawDtsTicks = mappedTimestamp.rawDtsTicks;
+            timescale = mappedTimestamp.timescale;
             decodingIndex = timestamp.decodingIndex;
             presentationIndex = timestamp.presentationIndex;
             if (this.last_video_dts_ >= 0) {
@@ -2468,6 +2533,9 @@ class MMTSDemuxer extends BaseDemuxer {
             filePosition,
             rawDts,
             rawPts,
+            rawDtsTicks,
+            rawPtsTicks,
+            timescale,
             decodingIndex,
             presentationIndex,
             dts,
@@ -2476,7 +2544,18 @@ class MMTSDemuxer extends BaseDemuxer {
         this.last_video_dts_ = dts;
         this.last_video_pts_ = pts;
         this.last_video_source_info_ = sourceInfo;
-        return {dts, pts, rawDts, rawPts, decodingIndex, presentationIndex, source};
+        return {
+            dts,
+            pts,
+            rawDts,
+            rawPts,
+            rawDtsTicks,
+            rawPtsTicks,
+            timescale,
+            decodingIndex,
+            presentationIndex,
+            source
+        };
     }
 
     private logMissingVideoTimestamp(packetId: number, mpuSequenceNumber: number, auIndex: number): void {
@@ -3305,6 +3384,8 @@ class MMTSDemuxer extends BaseDemuxer {
         const lastVideoSourceInfo = this.last_video_source_info_;
         const outputVideoDtsBase = this.output_video_dts_base_;
         const outputVideoRawDtsBase = this.output_video_raw_dts_base_;
+        const outputVideoRawDtsBaseTicks = this.output_video_raw_dts_base_ticks_;
+        const videoTimestampTimescale = this.video_timestamp_timescale_;
 
         this.video_metadata_ = {
             vps: undefined,
@@ -3323,6 +3404,8 @@ class MMTSDemuxer extends BaseDemuxer {
         this.last_video_source_info_ = null;
         this.output_video_dts_base_ = -1;
         this.output_video_raw_dts_base_ = -1;
+        this.output_video_raw_dts_base_ticks_ = -1;
+        this.video_timestamp_timescale_ = 0;
         this.logged_video_nalu_count_ = 0;
         this.logged_dropped_video_sample_count_ = 0;
         this.logged_video_discontinuity_count_ = 0;
@@ -3364,6 +3447,8 @@ class MMTSDemuxer extends BaseDemuxer {
             this.last_video_source_info_ = lastVideoSourceInfo;
             this.output_video_dts_base_ = outputVideoDtsBase;
             this.output_video_raw_dts_base_ = outputVideoRawDtsBase;
+            this.output_video_raw_dts_base_ticks_ = outputVideoRawDtsBaseTicks;
+            this.video_timestamp_timescale_ = videoTimestampTimescale;
         }
     }
 
@@ -3944,6 +4029,12 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private dispatchVideoInitSegment(referenceRecovery: boolean = false): void {
+        // The HEVC parameter sets can arrive before the matching B60 timestamp
+        // descriptor.  Wait for its exact clock instead of publishing a 1 kHz
+        // init segment that permanently quantizes 60000/1001 presentation.
+        if (!Number.isInteger(this.video_timestamp_timescale_) || this.video_timestamp_timescale_ <= 0) {
+            return;
+        }
         const details = this.video_metadata_.details;
         const meta: any = {};
 
@@ -3962,6 +4053,12 @@ class MMTSDemuxer extends BaseDemuxer {
         meta.sarRatio = details.sar_ratio;
         meta.frameRate = details.frame_rate || {fps_num: 60, fps_den: 1, fps: 60};
         meta.refSampleDuration = 1000 * (meta.frameRate.fps_den / meta.frameRate.fps_num);
+        if (Number.isInteger(this.video_timestamp_timescale_) && this.video_timestamp_timescale_ > 0) {
+            meta.mmtsMp4Timescale = this.video_timestamp_timescale_;
+            meta.mmtsMp4RefSampleDuration = Math.round(
+                this.video_timestamp_timescale_ * meta.frameRate.fps_den / meta.frameRate.fps_num
+            );
+        }
         meta.codec = details.codec_mimetype.replace(/^hvc1/, this.video_sample_entry_type_);
         if (referenceRecovery) {
             meta.mmtsVideoReferenceRecovery = true;

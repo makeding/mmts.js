@@ -309,6 +309,21 @@ class MMTSProgram {
         );
     }
 
+    public getTimestampTimescale(packetId: number, mpuSequenceNumber: number): number | null {
+        const asset = this.assets_by_packet_id_[packetId];
+        if (asset === undefined || asset.extendedTimestampDescriptors === undefined) {
+            return null;
+        }
+        const descriptor = asset.extendedTimestampDescriptors.find((candidate) => {
+            return candidate.mpuSequenceNumber === mpuSequenceNumber;
+        });
+        if (descriptor === undefined) {
+            return null;
+        }
+        const timescale = descriptor.timescale === undefined ? 90000 : descriptor.timescale;
+        return Number.isInteger(timescale) && timescale > 0 ? timescale : null;
+    }
+
     public getMpuPresentationWindow(packetId: number,
                                     mpuSequenceNumber: number): MMTSMpuPresentationWindow | null {
         return this.timestamp_table_.getMpuPresentationWindow(

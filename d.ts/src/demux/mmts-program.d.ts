@@ -46,6 +46,7 @@ declare class MMTSProgram {
     getTimestampAtAccessUnit(packetId: number, mpuSequenceNumber: number, auIndex: number): MMTSTimestamp | null;
     peekTimestampAtAccessUnit(packetId: number, mpuSequenceNumber: number, auIndex: number): MMTSTimestamp | null;
     getDescriptorAccessUnitCount(packetId: number, mpuSequenceNumber: number): number | null;
+    getTimestampTimescale(packetId: number, mpuSequenceNumber: number): number | null;
     getMpuPresentationWindow(packetId: number, mpuSequenceNumber: number): MMTSMpuPresentationWindow | null;
     getTimestampRestartFilePosition(packetId: number, mpuSequenceNumber: number): number | null;
     getTimestampsForMpu(packetId: number, mpuSequenceNumber: number, presentationIndexes: number[]): MMTSTimestamp[] | null;

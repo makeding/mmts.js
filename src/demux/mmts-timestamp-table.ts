@@ -153,8 +153,9 @@ export default class MMTSTimestampTable {
             return null;
         }
 
-        const rawPtsStart = Math.round(
-            timestampDescriptor.presentationTimeUs * timescale / 1000000
+        const rawPtsStart = this.microsecondsToTimescaleTicks(
+            timestampDescriptor.presentationTimeUs,
+            timescale
         );
         if (!Number.isSafeInteger(rawPtsStart)) {
             return null;
@@ -211,7 +212,7 @@ export default class MMTSTimestampTable {
             indexes = descriptor.au.map((_au, index) => index);
         }
 
-        const anchorPts = Math.round(presentationTimeUs * timescale / 1000000);
+        const anchorPts = this.microsecondsToTimescaleTicks(presentationTimeUs, timescale);
         if (!Number.isSafeInteger(anchorPts)) {
             return null;
         }
@@ -222,54 +223,48 @@ export default class MMTSTimestampTable {
             presentationIndex: 0,
             presentationTimeLeapIndicator: leapIndicator
         }));
-        const presentationOrder = indexes.map((presentationIndex, decodingIndex) => ({
-            decodingIndex,
-            presentationIndex
-        })).sort((a, b) => a.presentationIndex - b.presentationIndex);
-
-        let rawPts = anchorPts;
-        for (let presentationPosition = 0;
-             presentationPosition < presentationOrder.length;
-             presentationPosition++) {
-            const item = presentationOrder[presentationPosition];
-            const descriptorAu = descriptor.au[item.decodingIndex];
+        let rawDts = anchorPts - descriptor.decodingTimeOffset;
+        for (let decodingIndex = 0; decodingIndex < descriptor.au.length; decodingIndex++) {
+            const descriptorAu = descriptor.au[decodingIndex];
             if (!Number.isInteger(descriptorAu.dtsPtsOffset) || descriptorAu.dtsPtsOffset < 0) {
                 return null;
             }
-            const timestamp = timestamps[item.decodingIndex];
-            timestamp.rawPts = rawPts;
-            timestamp.rawDts = rawPts - descriptorAu.dtsPtsOffset;
-            timestamp.presentationIndex = item.presentationIndex;
-            if (!Number.isSafeInteger(timestamp.rawDts)) {
+            const timestamp = timestamps[decodingIndex];
+            timestamp.rawDts = rawDts;
+            timestamp.rawPts = rawDts + descriptorAu.dtsPtsOffset;
+            timestamp.presentationIndex = indexes[decodingIndex];
+            if (!Number.isSafeInteger(timestamp.rawDts) || !Number.isSafeInteger(timestamp.rawPts)) {
                 return null;
             }
 
-            if (presentationPosition + 1 < presentationOrder.length) {
-                const ptsOffset = this.getPtsOffset(asset, descriptor, item.decodingIndex, timescale);
+            if (decodingIndex + 1 < descriptor.au.length) {
+                const ptsOffset = this.getPtsOffset(asset, descriptor, decodingIndex, timescale);
                 if (ptsOffset === null || ptsOffset <= 0) {
                     return null;
                 }
-                rawPts += ptsOffset;
-                if (!Number.isSafeInteger(rawPts)) {
+                rawDts += ptsOffset;
+                if (!Number.isSafeInteger(rawDts)) {
                     return null;
                 }
             }
         }
 
-        const expectedInitialDts = anchorPts - descriptor.decodingTimeOffset;
-        // The independently quantized B60 offset fields found in broadcast
-        // streams can differ by one timescale tick.  Keep that rounding
-        // tolerance bounded; a larger disagreement means the presentation map
-        // or descriptor is invalid.
-        if (Math.abs(timestamps[0].rawDts - expectedInitialDts) > 1) {
-            return null;
-        }
         for (let i = 1; i < timestamps.length; i++) {
             if (timestamps[i].rawDts < timestamps[i - 1].rawDts) {
                 return null;
             }
         }
         return timestamps;
+    }
+
+    private microsecondsToTimescaleTicks(microseconds: number, timescale: number): number {
+        // Multiplying an epoch-sized microsecond timestamp by 180000 first
+        // exceeds the integer precision of a JavaScript Number and introduces
+        // several ticks of jitter at every MPU boundary.  Split the whole
+        // seconds before scaling so 60000/1001 video keeps its source cadence.
+        const seconds = Math.floor(microseconds / 1000000);
+        const remainder = microseconds - seconds * 1000000;
+        return seconds * timescale + Math.round(remainder * timescale / 1000000);
     }
 
     private isValidPresentationIndexes(indexes: number[] | undefined, count: number): indexes is number[] {

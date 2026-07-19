@@ -74,11 +74,11 @@ function testVideoFrameRateOffsetWithIdentityMap() {
         timestamps.map((item) => [item.rawDts, item.rawPts, item.presentationIndex]),
         [
             [87000, 90000, 0],
-            [90002, 91502, 1],
-            [93004, 93004, 2]
+            [88502, 90002, 1],
+            [90004, 90004, 2]
         ]
     );
-    assert.deepStrictEqual(timestamps.map((item) => item.dts), [0, 3002, 6004]);
+    assert.deepStrictEqual(timestamps.map((item) => item.dts), [0, 1502, 3004]);
 }
 
 function testBFrameReorderAndVariablePtsOffsets() {
@@ -108,8 +108,8 @@ function testBFrameReorderAndVariablePtsOffsets() {
         timestamps.map((item) => [item.rawDts, item.rawPts, item.presentationIndex]),
         [
             [980, 1070, 2],
-            [1000, 1000, 0],
-            [1030, 1040, 1]
+            [1010, 1010, 0],
+            [1050, 1060, 1]
         ]
     );
 }
@@ -154,7 +154,7 @@ function testFixedRatePresentationWindowIncludesLastFrame() {
     });
 }
 
-function testInitialDtsInvariantFailureHasNoFallback() {
+function testDecodeTimelineUsesDescriptorOffsetsDirectly() {
     const table = new MMTSTimestampTable();
     const asset = {
         packetId: 0xf100,
@@ -175,7 +175,9 @@ function testInitialDtsInvariantFailureHasNoFallback() {
             ]
         }]
     };
-    assert.strictEqual(table.getTimestampsForMpu(asset, 62, undefined, [2, 0, 1]), null);
+    const timestamps = table.getTimestampsForMpu(asset, 62, undefined, [2, 0, 1]);
+    assert.ok(timestamps);
+    assert.deepStrictEqual(timestamps.map((item) => item.rawDts), [980, 1010, 1050]);
 }
 
 function testInitialDtsInvariantAllowsOneTickQuantization() {
@@ -201,7 +203,7 @@ function testInitialDtsInvariantAllowsOneTickQuantization() {
     };
     const timestamps = table.getTimestampsForMpu(asset, 64, undefined, [2, 0, 1]);
     assert.ok(timestamps);
-    assert.strictEqual(timestamps[0].rawDts, 980);
+    assert.strictEqual(timestamps[0].rawDts, 981);
 }
 
 function testZeroPresentationIntervalIsRejected() {
@@ -227,7 +229,7 @@ function testZeroPresentationIntervalIsRejected() {
     assert.strictEqual(table.getTimestampsForMpu(asset, 50, undefined, [0, 1]), null);
 }
 
-function testDecodeOrderDtsMustNotGoBackward() {
+function testCompositionOffsetsDoNotDistortDecodeCadence() {
     const table = new MMTSTimestampTable();
     const asset = {
         packetId: 0xf100,
@@ -247,7 +249,32 @@ function testDecodeOrderDtsMustNotGoBackward() {
             ]
         }]
     };
-    assert.strictEqual(table.getTimestampsForMpu(asset, 63, undefined, [0, 1]), null);
+    const timestamps = table.getTimestampsForMpu(asset, 63, undefined, [0, 1]);
+    assert.ok(timestamps);
+    assert.deepStrictEqual(timestamps.map((item) => item.rawDts), [1000, 1040]);
+}
+
+function testEpochTimestampScalingKeepsIntegerPrecision() {
+    const table = new MMTSTimestampTable();
+    const presentationTimeUs = 1784468887000036;
+    const asset = {
+        packetId: 0xf100,
+        assetType: 'hev1',
+        mediaType: 'video',
+        timestampDescriptors: [{mpuSequenceNumber: 90, presentationTimeUs}],
+        extendedTimestampDescriptors: [{
+            mpuSequenceNumber: 90,
+            timescale: 180000,
+            ptsOffsetType: 2,
+            defaultPtsOffset: 0,
+            decodingTimeOffset: 0,
+            presentationTimeLeapIndicator: 0,
+            au: [{dtsPtsOffset: 0, ptsOffset: 3003}]
+        }]
+    };
+    const timestamps = table.getTimestampsForMpu(asset, 90, undefined, [0]);
+    assert.ok(timestamps);
+    assert.strictEqual(timestamps[0].rawDts, 321204399660006);
 }
 
 function testAudioUsesIdentityPresentationOrder() {
@@ -323,10 +350,11 @@ testVideoFrameRateOffsetWithIdentityMap();
 testBFrameReorderAndVariablePtsOffsets();
 testPresentationWindowDoesNotRequirePocMap();
 testFixedRatePresentationWindowIncludesLastFrame();
-testInitialDtsInvariantFailureHasNoFallback();
+testDecodeTimelineUsesDescriptorOffsetsDirectly();
 testInitialDtsInvariantAllowsOneTickQuantization();
 testZeroPresentationIntervalIsRejected();
-testDecodeOrderDtsMustNotGoBackward();
+testCompositionOffsetsDoNotDistortDecodeCadence();
+testEpochTimestampScalingKeepsIntegerPrecision();
 testAudioUsesIdentityPresentationOrder();
 testFixedOffsetsRequireDeclaredRateWhenAnIntervalExists();
 testReservedPtsOffsetTypeIsRejected();

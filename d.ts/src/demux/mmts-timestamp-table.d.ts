@@ -22,6 +22,7 @@ export default class MMTSTimestampTable {
     getDescriptorAccessUnitCount(asset: MMTAsset | undefined, mpuSequenceNumber: number): number | null;
     getMpuPresentationWindow(asset: MMTAsset | undefined, mpuSequenceNumber: number): MMTSMpuPresentationWindow | null;
     private buildDescriptorTimestamps;
+    private microsecondsToTimescaleTicks;
     private isValidPresentationIndexes;
     private getPtsOffset;
     private getVideoFrameDuration;

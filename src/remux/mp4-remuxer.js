@@ -40,6 +40,7 @@ class MP4Remuxer {
         this._videoDtsBase = Infinity;
         this._audioNextDts = undefined;
         this._videoNextDts = undefined;
+        this._videoNextMp4Dts = undefined;
         this._audioStashedLastSample = null;
         this._videoStashedSamples = [];
         this._videoLastCompositionEnd = -1;
@@ -135,6 +136,7 @@ class MP4Remuxer {
         this._videoStashedSamples = [];
         this._videoLastCompositionEnd = -1;
         this._audioNextDts = this._videoNextDts = undefined;
+        this._videoNextMp4Dts = undefined;
         this._loggedAudioFrameDropCount = 0;
         this._pendingMMTSVideoReferenceRecoveryInit = null;
         if (this._isMMTS) {
@@ -153,6 +155,7 @@ class MP4Remuxer {
         this._videoStashedSamples = [];
         this._videoLastCompositionEnd = -1;
         this._videoNextDts = undefined;
+        this._videoNextMp4Dts = undefined;
         this._videoSegmentInfoList.clear();
         this._pendingMMTSVideoTrackSwitch = null;
         this._pendingMMTSVideoReferenceRecoveryInit = null;
@@ -209,7 +212,15 @@ class MP4Remuxer {
             }
         } else if (type === 'video') {
             this._videoMeta = metadata;
-            metabox = MP4.generateInitSegment(metadata);
+            let mp4Metadata = metadata;
+            if (this._isMMTS && Number.isInteger(metadata.mmtsMp4Timescale) &&
+                metadata.mmtsMp4Timescale > 0) {
+                mp4Metadata = Object.assign({}, metadata, {
+                    timescale: metadata.mmtsMp4Timescale,
+                    refSampleDuration: metadata.mmtsMp4RefSampleDuration
+                });
+            }
+            metabox = MP4.generateInitSegment(mp4Metadata);
         } else {
             return;
         }
@@ -752,6 +763,7 @@ class MP4Remuxer {
         let dtsCorrection = undefined;
         let firstDts = -1, lastDts = -1;
         let firstPts = -1, lastPts = -1;
+        let firstMp4Dts = -1;
 
         if (!samples) {
             samples = [];
@@ -868,56 +880,111 @@ class MP4Remuxer {
 
         let info = new MediaSegmentInfo();
         let mp4Samples = [];
+        const mp4Timescale = this._isMMTS &&
+            Number.isInteger(this._videoMeta.mmtsMp4Timescale) &&
+            this._videoMeta.mmtsMp4Timescale > 0 ? this._videoMeta.mmtsMp4Timescale : 1000;
+        const hasPreciseMMTSClock = this._isMMTS && mp4Timescale !== 1000 &&
+            samples.every((sample) => Number.isFinite(sample.mmtsDts) &&
+                Number.isFinite(sample.mmtsPts) && sample.mmtsTimescale === mp4Timescale);
+        const mp4DtsBase = hasPreciseMMTSClock ?
+            Math.round(this._dtsBase * mp4Timescale / 1000) : this._dtsBase;
+        let mp4DtsCorrection = dtsCorrection;
+        if (hasPreciseMMTSClock) {
+            const firstOriginalMp4Dts = samples[0].mmtsDts - mp4DtsBase;
+            if (this._videoNextMp4Dts !== undefined &&
+                !(this._shouldPreserveMarkedVideoGap() && this._hasMarkedVideoGapBeforeSample(samples[0])) &&
+                !this._shouldPreserveVideoTimestampGap(firstSampleOriginalDts - this._videoNextDts)) {
+                mp4DtsCorrection = firstOriginalMp4Dts - this._videoNextMp4Dts;
+            } else {
+                mp4DtsCorrection = 0;
+            }
+        }
 
         // Correct dts for each sample, and calculate sample duration. Then output to mp4Samples
         for (let i = 0; i < samples.length; i++) {
             let sample = samples[i];
             let originalDts = sample.dts - this._dtsBase;
             let isKeyframe = sample.isKeyframe;
-            let dts = originalDts - dtsCorrection;
-            let cts = sample.cts;
-            let pts = dts + cts;
+            let timelineDts = originalDts - dtsCorrection;
+            let timelineCts = sample.cts;
+            let timelinePts = timelineDts + timelineCts;
 
             if (firstDts === -1) {
-                firstDts = dts;
-                firstPts = pts;
+                firstDts = timelineDts;
+                firstPts = timelinePts;
             }
 
             let sampleDuration = 0;
 
             if (i !== samples.length - 1) {
                 let nextDts = samples[i + 1].dts - this._dtsBase - dtsCorrection;
-                sampleDuration = nextDts - dts;
+                sampleDuration = nextDts - timelineDts;
             } else {  // the last sample
                 if (lastSample != null) {  // use stashed sample's dts to calculate sample duration
                     let nextDts = lastSample.dts - this._dtsBase - dtsCorrection;
-                    sampleDuration = nextDts - dts;
+                    sampleDuration = nextDts - timelineDts;
                 } else if (mp4Samples.length >= 1) {  // use second last sample duration
-                    sampleDuration = mp4Samples[mp4Samples.length - 1].duration;
+                    sampleDuration = mp4Samples[mp4Samples.length - 1].timelineDuration;
                 } else {  // the only one sample, use reference sample duration
                     sampleDuration = Math.floor(this._videoMeta.refSampleDuration);
                 }
             }
 
+            let mp4Dts = timelineDts;
+            let mp4Pts = timelinePts;
+            let mp4Cts = timelineCts;
+            let mp4Duration = sampleDuration;
+            if (hasPreciseMMTSClock) {
+                mp4Dts = sample.mmtsDts - mp4DtsBase - mp4DtsCorrection;
+                mp4Pts = sample.mmtsPts - mp4DtsBase - mp4DtsCorrection;
+                mp4Cts = mp4Pts - mp4Dts;
+                const nextSample = i + 1 < samples.length ? samples[i + 1] : lastSample;
+                if (nextSample && Number.isFinite(nextSample.mmtsDts) &&
+                    nextSample.mmtsTimescale === mp4Timescale) {
+                    mp4Duration = nextSample.mmtsDts - sample.mmtsDts;
+                } else {
+                    mp4Duration = this._videoMeta.mmtsMp4RefSampleDuration;
+                }
+                if (!Number.isFinite(mp4Duration) || mp4Duration <= 0) {
+                    mp4Duration = Math.max(1, Math.round(sampleDuration * mp4Timescale / 1000));
+                }
+            }
+            if (firstMp4Dts === -1) {
+                firstMp4Dts = mp4Dts;
+            }
+
             let nextDurationSample = i !== samples.length - 1 ? samples[i + 1] : lastSample;
-            this._logVideoFreezeGapIfNeeded(sample, nextDurationSample, dts, sampleDuration);
+            this._logVideoFreezeGapIfNeeded(sample, nextDurationSample, timelineDts, sampleDuration);
 
             if (isKeyframe) {
-                let syncPoint = new SampleInfo(dts, pts, sampleDuration, sample.dts, true);
+                let syncPoint = new SampleInfo(
+                    timelineDts,
+                    timelinePts,
+                    sampleDuration,
+                    sample.dts,
+                    true
+                );
                 syncPoint.fileposition = sample.fileposition;
                 info.appendSyncPoint(syncPoint);
             }
 
             mp4Samples.push({
-                dts: dts,
-                pts: pts,
-                cts: cts,
+                dts: mp4Dts,
+                pts: mp4Pts,
+                cts: mp4Cts,
                 units: sample.units,
                 size: sample.length,
                 isKeyframe: isKeyframe,
-                duration: sampleDuration,
+                duration: mp4Duration,
+                timelineDts,
+                timelinePts,
+                timelineDuration: sampleDuration,
                 originalDts: originalDts,
-                mmtsSourceInfo: this._makeRemuxedMMTSSourceInfo(sample.mmtsSourceInfo, dts, pts),
+                mmtsSourceInfo: this._makeRemuxedMMTSSourceInfo(
+                    sample.mmtsSourceInfo,
+                    timelineDts,
+                    timelinePts
+                ),
                 mmtsRandomAccessSafe: sample.mmtsRandomAccessSafe === true,
                 flags: {
                     // RASL pictures are decoded after their associated CRA but
@@ -933,18 +1000,20 @@ class MP4Remuxer {
         }
 
         let latest = mp4Samples[mp4Samples.length - 1];
-        lastDts = latest.dts + latest.duration;
-        lastPts = latest.pts + latest.duration;
+        lastDts = latest.timelineDts + latest.timelineDuration;
+        lastPts = latest.timelinePts + latest.timelineDuration;
         this._videoNextDts = lastDts;
+        this._videoNextMp4Dts = latest.dts + latest.duration;
 
         let compositionOrder = mp4Samples.slice().sort((a, b) => {
-            if (a.pts !== b.pts) {
-                return a.pts - b.pts;
+            if (a.timelinePts !== b.timelinePts) {
+                return a.timelinePts - b.timelinePts;
             }
-            return a.dts - b.dts;
+            return a.timelineDts - b.timelineDts;
         });
         let lastCompositionSample = compositionOrder[compositionOrder.length - 1];
-        this._videoLastCompositionEnd = lastCompositionSample.pts + lastCompositionSample.duration;
+        this._videoLastCompositionEnd = lastCompositionSample.timelinePts +
+            lastCompositionSample.timelineDuration;
 
         // fill media segment info & add to info list
         info.beginDts = firstDts;
@@ -952,15 +1021,15 @@ class MP4Remuxer {
         info.beginPts = firstPts;
         info.endPts = lastPts;
         info.originalBeginDts = mp4Samples[0].originalDts;
-        info.originalEndDts = latest.originalDts + latest.duration;
-        info.firstSample = new SampleInfo(mp4Samples[0].dts,
-                                          mp4Samples[0].pts,
-                                          mp4Samples[0].duration,
+        info.originalEndDts = latest.originalDts + latest.timelineDuration;
+        info.firstSample = new SampleInfo(mp4Samples[0].timelineDts,
+                                          mp4Samples[0].timelinePts,
+                                          mp4Samples[0].timelineDuration,
                                           mp4Samples[0].originalDts,
                                           mp4Samples[0].isKeyframe);
-        info.lastSample = new SampleInfo(latest.dts,
-                                         latest.pts,
-                                         latest.duration,
+        info.lastSample = new SampleInfo(latest.timelineDts,
+                                         latest.timelinePts,
+                                         latest.timelineDuration,
                                          latest.originalDts,
                                          latest.isKeyframe);
         if (!this._isLive) {
@@ -978,7 +1047,7 @@ class MP4Remuxer {
             flags.isNonSync = 0;
         }
 
-        let moofbox = MP4.moof(track, firstDts);
+        let moofbox = MP4.moof(track, firstMp4Dts);
         track.samples = [];
         track.length = 0;
 
@@ -1034,13 +1103,19 @@ class MP4Remuxer {
 
     _makeFirstVideoPlayableWindow(samples) {
         const first = samples[0];
-        const compositionStart = samples.reduce((start, sample) => Math.min(start, sample.pts), Infinity);
+        const compositionStart = samples.reduce((start, sample) => {
+            return Math.min(start, sample.timelinePts !== undefined ? sample.timelinePts : sample.pts);
+        }, Infinity);
         const compositionEnd = samples.reduce((end, sample) => {
-            return Math.max(end, sample.pts + sample.duration);
+            const pts = sample.timelinePts !== undefined ? sample.timelinePts : sample.pts;
+            const duration = sample.timelineDuration !== undefined ?
+                sample.timelineDuration : sample.duration;
+            return Math.max(end, pts + duration);
         }, -Infinity);
-        const syncPoint = first.pts;
+        const decodeStart = first.timelineDts !== undefined ? first.timelineDts : first.dts;
+        const syncPoint = first.timelinePts !== undefined ? first.timelinePts : first.pts;
         return {
-            decodeStart: first.dts / 1000,
+            decodeStart: decodeStart / 1000,
             compositionStart: compositionStart / 1000,
             syncPoint: syncPoint / 1000,
             playableStart: syncPoint / 1000,

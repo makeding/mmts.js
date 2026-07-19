@@ -274,7 +274,7 @@ function loadDemuxer(options = {}) {
     }).default;
 }
 
-function loadRemuxer() {
+function loadRemuxer(capture = {}) {
     class SampleInfo {
         constructor(dts, pts, duration, originalDts, isSyncPoint) {
             this.dts = dts;
@@ -309,10 +309,15 @@ function loadRemuxer() {
                 types: {
                     mdat: new Uint8Array([0x6d, 0x64, 0x61, 0x74])
                 },
-                generateInitSegment() {
+                generateInitSegment(metadata) {
+                    capture.initMetadata = Object.assign({}, metadata);
                     return new Uint8Array([0]);
                 },
-                moof() {
+                moof(track, baseMediaDecodeTime) {
+                    capture.moof = {
+                        baseMediaDecodeTime,
+                        samples: track.samples.map((sample) => Object.assign({}, sample))
+                    };
                     return new Uint8Array([0, 0, 0, 0]);
                 }
             }
@@ -326,6 +331,55 @@ function loadRemuxer() {
         },
         '../utils/exception.js': {IllegalStateException: class IllegalStateException extends Error {}},
     }).default;
+}
+
+function testRemuxerUsesExactMMTSVideoClockForMp4Only() {
+    const capture = {};
+    const MP4Remuxer = loadRemuxer(capture);
+    const remuxer = new MP4Remuxer({
+        isLive: true,
+        isMMTS: true,
+        mmtsClampVideoTimestampGap: false,
+        mmtsVideoTailStashDuration: 0
+    });
+    remuxer._dtsBase = 0;
+    remuxer._dtsBaseInited = true;
+    remuxer.onInitSegment = () => {};
+    remuxer.onMediaSegment = () => {};
+    remuxer._onTrackMetadataReceived('video', {
+        codec: 'hev1.2.4.L153.B0',
+        timescale: 1000,
+        refSampleDuration: 1001 / 60,
+        mmtsMp4Timescale: 180000,
+        mmtsMp4RefSampleDuration: 3003
+    });
+
+    assert.strictEqual(capture.initMetadata.timescale, 180000);
+    assert.strictEqual(capture.initMetadata.refSampleDuration, 3003);
+    assert.strictEqual(remuxer._videoMeta.timescale, 1000);
+
+    const samples = [0, 1, 2].map((index) => {
+        const data = new Uint8Array([index, index, index, index]);
+        return {
+            units: [{data}],
+            length: data.byteLength,
+            dts: index === 0 ? 0 : (index === 1 ? 16 : 33),
+            pts: index === 0 ? 0 : (index === 1 ? 16 : 33),
+            cts: 0,
+            isKeyframe: index === 0,
+            mmtsDts: index * 3003,
+            mmtsPts: index * 3003,
+            mmtsTimescale: 180000
+        };
+    });
+    remuxer._remuxVideo(makeRemuxVideoTrack(samples), true);
+
+    assert.strictEqual(capture.moof.baseMediaDecodeTime, 0);
+    assert.deepStrictEqual(Array.from(capture.moof.samples, (sample) => sample.dts), [0, 3003, 6006]);
+    assert.deepStrictEqual(
+        Array.from(capture.moof.samples, (sample) => sample.duration),
+        [3003, 3003, 3003]
+    );
 }
 
 function loadControllerWithDemuxer(MMTSDemuxer, browser = {safari: false}) {
@@ -3163,6 +3217,7 @@ testDemuxerMarksOutputSampleAfterPacketDiscontinuity();
 testDemuxerDoesNotConsumeDiscontinuityWhenDroppingVideoSample();
 testRemuxerDoesNotFilterByMMTSSourceIdentity();
 testRemuxerPackagesMonotonicSamplesRegardlessOfMMTSSourceOrder();
+testRemuxerUsesExactMMTSVideoClockForMp4Only();
 testRemuxerDropsInitialVideoUntilRandomAccessPoint();
 testRemuxerPreservesExplicitDiscontinuityThroughVideoRemux();
 testRemuxerPreservesMarkedVideoGapAcrossSegments();

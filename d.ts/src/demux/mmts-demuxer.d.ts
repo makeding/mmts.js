@@ -78,6 +78,8 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private last_video_source_info_;
     private output_video_dts_base_;
     private output_video_raw_dts_base_;
+    private output_video_raw_dts_base_ticks_;
+    private video_timestamp_timescale_;
     private primary_video_packet_id_;
     private primary_audio_packet_id_;
     private manually_selected_audio_packet_id_;
