@@ -1438,13 +1438,14 @@ class MMTSDemuxer extends BaseDemuxer {
             }
             parsedAccessUnits.push(parsed);
         }
-        const shortMpu = this.nominal_video_mpu_access_unit_count_ > 0 &&
-            accessUnits.length < this.nominal_video_mpu_access_unit_count_;
+        // ARIB STD-B60 6.2 permits an MPU to contain any number of access
+        // units. The per-MPU num_of_au descriptor and continuity checks above
+        // establish completeness; a count below an earlier GOP is not damage.
         const parameterSetGeneration = parsedAccessUnits.reduce((generation, parsed) => {
             return Math.max(generation, parsed.chain.vps.generation,
                 parsed.chain.sps.generation, parsed.chain.pps.generation);
         }, 0);
-        const quarantineParameterSetChange = !shortMpu &&
+        const quarantineParameterSetChange =
             this.shouldQuarantineRecoveryParameterSetChange(parameterSetGeneration);
         const referenceRecovery = this.prepareVideoReferenceRecovery(
             accessUnits.length,
@@ -1452,7 +1453,6 @@ class MMTSDemuxer extends BaseDemuxer {
             parameterSetGeneration,
             quarantineParameterSetChange
         );
-        const dropWholeMpu = shortMpu || quarantineParameterSetChange;
         const endOfSequenceAfterMpu = parsedAccessUnits.some((parsed) => parsed.endOfSequence);
         const prepared = this.hevc_poc_recovery_.prepareMpu(
             parsedAccessUnits.map((parsed) => parsed.input),
@@ -1493,7 +1493,7 @@ class MMTSDemuxer extends BaseDemuxer {
             this.logged_video_reference_recovery_count_++;
             Log.w(
                 this.TAG,
-                `Recover MMTS HEVC references at short-MPU boundary, ` +
+                `Recover MMTS HEVC references at parameter-set splice, ` +
                 `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
                 `au_count=${accessUnits.length}, nominal=${this.nominal_video_mpu_access_unit_count_}; ` +
                 `drop leading RASL pictures`
@@ -1513,7 +1513,8 @@ class MMTSDemuxer extends BaseDemuxer {
                 this.activateVideoParameterSetChain(chain);
             }
             const recoveredPicture = prepared.pictures[i];
-            const dropShortMpuTail = this.shouldDropShortVideoMpuPicture(dropWholeMpu, i);
+            const dropQuarantinedPicture =
+                this.shouldDropQuarantinedVideoMpuPicture(quarantineParameterSetChange);
             const timedAccessUnit: MMTSTimedVideoAccessUnit = {
                 ...accessUnits[i],
                 keyframe: isH265IrapNalu(recoveredPicture.nalUnitType),
@@ -1522,11 +1523,9 @@ class MMTSDemuxer extends BaseDemuxer {
                     recoveredPicture.noRaslOutput,
                 isLeading: recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_N ||
                     recoveredPicture.nalUnitType === H265NaluType.kSliceRASL_R,
-                outputAllowed: recoveredPicture.outputAllowed && !dropShortMpuTail,
-                dropReason: dropShortMpuTail ?
-                    (quarantineParameterSetChange ?
-                        'hevc-recovery-parameter-set-quarantine' : 'hevc-short-mpu-tail') :
-                    undefined
+                outputAllowed: recoveredPicture.outputAllowed && !dropQuarantinedPicture,
+                dropReason: dropQuarantinedPicture ?
+                    'hevc-recovery-parameter-set-quarantine' : undefined
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
         }
@@ -1537,27 +1536,19 @@ class MMTSDemuxer extends BaseDemuxer {
                                           parameterSetGeneration: number = 0,
                                           quarantineParameterSetChange: boolean = false): boolean {
         const previousNominal = this.nominal_video_mpu_access_unit_count_;
-        const shortMpu = previousNominal > 0 && accessUnitCount < previousNominal;
         const startsWithRandomAccess = isH265IrapNalu(firstNalUnitType);
         const recoverReferences = startsWithRandomAccess &&
             this.video_reference_recovery_pending_;
 
-        if (shortMpu) {
-            this.video_reference_recovery_parameter_set_generation_limit_ =
-                parameterSetGeneration;
-            this.video_reference_recovery_watch_remaining_ = 0;
-            this.video_reference_recovery_watch_delay_ = 0;
-        } else if (quarantineParameterSetChange) {
+        if (quarantineParameterSetChange) {
             this.video_reference_recovery_pending_ = true;
             this.video_reference_recovery_watch_remaining_ = 0;
             this.video_reference_recovery_watch_delay_ = 0;
         }
 
         if (recoverReferences) {
-            // A shortened GOP at an MMTS splice may omit pictures referenced by
-            // the following CRA.  Recover only at the next complete MPU: the
-            // shortened MPU itself is discarded and must never reach the
-            // decoder, including its nominal CRA.
+            // A parameter-set splice may invalidate pictures referenced by the
+            // following CRA. Recover only after the quarantined transition.
             this.hevc_poc_recovery_.reset(true);
             this.video_reference_recovery_parameter_set_generation_limit_ = Math.max(
                 this.video_reference_recovery_parameter_set_generation_limit_,
@@ -1568,7 +1559,7 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         this.nominal_video_mpu_access_unit_count_ = Math.max(previousNominal, accessUnitCount);
-        this.video_reference_recovery_pending_ = shortMpu || quarantineParameterSetChange;
+        this.video_reference_recovery_pending_ = quarantineParameterSetChange;
         return recoverReferences;
     }
 
@@ -1586,11 +1577,8 @@ class MMTSDemuxer extends BaseDemuxer {
             this.video_reference_recovery_parameter_set_generation_limit_;
     }
 
-    private shouldDropShortVideoMpuPicture(shortMpu: boolean, decodingIndex: number): boolean {
-        // The CRA carried by a truncated MPU is not a trustworthy decoder
-        // refresh point.  Drop the complete MPU and recover at the next full
-        // random-access MPU instead.
-        return shortMpu;
+    private shouldDropQuarantinedVideoMpuPicture(quarantineParameterSetChange: boolean): boolean {
+        return quarantineParameterSetChange;
     }
 
     private parseHEVCVideoAccessUnit(accessUnit: MMTSVideoAccessUnit): ParsedHEVCVideoAccessUnit | null {

@@ -160,7 +160,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private flushPendingVideoAccessUnits;
     private prepareVideoReferenceRecovery;
     private shouldQuarantineRecoveryParameterSetChange;
-    private shouldDropShortVideoMpuPicture;
+    private shouldDropQuarantinedVideoMpuPicture;
     private parseHEVCVideoAccessUnit;
     private validateVideoMpuTimestamps;
     private mapVideoDescriptorTimestamp;

@@ -3083,7 +3083,7 @@ function testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe() {
     assert.strictEqual(demuxer.video_track_.samples[0].mmtsRandomAccessSafe, undefined);
 }
 
-function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
+function testCompleteShortVideoMpuDoesNotForceRecovery() {
     const MMTSDemuxer = loadDemuxer({
         isH265IrapNalu(type) {
             return type >= 16 && type <= 23;
@@ -3115,7 +3115,18 @@ function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
         false
     );
     assert.strictEqual(resetCount, 0);
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
+    assert.strictEqual(
+        demuxer.shouldDropQuarantinedVideoMpuPicture(false),
+        false
+    );
+
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 10, true),
+        false
+    );
     assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
+    assert.strictEqual(demuxer.shouldDropQuarantinedVideoMpuPicture(true), true);
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 9),
@@ -3133,26 +3144,10 @@ function testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice() {
     assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), true);
 
     assert.strictEqual(
-        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 10, true),
-        false
-    );
-    assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
-
-    assert.strictEqual(
-        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 9),
-        true
-    );
-    assert.strictEqual(resetCount, 2);
-    assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
-
-    assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
         false
     );
-    assert.strictEqual(resetCount, 2);
-    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 0), true);
-    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(true, 1), true);
-    assert.strictEqual(demuxer.shouldDropShortVideoMpuPicture(false, 1), false);
+    assert.strictEqual(resetCount, 1);
 }
 
 function testRemuxerAttachesParserResetInitToRecoveryRap() {
@@ -3255,7 +3250,7 @@ testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe();
-testShortVideoMpuForcesNoRaslOutputRecoveryAcrossSplice();
+testCompleteShortVideoMpuDoesNotForceRecovery();
 testRemuxerAttachesParserResetInitToRecoveryRap();
 
 console.log('mmts demux/remux timeline tests passed');
