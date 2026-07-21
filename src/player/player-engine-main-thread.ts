@@ -344,6 +344,9 @@ class PlayerEngineMainThread implements PlayerEngine {
 
     private _createMSEBufferStateMachine(): MSEBufferStateMachine {
         return new MSEBufferStateMachine(this._config, {
+            ensureSourceBuffer: (_type: any, segment: any) => {
+                return this._mse_controller.ensureSourceBufferDirect(segment);
+            },
             appendInit: (_type: any, segment: any) => {
                 return this._mse_controller.appendInitSegmentDirect(
                     segment,

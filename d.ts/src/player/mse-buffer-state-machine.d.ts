@@ -87,6 +87,7 @@ export type MSETrackSwitchFailure = {
     error: any;
 };
 export type MSEBufferStateMachineOutput = {
+    ensureSourceBuffer?: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult;
     appendInit: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult;
     appendMedia: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult;
     removeRange: (type: MSEBufferTrackType, start: number, end: number) => MSEBufferOperationResult;

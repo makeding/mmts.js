@@ -1,6 +1,6 @@
 {
   "name": "mmts.js",
-  "version": "1.8.0-2",
+  "version": "1.8.0-3",
   "description": "HTML5 MPEG2-TS / MMTS / FLV Stream Player",
   "main": "./dist/mpegts.js",
   "types": "./d.ts/mpegts.d.ts",
@@ -55,6 +55,7 @@
     "test:mmts-video-mpu-assembler": "node scripts/test_mmts_video_mpu_assembler.js",
     "test:mse-buffer-state-machine": "node scripts/test_mse_buffer_state_machine.js",
     "test:mse-controller": "node scripts/test_mse_controller_forward_info.js",
+    "test:mse-player-engine-selection": "node scripts/test_mse_player_engine_selection.js",
     "test:startup-buffer-gate": "node scripts/test_startup_buffer_gate.js",
     "test:startup-stall-jumper": "node scripts/test_startup_stall_jumper.js",
     "watch": "webpack --mode=development --progress --watch"

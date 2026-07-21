@@ -336,7 +336,15 @@ function createStats() {
             }
         },
         demux: {
-            video: {samples: 0, firstDts: undefined, lastDts: undefined, gaps: [], lastSource: null}
+            video: {
+                samples: 0,
+                firstDts: undefined,
+                lastDts: undefined,
+                gaps: [],
+                lastSource: null,
+                presentationGroups: {},
+                presentationSamples: []
+            }
         },
         drops: {
             video: {total: 0, byReason: {}, byMpu: {}, samples: [], recentSamples: [], samplesByMpu: {}}
@@ -499,6 +507,33 @@ function recordDemuxVideoTrack(stats, videoTrack, gapThresholdMs) {
         const sample = samples[i];
         const dts = sample.dts;
         const source = sample.mmtsSourceInfo || null;
+        if (source !== null &&
+            Number.isInteger(source.packetId) &&
+            Number.isInteger(source.mpuSequenceNumber) &&
+            Number.isInteger(source.decodingIndex) &&
+            Number.isInteger(source.presentationIndex) &&
+            Number.isFinite(sample.dts) &&
+            Number.isFinite(sample.pts)) {
+            const key = `${source.packetId}:${source.mpuSequenceNumber}`;
+            if (!track.presentationGroups[key]) {
+                track.presentationGroups[key] = [];
+            }
+            track.presentationGroups[key].push({
+                decodingIndex: source.decodingIndex,
+                presentationIndex: source.presentationIndex,
+                dts: sample.dts,
+                pts: sample.pts,
+                cts: sample.pts - sample.dts
+            });
+            track.presentationSamples.push({
+                packetId: source.packetId,
+                mpuSequenceNumber: source.mpuSequenceNumber,
+                decodingIndex: source.decodingIndex,
+                presentationIndex: source.presentationIndex,
+                dts: sample.dts,
+                pts: sample.pts
+            });
+        }
         if (track.lastDts !== undefined && dts !== undefined) {
             const gap = dts - track.lastDts;
             if (gap > gapThresholdMs) {
@@ -578,6 +613,99 @@ function printDemuxVideoSummary(track) {
             console.log(`demux_video: gap#${i + 1} source=${JSON.stringify({previous: gap.previousSource, next: gap.nextSource})}`);
         }
     }
+    const presentation = summarizeVideoPresentation(
+        track.presentationGroups,
+        track.presentationSamples
+    );
+    console.log(`demux_video_presentation=${JSON.stringify(presentation)}`);
+}
+
+function summarizeVideoPresentation(groups, allSamples) {
+    const summary = {
+        mpus: 0,
+        samples: 0,
+        duplicateDecodingIndexes: 0,
+        duplicatePresentationIndexes: 0,
+        dtsOrderErrors: 0,
+        ptsOrderErrors: 0,
+        minCts: undefined,
+        maxCts: undefined,
+        minPresentationStep: undefined,
+        maxPresentationStep: undefined,
+        globalPtsDuplicates: 0,
+        globalPtsGaps: 0,
+        minGlobalPresentationStep: undefined,
+        maxGlobalPresentationStep: undefined,
+        examples: []
+    };
+    for (const [key, samples] of Object.entries(groups || {})) {
+        if (!Array.isArray(samples) || samples.length === 0) {
+            continue;
+        }
+        summary.mpus++;
+        summary.samples += samples.length;
+        const decoding = samples.slice().sort((a, b) => a.decodingIndex - b.decodingIndex);
+        const presentation = samples.slice().sort((a, b) => a.presentationIndex - b.presentationIndex);
+        let groupInvalid = false;
+        for (let i = 0; i < decoding.length; i++) {
+            const sample = decoding[i];
+            summary.minCts = summary.minCts === undefined ? sample.cts : Math.min(summary.minCts, sample.cts);
+            summary.maxCts = summary.maxCts === undefined ? sample.cts : Math.max(summary.maxCts, sample.cts);
+            if (i > 0) {
+                if (sample.decodingIndex === decoding[i - 1].decodingIndex) {
+                    summary.duplicateDecodingIndexes++;
+                    groupInvalid = true;
+                }
+                if (sample.dts < decoding[i - 1].dts) {
+                    summary.dtsOrderErrors++;
+                    groupInvalid = true;
+                }
+            }
+        }
+        for (let i = 1; i < presentation.length; i++) {
+            const step = presentation[i].pts - presentation[i - 1].pts;
+            summary.minPresentationStep = summary.minPresentationStep === undefined ?
+                step : Math.min(summary.minPresentationStep, step);
+            summary.maxPresentationStep = summary.maxPresentationStep === undefined ?
+                step : Math.max(summary.maxPresentationStep, step);
+            if (presentation[i].presentationIndex === presentation[i - 1].presentationIndex) {
+                summary.duplicatePresentationIndexes++;
+                groupInvalid = true;
+            }
+            if (step <= 0) {
+                summary.ptsOrderErrors++;
+                groupInvalid = true;
+            }
+        }
+        if (groupInvalid && summary.examples.length < 8) {
+            summary.examples.push({key, decoding, presentation});
+        }
+    }
+    const globalPresentation = Array.isArray(allSamples) ?
+        allSamples.slice().sort((a, b) => {
+            if (a.pts !== b.pts) {
+                return a.pts - b.pts;
+            }
+            return a.dts - b.dts;
+        }) : [];
+    for (let i = 1; i < globalPresentation.length; i++) {
+        const previous = globalPresentation[i - 1];
+        const current = globalPresentation[i];
+        const step = current.pts - previous.pts;
+        summary.minGlobalPresentationStep = summary.minGlobalPresentationStep === undefined ?
+            step : Math.min(summary.minGlobalPresentationStep, step);
+        summary.maxGlobalPresentationStep = summary.maxGlobalPresentationStep === undefined ?
+            step : Math.max(summary.maxGlobalPresentationStep, step);
+        if (step <= 0) {
+            summary.globalPtsDuplicates++;
+        } else if (step > 35) {
+            summary.globalPtsGaps++;
+            if (summary.examples.length < 8) {
+                summary.examples.push({kind: 'global-pts-gap', previous, current, step});
+            }
+        }
+    }
+    return summary;
 }
 
 function recordVideoDrop(stats, packetId, mpuSequenceNumber, units, timestamp, reason) {

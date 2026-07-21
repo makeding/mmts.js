@@ -9,6 +9,7 @@ const path = require('path');
 function parseArgs(argv) {
     const args = {
         file: process.env.MMTS_TEST_FILE || 'demo/8k',
+        type: 'mmts',
         mode: 'seek',
         durationSeconds: 180,
         seekIntervalSeconds: 8,
@@ -18,13 +19,17 @@ function parseArgs(argv) {
         headed: false,
         executablePath: process.env.CHROME_BIN,
         artifactDir: undefined,
+        dist: undefined,
         videoPacketId: undefined,
+        workerMSE: false,
     };
 
     for (let i = 2; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--file') {
             args.file = argv[++i];
+        } else if (arg === '--type') {
+            args.type = argv[++i];
         } else if (arg === '--mode') {
             args.mode = argv[++i];
         } else if (arg === '--duration') {
@@ -43,8 +48,12 @@ function parseArgs(argv) {
             args.executablePath = argv[++i];
         } else if (arg === '--artifact-dir') {
             args.artifactDir = argv[++i];
+        } else if (arg === '--dist') {
+            args.dist = argv[++i];
         } else if (arg === '--video-packet-id') {
             args.videoPacketId = Number(argv[++i]);
+        } else if (arg === '--worker-mse') {
+            args.workerMSE = true;
         } else {
             throw new Error(`unknown argument: ${arg}`);
         }
@@ -52,6 +61,9 @@ function parseArgs(argv) {
 
     if (!['linear', 'seek', 'tracks', 'cocktail'].includes(args.mode)) {
         throw new Error('--mode must be linear, seek, tracks, or cocktail');
+    }
+    if (!['mmts', 'mpegts'].includes(args.type)) {
+        throw new Error('--type must be mmts or mpegts');
     }
     if (!Number.isFinite(args.durationSeconds) || args.durationSeconds <= 0 ||
         !Number.isFinite(args.seekIntervalSeconds) || args.seekIntervalSeconds <= 0 ||
@@ -69,6 +81,12 @@ function parseArgs(argv) {
     }
     if (args.executablePath) {
         args.executablePath = path.resolve(args.executablePath);
+    }
+    if (args.dist) {
+        args.dist = path.resolve(args.dist);
+        if (!fs.existsSync(args.dist) || !fs.statSync(args.dist).isFile()) {
+            throw new Error(`mpegts.js dist file does not exist: ${args.dist}`);
+        }
     }
     args.artifactDir = path.resolve(args.artifactDir || path.join(
         os.tmpdir(),
@@ -146,7 +164,7 @@ function sendFile(request, response, file, contentType) {
     fs.createReadStream(file).pipe(response);
 }
 
-function createHarnessHtml(videoPacketId, fileSize) {
+function createHarnessHtml(type, videoPacketId, fileSize, workerMSE) {
     const packetId = Number.isFinite(videoPacketId) ? videoPacketId : null;
     return `<!doctype html>
 <meta charset="utf-8">
@@ -196,6 +214,7 @@ function createHarnessHtml(videoPacketId, fileSize) {
     }));
     const config = {
         enableWorker: true,
+        enableWorkerForMSE: ${workerMSE ? 'true' : 'false'},
         lazyLoad: true,
         lazyLoadMaxDuration: 90,
         lazyLoadRecoverDuration: 60,
@@ -220,10 +239,10 @@ function createHarnessHtml(videoPacketId, fileSize) {
     };
     if (${packetId === null ? 'false' : 'true'}) config.mmtsVideoPacketId = ${packetId || 0};
     const mediaDataSource = {
-        type: 'mmts', url: new URL('/8k', location.href).href,
+        type: '${type}', url: new URL('/8k', location.href).href,
         isLive: false, filesize: ${fileSize},
     };
-    if (typeof mpegts.probeMMTSDuration === 'function') {
+    if (mediaDataSource.type === 'mmts' && typeof mpegts.probeMMTSDuration === 'function') {
         state.status = 'probing';
         try {
             const probeOptions = {filesize: mediaDataSource.filesize};
@@ -403,8 +422,13 @@ function createHarnessHtml(videoPacketId, fileSize) {
 }
 
 function createServer(args, repoRoot) {
-    const html = Buffer.from(createHarnessHtml(args.videoPacketId, fs.statSync(args.file).size));
-    const dist = path.join(repoRoot, 'dist/mpegts.js');
+    const html = Buffer.from(createHarnessHtml(
+        args.type,
+        args.videoPacketId,
+        fs.statSync(args.file).size,
+        args.workerMSE
+    ));
+    const dist = args.dist || path.join(repoRoot, 'dist/mpegts.js');
     const server = http.createServer((request, response) => {
         const url = new URL(request.url, 'http://127.0.0.1');
         if (url.pathname === '/') {

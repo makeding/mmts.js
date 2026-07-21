@@ -325,6 +325,27 @@ class MSEController {
         }
     }
 
+    ensureSourceBufferDirect(initSegment) {
+        if (!this._mediaSource || this._mediaSource.readyState !== 'open' ||
+            this._mediaSource.streaming === false) {
+            return {ok: false, blocked: true};
+        }
+
+        let type = initSegment.type;
+        let mimeType = this._makeMimeType(initSegment);
+        let sb = this._sourceBuffers[type];
+        if (sb) {
+            return {ok: true, empty: true};
+        }
+
+        let result = this._addSourceBuffer(type, mimeType);
+        if (!result.ok) {
+            this._emitter.emit(MSEEvents.ERROR, {code: result.error.code, msg: result.error.message});
+            return result;
+        }
+        return {ok: true, empty: true};
+    }
+
     appendInitSegmentDirect(initSegment, resetParserState = false) {
         if (!this._mediaSource ||
             (this._mediaSource.readyState !== 'open' && this._mediaSource.readyState !== 'ended') ||

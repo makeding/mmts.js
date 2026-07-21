@@ -1300,6 +1300,42 @@ function makeRemuxVideoSample(dts, pts, mpuSequenceNumber, sampleNumber, byte, d
     return sample;
 }
 
+function testNonMMTSRemuxKeepsUpstreamSingleSampleStash() {
+    const capture = {};
+    const MP4Remuxer = loadRemuxer(capture);
+    const remuxer = new MP4Remuxer({
+        isLive: true,
+        isMMTS: false,
+        mmtsClampVideoTimestampGap: false,
+        mmtsVideoTailStashDuration: 0
+    });
+    remuxer._videoMeta = {refSampleDuration: 40};
+    remuxer._dtsBase = 0;
+    remuxer._dtsBaseInited = true;
+    const segments = [];
+    remuxer.onMediaSegment = (_type, segment) => segments.push(segment);
+
+    const samples = [
+        makeRemuxVideoSample(0, 80, 1, 1, 1),
+        makeRemuxVideoSample(40, 0, 1, 2, 2),
+        makeRemuxVideoSample(80, 40, 1, 3, 3),
+    ];
+    samples[0].isKeyframe = true;
+    remuxer._remuxVideo({
+        type: 'video',
+        id: 1,
+        sequenceNumber: 0,
+        samples,
+        length: 12
+    }, false);
+
+    assert.strictEqual(segments.length, 1);
+    assert.strictEqual(segments[0].sampleCount, 2);
+    assert.strictEqual(capture.moof.samples.length, 2);
+    assert.strictEqual(remuxer._videoStashedSamples.length, 1);
+    assert.strictEqual(remuxer._videoStashedSamples[0].dts, 80);
+}
+
 function testRemuxerPackagesMonotonicSamplesRegardlessOfMMTSSourceOrder() {
     const MP4Remuxer = loadRemuxer();
     const remuxer = new MP4Remuxer({
@@ -3212,6 +3248,7 @@ testDemuxerAllowsFileReorderWithoutRawDtsRollback();
 testDemuxerMarksOutputSampleAfterPacketDiscontinuity();
 testDemuxerDoesNotConsumeDiscontinuityWhenDroppingVideoSample();
 testRemuxerDoesNotFilterByMMTSSourceIdentity();
+testNonMMTSRemuxKeepsUpstreamSingleSampleStash();
 testRemuxerPackagesMonotonicSamplesRegardlessOfMMTSSourceOrder();
 testRemuxerUsesExactMMTSVideoClockForMp4Only();
 testRemuxerDropsInitialVideoUntilRandomAccessPoint();

@@ -1191,6 +1191,9 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
 
     function createMSEBufferStateMachine(): MSEBufferStateMachine {
         return new MSEBufferStateMachine(config, {
+            ensureSourceBuffer: (_type: any, segment: any) => {
+                return mse_controller.ensureSourceBufferDirect(segment);
+            },
             appendInit: (_type: any, segment: any) => {
                 return mse_controller.appendInitSegmentDirect(
                     segment,

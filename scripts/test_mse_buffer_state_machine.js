@@ -370,6 +370,13 @@ function makeHarness(overrides) {
     if (overrides && overrides.output) {
         Object.assign(output, overrides.output);
     }
+    if (overrides && overrides.prepareSourceBuffers) {
+        output.ensureSourceBuffer = (type) => {
+            log.push(['ensureSourceBuffer', type]);
+            sourceBuffers[type].exists = true;
+            return {ok: true, empty: true};
+        };
+    }
 
     const config = Object.assign({
         isLive: false,
@@ -451,6 +458,23 @@ function testAppendPriorityAndAsyncGate() {
     assert.strictEqual(h.log.filter((entry) => entry[0] === 'appendMedia').length, 0);
     h.updateEnd('video');
     assert.deepStrictEqual(h.log[h.log.length - 1], ['appendMedia', 'video', 0]);
+}
+
+function testInitialSourceBuffersArePreparedBeforeAppendingInit() {
+    const h = makeHarness({prepareSourceBuffers: true});
+    h.sm.onInitSegment('video', makeInit('video'));
+    assert.deepStrictEqual(h.log, [['ensureSourceBuffer', 'video']]);
+
+    h.sm.onInitSegment('audio', makeInit('audio'));
+    assert.deepStrictEqual(h.log, [
+        ['ensureSourceBuffer', 'video'],
+        ['ensureSourceBuffer', 'audio'],
+    ]);
+
+    h.sm.onMediaSegment('video', makeSegment('video', 0, 1, 1024));
+    assert.deepStrictEqual(h.log[2], ['appendInit', 'video']);
+    assert.strictEqual(h.sourceBuffers.video.updating, true);
+    assert.strictEqual(h.sourceBuffers.audio.exists, true);
 }
 
 function testUntypedUpdateEndInfersCompletedTrackDuringParallelAppends() {
@@ -817,6 +841,24 @@ function testInitQuotaDoesNotRequeueAsMedia() {
     h.sm.tick('retry');
     assert.strictEqual(h.log.filter((entry) => entry[0] === 'appendInit').length, 2);
     assert.strictEqual(h.log.some((entry) => entry[0] === 'appendMedia'), false);
+}
+
+function testMissingAudioSourceBufferWaitsForVideoInitUpdateEnd() {
+    const h = makeHarness();
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.video.updating = true;
+
+    h.sm.onInitSegment('audio', makeInit('audio'));
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'appendInit' && entry[1] === 'audio'),
+        false
+    );
+
+    h.updateEnd('video');
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'appendInit' && entry[1] === 'audio'),
+        true
+    );
 }
 
 function testSeekFlushesBeforeNewTimelineAppend() {
@@ -3077,6 +3119,7 @@ function testVideoTrackSwitchRejectsMissingInitWrongAttemptAndStaleTransactionAt
 }
 
 testAppendPriorityAndAsyncGate();
+testInitialSourceBuffersArePreparedBeforeAppendingInit();
 testUntypedUpdateEndInfersCompletedTrackDuringParallelAppends();
 testSameTrackInflightIdentityCannotBeOverwritten();
 testQueuedMediaSegmentsAreBatchedForMSEAppend();
@@ -3091,6 +3134,7 @@ testAudioOnlyUserSeekFlushesBufferedRange();
 testQuotaWaitsForCleanupOrProgress();
 testAudioQuotaCanEvictPlayedVideoData();
 testInitQuotaDoesNotRequeueAsMedia();
+testMissingAudioSourceBufferWaitsForVideoInitUpdateEnd();
 testSeekFlushesBeforeNewTimelineAppend();
 testSeekDropsOldTimelineSegmentsBeforeTargetWindow();
 testRecommendedSeekPointKeepsEarlierPrerollSegments();

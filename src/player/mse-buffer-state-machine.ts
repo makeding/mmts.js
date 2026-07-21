@@ -208,6 +208,7 @@ type MSETrackSwitchTransactionContext = {
 };
 
 export type MSEBufferStateMachineOutput = {
+    ensureSourceBuffer?: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult,
     appendInit: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult,
     appendMedia: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult,
     removeRange: (type: MSEBufferTrackType, start: number, end: number) => MSEBufferOperationResult,
@@ -1907,6 +1908,36 @@ class MSEBufferStateMachine {
         if (!type) {
             return false;
         }
+        const sourceBuffer = this._getSourceBufferState(type);
+        if ((!sourceBuffer || !sourceBuffer.exists) && this._output.ensureSourceBuffer) {
+            const segment = this._pending_init_segments[type][0];
+            let result: MSEBufferOperationResult;
+            try {
+                result = this._output.ensureSourceBuffer(type, segment);
+            } catch (error) {
+                this.onFatal(error);
+                return true;
+            }
+            if (result && result.ok) {
+                // Keep the init queued.  Creating every known SourceBuffer
+                // before appending the first initialization segment preserves
+                // the ordering used by upstream mpegts.js and avoids Chromium
+                // locking the MediaSource to a one-track topology.
+                return true;
+            }
+            if (result && (result.error || result.fatal)) {
+                this.onFatal(result.error || result);
+                return true;
+            }
+            return true;
+        }
+        if ((!sourceBuffer || !sourceBuffer.exists) && !this._allSourceBuffersIdle()) {
+            // Chromium may reject addSourceBuffer() while the other track is
+            // still appending its initialization segment.  Keep the second
+            // init queued until updateend instead of turning an ordinary
+            // audio+video MPEG-TS stream into a duplicate-SourceBuffer fatal.
+            return true;
+        }
         if (!this._canOperateOnType(type)) {
             return false;
         }
@@ -2833,6 +2864,16 @@ class MSEBufferStateMachine {
         const audioPending = this._pending_init_segments.audio.length > 0;
         if (!videoPending && !audioPending) {
             return null;
+        }
+        if (this._output.ensureSourceBuffer) {
+            const videoState = this._getSourceBufferState('video');
+            const audioState = this._getSourceBufferState('audio');
+            if (videoPending && (!videoState || !videoState.exists)) {
+                return 'video';
+            }
+            if (audioPending && (!audioState || !audioState.exists)) {
+                return 'audio';
+            }
         }
         const waitForAudio = videoPending &&
             this._shouldDeferVideoInitUntilAudio(this._pending_init_segments.video[0]);

@@ -765,54 +765,71 @@ class MP4Remuxer {
         let firstPts = -1, lastPts = -1;
         let firstMp4Dts = -1;
 
-        if (!samples) {
-            samples = [];
-        }
-        if (this._videoStashedSamples.length > 0) {
-            samples = this._videoStashedSamples.concat(samples);
-        }
-        if (samples.length === 0) {
-            return;
-        }
-
-        // fMP4 trun sample order defines decode order. MMTS packet order may
-        // differ from DTS order when HEVC carries frame reordering, so sort
-        // before calculating durations and writing mdat.
-        samples.sort((a, b) => {
-            if (a.dts !== b.dts) {
-                return a.dts - b.dts;
+        let pendingSamples = [];
+        let lastSample = null;
+        if (this._isMMTS) {
+            if (!samples) {
+                samples = [];
             }
-            return a.pts - b.pts;
-        });
+            if (this._videoStashedSamples.length > 0) {
+                samples = this._videoStashedSamples.concat(samples);
+            }
+            if (samples.length === 0) {
+                return;
+            }
 
-        samples = this._dropOverlappedVideoSamples(samples);
-        if (samples.length === 0) {
-            this._videoStashedSamples = [];
-            track.samples = [];
-            track.length = 0;
-            return;
-        }
+            // fMP4 trun sample order defines decode order. MMTS packet order
+            // may differ from DTS order when HEVC carries frame reordering.
+            samples.sort((a, b) => {
+                if (a.dts !== b.dts) {
+                    return a.dts - b.dts;
+                }
+                return a.pts - b.pts;
+            });
 
-        let emitCount = this._selectVideoEmitCount(samples, force);
-        let tailStashCount = this._getVideoTailStashCount(samples, force);
-        if (tailStashCount > 0) {
-            emitCount = Math.min(emitCount, Math.max(0, samples.length - tailStashCount));
-        }
-        if (emitCount === 0) {
-            this._videoStashedSamples = samples;
-            track.samples = [];
-            track.length = 0;
-            return;
-        }
+            let emitCount = this._selectVideoEmitCount(samples, force);
+            let tailStashCount = this._getVideoTailStashCount(samples, force);
+            if (tailStashCount > 0) {
+                emitCount = Math.min(emitCount, Math.max(0, samples.length - tailStashCount));
+            }
+            if (emitCount === 0) {
+                this._videoStashedSamples = samples;
+                track.samples = [];
+                track.length = 0;
+                return;
+            }
 
-        let pendingSamples = samples.slice(emitCount);
-        samples = samples.slice(0, emitCount);
-        this._videoStashedSamples = pendingSamples;
+            pendingSamples = samples.slice(emitCount);
+            samples = samples.slice(0, emitCount);
+            this._videoStashedSamples = pendingSamples;
+            lastSample = pendingSamples.length > 0 ? pendingSamples[0] : null;
+        } else {
+            // Preserve upstream MPEG-TS/FLV remux semantics.  The MMTS safe
+            // composition-prefix algorithm must not hold ordinary H.264 video
+            // batches indefinitely merely because their PTS are reordered.
+            if (!samples || samples.length === 0) {
+                return;
+            }
+            if (samples.length === 1 && !force) {
+                return;
+            }
+            if (samples.length > 1 && !force) {
+                lastSample = samples.pop();
+            }
+            if (this._videoStashedSamples.length > 0) {
+                samples.unshift(this._videoStashedSamples[0]);
+                this._videoStashedSamples = [];
+            }
+            if (lastSample !== null) {
+                this._videoStashedSamples = [lastSample];
+                pendingSamples = [lastSample];
+            }
+        }
 
         // A fragmented MP4 stream may only begin at a random access point.
         // Demuxers normally provide this guarantee, but retain the invariant at
         // the remux boundary because this is the final owner of fMP4 semantics.
-        if (!this._videoStartupSegmentEmitted && !samples[0].isKeyframe) {
+        if (this._isMMTS && !this._videoStartupSegmentEmitted && !samples[0].isKeyframe) {
             const firstRapIndex = samples.findIndex((sample) => sample.isKeyframe);
             if (firstRapIndex < 0) {
                 this._videoStashedSamples = force ? [] : samples.concat(pendingSamples);
@@ -836,7 +853,6 @@ class MP4Remuxer {
             return;
         }  // else if (force === true) do remux
 
-        let lastSample = pendingSamples.length > 0 ? pendingSamples[0] : null;
         let mdatBytes = 8 + samples.reduce((sum, sample) => sum + sample.length, 0);
 
         if (mdatBytes <= 8) {
