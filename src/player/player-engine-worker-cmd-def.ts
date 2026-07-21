@@ -31,6 +31,7 @@ export type WorkerCommandOp =
     | 'startup_jump'
     | 'timeupdate'
     | 'readystatechange'
+    | 'continuous_buffer_stall'
     | 'pause_transmuxer'
     | 'resume_transmuxer'
     | 'switch_audio'

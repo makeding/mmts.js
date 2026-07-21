@@ -80,6 +80,7 @@ declare class PlayerEngineDedicatedThread implements PlayerEngine {
     private _cancelMMTSAudioTrackSwitchResumeForSeek;
     private _onRequestPauseTransmuxer;
     private _onRequestResumeTransmuxer;
+    private _onContinuousBufferStall;
     private _onMediaTimeUpdate;
     private _onMediaReadyStateChange;
     private _onWorkerMessage;

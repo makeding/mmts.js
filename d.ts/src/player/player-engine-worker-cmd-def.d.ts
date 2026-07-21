@@ -1,5 +1,5 @@
 import type { PlaybackOperation } from '../core/playback-operation';
-export type WorkerCommandOp = 'logging_config' | 'init' | 'destroy' | 'initialize_mse' | 'shutdown_mse' | 'load' | 'unload' | 'user_seek' | 'unbuffered_seek' | 'startup_jump' | 'timeupdate' | 'readystatechange' | 'pause_transmuxer' | 'resume_transmuxer' | 'switch_audio' | 'select_audio_track' | 'select_video_track';
+export type WorkerCommandOp = 'logging_config' | 'init' | 'destroy' | 'initialize_mse' | 'shutdown_mse' | 'load' | 'unload' | 'user_seek' | 'unbuffered_seek' | 'startup_jump' | 'timeupdate' | 'readystatechange' | 'continuous_buffer_stall' | 'pause_transmuxer' | 'resume_transmuxer' | 'switch_audio' | 'select_audio_track' | 'select_video_track';
 export type WorkerCommandPacket = {
     cmd: WorkerCommandOp;
     playback_operation?: PlaybackOperation;

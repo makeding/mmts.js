@@ -2140,6 +2140,59 @@ function testForwardDurationCanTriggerBackpressureAndRecover() {
     );
 }
 
+function testMMTSVodWaitingAtByteCapPrefetchesUntilPlaybackProgresses() {
+    const h = makeHarness({
+        config: {
+            isMMTS: true,
+            isLive: false,
+            mseBufferVideoSoftLimitBytes: 112 * MiB,
+            mseBufferVideoHardLimitBytes: 128 * MiB,
+            mseBufferForwardTargetDuration: 90,
+            mseBufferRecoverForwardDuration: 60,
+            lazyLoadRecoverBytes: 96 * MiB,
+        }
+    });
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.setForwardInfo({
+        videoForwardBytes: 112 * MiB,
+        videoForwardDuration: 34,
+        audioForwardBytes: 2 * MiB,
+        audioForwardDuration: 34,
+    });
+
+    h.sm.onMediaState(145, 4, 'progress');
+    assert.strictEqual(h.sm._main_state, 'BACKPRESSURE');
+    assert.strictEqual(h.sm._transmuxer_pause_reason, 'BACKPRESSURE');
+
+    assert.strictEqual(h.sm.onContinuousBufferStall(), true);
+    assert.strictEqual(h.sm._backpressure_stall_prefetch_active, true);
+    assert.strictEqual(h.sm._main_state, 'STEADY');
+    assert.strictEqual(h.sm._transmuxer_paused, false);
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'resumeTransmuxer' && entry[1] === 'RECOVERED'),
+        true
+    );
+
+    const pauseCount = h.log.filter((entry) => entry[0] === 'pauseTransmuxer').length;
+    h.setForwardInfo({
+        videoForwardBytes: 200 * MiB,
+        videoForwardDuration: 60,
+        audioForwardBytes: 3 * MiB,
+        audioForwardDuration: 60,
+    });
+    h.sm.onMediaState(145, 4, 'progress');
+    assert.strictEqual(h.sm._transmuxer_paused, false);
+    assert.strictEqual(h.log.filter((entry) => entry[0] === 'pauseTransmuxer').length, pauseCount);
+
+    h.sm.onMediaState(145.6, 4, 'timeupdate');
+    assert.strictEqual(h.sm._backpressure_stall_prefetch_active, false);
+    assert.strictEqual(h.sm._main_state, 'BACKPRESSURE');
+    assert.strictEqual(h.sm._transmuxer_pause_reason, 'BACKPRESSURE');
+    assert.strictEqual(h.log.filter((entry) => entry[0] === 'pauseTransmuxer').length, pauseCount + 1);
+}
+
 function testMMTSDirectSeekKeepsRequestedTimeWithBufferedVideoRandomAccessPreroll() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
@@ -3177,6 +3230,7 @@ testBackpressureRequiresBothTrackDataButNotPlayableIntersection();
 testPendingQueuesTriggerBackpressureBeforeMSEAppend();
 testAudioBytesTriggerBackpressureAndRecovery();
 testForwardDurationCanTriggerBackpressureAndRecover();
+testMMTSVodWaitingAtByteCapPrefetchesUntilPlaybackProgresses();
 testMMTSDirectSeekKeepsRequestedTimeWithBufferedVideoRandomAccessPreroll();
 testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint();
 testNonMMTSDirectSeekKeepsRequestedTime();

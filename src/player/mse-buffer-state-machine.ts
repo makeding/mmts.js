@@ -272,6 +272,8 @@ class MSEBufferStateMachine {
     private _source_opened: boolean = false;
     private _transmuxer_paused: boolean = false;
     private _transmuxer_pause_reason: string | null = null;
+    private _backpressure_stall_prefetch_active: boolean = false;
+    private _backpressure_stall_prefetch_start_time: number | null = null;
     private _pending_eos: boolean = false;
     private _inflight_operations: {[type: string]: MSEBufferInflightOperation | null} = {
         video: null,
@@ -519,11 +521,20 @@ class MSEBufferStateMachine {
         if (typeof readyState === 'number' && isFinite(readyState)) {
             this._ready_state = readyState;
         }
+        this._updateBackpressureStallPrefetch(eventType || 'media_state');
         this._updateBackpressure();
         this.tick(eventType || 'media_state');
     }
 
+    public onContinuousBufferStall(): boolean {
+        if (this._backpressure_stall_prefetch_active) {
+            return true;
+        }
+        return this._tryBeginBackpressureStallPrefetch();
+    }
+
     public onSeek(targetTime: number): void {
+        this._clearBackpressureStallPrefetch();
         this._beginTimelineSeek(targetTime, 'SEEK', true);
     }
 
@@ -531,6 +542,7 @@ class MSEBufferStateMachine {
         if (typeof targetTime !== 'number' || !isFinite(targetTime) || targetTime < 0) {
             return false;
         }
+        this._clearBackpressureStallPrefetch();
         if (this._isMMTS() && this._expectsVideo()) {
             const randomAccessStart = this._resolveBufferedVideoRandomAccessPoint(targetTime);
             if (randomAccessStart === null) {
@@ -3122,6 +3134,60 @@ class MSEBufferStateMachine {
         }
     }
 
+    private _updateBackpressureStallPrefetch(eventType: string): void {
+        if (this._backpressure_stall_prefetch_active) {
+            const startTime = this._backpressure_stall_prefetch_start_time;
+            if (startTime != null &&
+                (this._current_time > startTime + 0.5 || this._current_time < startTime - 1)) {
+                this._clearBackpressureStallPrefetch();
+            }
+            return;
+        }
+
+        if (eventType !== 'waiting' && eventType !== 'stalled') {
+            return;
+        }
+
+        this._tryBeginBackpressureStallPrefetch();
+    }
+
+    private _tryBeginBackpressureStallPrefetch(): boolean {
+        if (this._config.isMMTS !== true || this._config.isLive === true ||
+            !this._transmuxer_paused || this._transmuxer_pause_reason !== 'BACKPRESSURE' ||
+            this._main_state !== 'BACKPRESSURE') {
+            return false;
+        }
+
+        const info = this.getForwardBufferInfo(this._current_time);
+        const videoSoft = this._getBaseByteLimit('mseBufferVideoSoftLimitBytes', 120 * 1024 * 1024);
+        const videoBytes = info.videoForwardBytes || 0;
+        const playableDuration = info.forwardDuration || 0;
+        if (videoBytes < videoSoft * 0.9 || playableDuration < 5) {
+            return false;
+        }
+
+        // Safari/AirPlay may wait for a larger remote playback queue before it
+        // starts advancing currentTime.  A byte-based VOD cap can otherwise
+        // deadlock with that demand: playback waits for data while backpressure
+        // waits for playback.  Temporarily let the configured duration target
+        // own the forward horizon; normal byte limits return after real progress.
+        this._backpressure_stall_prefetch_active = true;
+        this._backpressure_stall_prefetch_start_time = this._current_time;
+        Log.w(
+            this.TAG,
+            `Resume MMTS VOD stalled prefetch at ${this._current_time.toFixed(3)}, ` +
+            `forward=${playableDuration.toFixed(3)}s, video_bytes=${Math.round(videoBytes)}`
+        );
+        this._resumeTransmuxer('RECOVERED');
+        this._main_state = 'STEADY';
+        return true;
+    }
+
+    private _clearBackpressureStallPrefetch(): void {
+        this._backpressure_stall_prefetch_active = false;
+        this._backpressure_stall_prefetch_start_time = null;
+    }
+
     private _resumeIfRecovered(): void {
         if (!this._canBackpressureControlTransmuxer()) {
             return;
@@ -3814,9 +3880,18 @@ class MSEBufferStateMachine {
         return typeof value === 'number' && isFinite(value) && value > 0 ? value : 0;
     }
 
-    private _getByteLimit(field: string, fallback: number): number {
+    private _getBaseByteLimit(field: string, fallback: number): number {
         const value = this._config[field];
         return typeof value === 'number' && isFinite(value) && value > 0 ? value : fallback;
+    }
+
+    private _getByteLimit(field: string, fallback: number): number {
+        const limit = this._getBaseByteLimit(field, fallback);
+        if (this._backpressure_stall_prefetch_active &&
+            (field === 'mseBufferVideoSoftLimitBytes' || field === 'mseBufferVideoHardLimitBytes')) {
+            return limit * 3;
+        }
+        return limit;
     }
 
     private _getRecoverVideoBytes(videoSoftLimit: number): number {

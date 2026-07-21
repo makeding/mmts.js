@@ -12,8 +12,10 @@ declare class StartupStallJumper {
     private _allow_range_gap_jump;
     private _use_buffered_jump;
     private _defer_stalled_jump;
+    private _conservative_in_range_recovery;
+    private _on_continuous_buffer_stall;
     private e;
-    constructor(media_element: HTMLMediaElement, on_direct_seek: (target: number) => boolean | void, max_jump_gap?: number, min_jump_buffer?: number, allow_range_gap_jump?: boolean, use_buffered_jump?: boolean, defer_stalled_jump?: boolean);
+    constructor(media_element: HTMLMediaElement, on_direct_seek: (target: number) => boolean | void, max_jump_gap?: number, min_jump_buffer?: number, allow_range_gap_jump?: boolean, use_buffered_jump?: boolean, defer_stalled_jump?: boolean, conservative_in_range_recovery?: boolean, on_continuous_buffer_stall?: () => void);
     destroy(): void;
     private _onMediaCanPlay;
     private _onMediaPlaying;

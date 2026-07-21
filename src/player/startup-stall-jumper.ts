@@ -35,6 +35,8 @@ class StartupStallJumper {
     private _allow_range_gap_jump: boolean = true;
     private _use_buffered_jump: boolean = true;
     private _defer_stalled_jump: boolean = false;
+    private _conservative_in_range_recovery: boolean = false;
+    private _on_continuous_buffer_stall: (() => void) | null = null;
 
     private e: any = null;
 
@@ -45,7 +47,9 @@ class StartupStallJumper {
         min_jump_buffer?: number,
         allow_range_gap_jump?: boolean,
         use_buffered_jump?: boolean,
-        defer_stalled_jump?: boolean
+        defer_stalled_jump?: boolean,
+        conservative_in_range_recovery?: boolean,
+        on_continuous_buffer_stall?: () => void
     ) {
         this._media_element = media_element;
         this._on_direct_seek = on_direct_seek;
@@ -63,6 +67,12 @@ class StartupStallJumper {
         }
         if (typeof defer_stalled_jump === 'boolean') {
             this._defer_stalled_jump = defer_stalled_jump;
+        }
+        if (typeof conservative_in_range_recovery === 'boolean') {
+            this._conservative_in_range_recovery = conservative_in_range_recovery;
+        }
+        if (typeof on_continuous_buffer_stall === 'function') {
+            this._on_continuous_buffer_stall = on_continuous_buffer_stall;
         }
 
         this.e = {
@@ -89,6 +99,7 @@ class StartupStallJumper {
         this._media_element.removeEventListener('progress', this.e.onMediaProgress);
         this._media_element = null;
         this._on_direct_seek = null;
+        this._on_continuous_buffer_stall = null;
     }
 
     private _onMediaCanPlay(e: Event): void {
@@ -194,14 +205,16 @@ class StartupStallJumper {
         return window.nextRangeStart;
     }
 
-    private _scheduleStallCheck(): void {
+    private _scheduleStallCheck(preserveStart?: boolean): void {
         const media = this._media_element;
         if (media == null || media.paused || media.ended || media.seeking) {
             return;
         }
 
         this._clearStallCheckTimer();
-        this._stall_check_time = media.currentTime;
+        if (!preserveStart) {
+            this._stall_check_time = media.currentTime;
+        }
         this._stall_check_timer = window.setTimeout(this._onStallCheckTimer.bind(this), 1200);
     }
 
@@ -226,9 +239,29 @@ class StartupStallJumper {
             return;
         }
 
-        const target = this._findJumpTarget(media, true);
+        const bufferedTarget = this._findBufferedJumpTarget(media);
+        if (bufferedTarget != null) {
+            if (!this._shouldJumpTo(bufferedTarget)) {
+                this._scheduleStallCheck(true);
+                return;
+            }
+            Log.w(this.TAG, `Playback still stuck at ${media.currentTime}, fast-forward to ${bufferedTarget}`);
+            this._requestJump(bufferedTarget);
+            return;
+        }
+
+        if (this._conservative_in_range_recovery) {
+            // A continuous MMTS VOD range is not a seek gap. Safari/AirPlay can
+            // keep currentTime still while it asks MSE for a larger remote
+            // playback queue. Notify the buffer owner and keep checking; a
+            // speculative seek would only restart that queue.
+            this._on_continuous_buffer_stall?.();
+            this._scheduleStallCheck(true);
+            return;
+        }
+
+        const target = this._findSmallForwardJumpTarget(media);
         if (target == null) {
-            this._scheduleStallCheck();
             return;
         }
 

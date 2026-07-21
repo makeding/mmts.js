@@ -129,6 +129,8 @@ declare class MSEBufferStateMachine {
     private _source_opened;
     private _transmuxer_paused;
     private _transmuxer_pause_reason;
+    private _backpressure_stall_prefetch_active;
+    private _backpressure_stall_prefetch_start_time;
     private _pending_eos;
     private _inflight_operations;
     private _seek_generation;
@@ -170,6 +172,7 @@ declare class MSEBufferStateMachine {
     onRemoveUpdateEnd(type?: MSEBufferTrackType): void;
     onQuotaExceeded(type?: MSEBufferTrackType, segment?: any): void;
     onMediaState(currentTime: number, readyState: number, eventType: string): void;
+    onContinuousBufferStall(): boolean;
     onSeek(targetTime: number): void;
     onDirectSeek(targetTime: number): boolean;
     onRecommendedSeekPoint(targetTime: number): void;
@@ -274,6 +277,9 @@ declare class MSEBufferStateMachine {
     private _makeCurrentTimeProtectionRange;
     private _findRangeCoveringCurrentTime;
     private _updateBackpressure;
+    private _updateBackpressureStallPrefetch;
+    private _tryBeginBackpressureStallPrefetch;
+    private _clearBackpressureStallPrefetch;
     private _resumeIfRecovered;
     private _canBackpressureControlTransmuxer;
     private _isBackpressureReady;
@@ -320,6 +326,7 @@ declare class MSEBufferStateMachine {
     private _canResumeTransmuxer;
     private _getTrackLeadLimit;
     private _getAppendBatchDuration;
+    private _getBaseByteLimit;
     private _getByteLimit;
     private _getRecoverVideoBytes;
     private _getRecoverAudioBytes;

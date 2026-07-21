@@ -17,6 +17,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 
 const timers = [];
+let clockNow = 1;
 const BufferWindow = {
     inspect(media) {
         return {
@@ -43,7 +44,7 @@ vm.runInNewContext(compiled, {
         return require(id);
     },
     console,
-    self: {performance: {now: () => 1}},
+    self: {performance: {now: () => clockNow}},
     window: {
         setTimeout(callback, delay) {
             timers.push({callback, delay, cleared: false});
@@ -82,6 +83,7 @@ function makeMedia() {
 
 function testMMTSGapJumpWaitsForConfirmedStall() {
     timers.splice(0, timers.length);
+    clockNow = 1;
     const media = makeMedia();
     const seeks = [];
     const jumper = new StartupStallJumper(
@@ -108,6 +110,7 @@ function testMMTSGapJumpWaitsForConfirmedStall() {
 
 function testDefaultGapJumpRemainsImmediate() {
     timers.splice(0, timers.length);
+    clockNow = 1;
     const media = makeMedia();
     const seeks = [];
     const jumper = new StartupStallJumper(media, (target) => {
@@ -122,6 +125,7 @@ function testDefaultGapJumpRemainsImmediate() {
 
 function testPlayingChecksAndFixesStuckPlayback() {
     timers.splice(0, timers.length);
+    clockNow = 1;
     const media = makeMedia();
     const seeks = [];
     const jumper = new StartupStallJumper(media, (target) => {
@@ -140,6 +144,7 @@ function testPlayingChecksAndFixesStuckPlayback() {
 
 function testPlayingCheckLeavesAdvancingPlaybackUntouched() {
     timers.splice(0, timers.length);
+    clockNow = 1;
     const media = makeMedia();
     const seeks = [];
     const jumper = new StartupStallJumper(media, (target) => {
@@ -156,6 +161,7 @@ function testPlayingCheckLeavesAdvancingPlaybackUntouched() {
 
 function testDestroyRemovesPlayingListenerAndTimer() {
     timers.splice(0, timers.length);
+    clockNow = 1;
     const media = makeMedia();
     const jumper = new StartupStallJumper(media, () => true);
 
@@ -166,10 +172,77 @@ function testDestroyRemovesPlayingListenerAndTimer() {
     assert.strictEqual(timers[0].cleared, true);
 }
 
+function testMMTSVodContinuousBufferStallRequestsMoreDataWithoutSeeking() {
+    timers.splice(0, timers.length);
+    clockNow = 1;
+    const media = makeMedia();
+    const seeks = [];
+    let stallRequests = 0;
+    const originalInspect = BufferWindow.inspect;
+    BufferWindow.inspect = () => ({
+        currentTime: media.currentTime,
+        currentRangeIndex: 0,
+        currentRangeStart: 100,
+        currentRangeEnd: 180,
+        forwardDuration: 35,
+        atCurrentRangeEnd: false,
+    });
+    media.buffered = {
+        length: 1,
+        start() { return 100; },
+        end() { return 180; },
+    };
+    const jumper = new StartupStallJumper(
+        media,
+        (target) => {
+            seeks.push(target);
+            return true;
+        },
+        5,
+        1,
+        true,
+        true,
+        true,
+        true,
+        () => {
+            stallRequests++;
+        }
+    );
+
+    media.currentTime = 145;
+    media.fire('playing');
+    clockNow = 1201;
+    timers[0].callback();
+    assert.deepStrictEqual(seeks, []);
+    assert.strictEqual(stallRequests, 1);
+
+    clockNow = 5001;
+    timers[1].callback();
+    assert.deepStrictEqual(seeks, []);
+    assert.strictEqual(stallRequests, 2);
+
+    media.currentTime = 145.1;
+    clockNow = 6201;
+    timers[2].callback();
+    assert.deepStrictEqual(seeks, []);
+    assert.strictEqual(stallRequests, 2);
+
+    media.currentTime = 146;
+    media.fire('playing');
+    clockNow = 11001;
+    timers[3].callback();
+    assert.deepStrictEqual(seeks, []);
+    assert.strictEqual(stallRequests, 3);
+
+    jumper.destroy();
+    BufferWindow.inspect = originalInspect;
+}
+
 testMMTSGapJumpWaitsForConfirmedStall();
 testDefaultGapJumpRemainsImmediate();
 testPlayingChecksAndFixesStuckPlayback();
 testPlayingCheckLeavesAdvancingPlaybackUntouched();
 testDestroyRemovesPlayingListenerAndTimer();
+testMMTSVodContinuousBufferStallRequestsMoreDataWithoutSeeking();
 
 console.log('startup-stall-jumper tests passed');

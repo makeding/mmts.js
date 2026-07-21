@@ -349,6 +349,10 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
                 }
                 break;
             }
+            case 'continuous_buffer_stall':
+                if (!acceptPlaybackOperation(command_packet.playback_operation)) break;
+                mse_buffer_state_machine?.onContinuousBufferStall();
+                break;
             case 'pause_transmuxer':
                 if (!acceptPlaybackOperation(command_packet.playback_operation)) break;
                 transmuxer.pause();

@@ -366,7 +366,9 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
             this._getStallJumpMinBuffer(),
             this._allowStallJumperRangeGapJump(),
             true,
-            this._config.isMMTS === true
+            this._config.isMMTS === true,
+            this._config.isMMTS === true && this._config.isLive !== true,
+            this._onContinuousBufferStall.bind(this)
         );
 
         if (this._config.isLive && this._config.liveBufferLatencyChasing) {
@@ -766,6 +768,13 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
     private _onRequestResumeTransmuxer(): void {
         this._worker.postMessage({
             cmd: 'resume_transmuxer',
+            playback_operation: this._active_playback_operation,
+        } as WorkerCommandPacket);
+    }
+
+    private _onContinuousBufferStall(): void {
+        this._worker.postMessage({
+            cmd: 'continuous_buffer_stall',
             playback_operation: this._active_playback_operation,
         } as WorkerCommandPacket);
     }
