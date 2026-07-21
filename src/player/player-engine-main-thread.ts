@@ -910,7 +910,7 @@ class PlayerEngineMainThread implements PlayerEngine {
             this._allowStallJumperRangeGapJump(),
             true,
             this._config.isMMTS === true,
-            this._config.isMMTS === true && this._config.isLive !== true,
+            this._config.isMMTS === true,
             () => {
                 this._mse_buffer_state_machine?.onContinuousBufferStall();
             }

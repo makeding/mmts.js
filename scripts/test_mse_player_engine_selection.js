@@ -51,6 +51,25 @@ function loadMSEPlayer() {
     return {MSEPlayer: moduleObject.exports.default, created};
 }
 
+function assertMMTSStallRecoveryCoversLivePlayback(sourceFile) {
+    const sourcePath = path.resolve(__dirname, `../src/player/${sourceFile}`);
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const constructorStart = source.indexOf('new StartupStallJumper(');
+    assert.notStrictEqual(constructorStart, -1, `${sourceFile} must create StartupStallJumper`);
+    const constructorCall = source.slice(constructorStart, constructorStart + 700);
+
+    assert.match(
+        constructorCall,
+        /this\._config\.isMMTS === true,\s*this\._config\.isMMTS === true,\s*/,
+        `${sourceFile} must use conservative continuous-buffer recovery for live and VOD MMTS`
+    );
+    assert.doesNotMatch(
+        constructorCall,
+        /this\._config\.isMMTS === true\s*&&\s*this\._config\.isLive !== true/,
+        `${sourceFile} must not leave live MMTS on speculative stall seeks`
+    );
+}
+
 const {MSEPlayer, created} = loadMSEPlayer();
 new MSEPlayer({type: 'mpegts'}, {enableWorkerForMSE: true});
 new MSEPlayer({type: 'm2ts'}, {enableWorkerForMSE: true});
@@ -66,5 +85,8 @@ assert.deepStrictEqual(
         {engine: 'dedicated', type: 'mmts'},
     ]
 );
+
+assertMMTSStallRecoveryCoversLivePlayback('player-engine-main-thread.ts');
+assertMMTSStallRecoveryCoversLivePlayback('player-engine-dedicated-thread.ts');
 
 console.log('mse player engine selection tests passed');

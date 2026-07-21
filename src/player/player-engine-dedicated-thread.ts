@@ -367,7 +367,7 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
             this._allowStallJumperRangeGapJump(),
             true,
             this._config.isMMTS === true,
-            this._config.isMMTS === true && this._config.isLive !== true,
+            this._config.isMMTS === true,
             this._onContinuousBufferStall.bind(this)
         );
 
