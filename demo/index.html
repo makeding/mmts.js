@@ -30,7 +30,7 @@
                     <label for="liveBufferLatencyChasing">liveBufferLatencyChasing</label>
                     <label for="mmtsVideoPid">MMTS video PID</label>
                     <input id="mmtsVideoPid" type="text" value="" placeholder="auto / 0xf101" onchange="saveSettings()" style="width:120px" />
-                    <input type="checkbox" id="mmtsForceSDRColorimetry" />
+                    <input type="checkbox" id="mmtsForceSDRColorimetry" checked />
                     <label for="mmtsForceSDRColorimetry">Force SDR color tags (prototype)</label>
                 </div>
             </div>
@@ -47,6 +47,7 @@
                 <video name="videoElement" class="centeredVideo" controls playsinline>
                     Your browser is too old which doesn't support HTML5 video.
                 </video>
+                <canvas id="bt2446cWebGPUCanvas" class="bt2446c-webgpu-canvas"></canvas>
                 <div id="ttmlSubtitleOverlay" class="ttml-subtitle-overlay"></div>
             </div>
         </div>
@@ -62,6 +63,9 @@
             <button onclick="probe_video_capability()">Probe Codec</button>
             <button onclick="probe_video_frame_color_space()">Probe VideoFrame color</button>
             <button onclick="inject_test_ttml_subtitle()">Test TTML</button>
+            <input type="checkbox" id="bt2446cWebGPUEnabled" onchange="set_bt2446c_webgpu_enabled()" checked />
+            <label for="bt2446cWebGPUEnabled">WebGPU BT.2446-C (fixed)</label>
+            <span id="bt2446cWebGPUStatus" class="bt2446c-webgpu-status">off</span>
         </div>
         <div class="track-panel">
             <div class="track-title">Video info</div>
@@ -85,6 +89,7 @@
     </div>
 
     <script src="../dist/mpegts.js"></script>
+    <script src="webgpu-bt2446c.js"></script>
     <script type="module">
         import * as aribb62js from '../../aribb62.js/src/index.js';
         window.aribb62js = aribb62js;
@@ -113,6 +118,7 @@
         var lastLogcatLineTime = 0;
         var lastMediaInfoLogText = '';
         var lastMMTSAudioTracksLogText = '';
+        var bt2446cWebGPURenderer = null;
         var lastMMTSVideoTracksLogText = '';
         var lastMMTSSubtitleTracksLogText = '';
         var lastCapabilityProbeKey = '';
@@ -575,12 +581,32 @@
         }
 
         function player_destroy() {
+            if (bt2446cWebGPURenderer) {
+                bt2446cWebGPURenderer.setEnabled(false);
+            }
             player.pause();
             player.unload();
             player.detachMediaElement();
             player.destroy();
             player = null;
             clearTTMLSubtitleOverlay();
+        }
+        function set_bt2446c_webgpu_enabled() {
+            var checkbox = document.getElementById('bt2446cWebGPUEnabled');
+            var status = document.getElementById('bt2446cWebGPUStatus');
+            var element = document.getElementsByName('videoElement')[0];
+            var canvas = document.getElementById('bt2446cWebGPUCanvas');
+            if (!bt2446cWebGPURenderer) {
+                bt2446cWebGPURenderer = new BT2446CWebGPU.Renderer(element, canvas, function(message) {
+                    status.textContent = message;
+                    logDemo('WebGPU BT.2446-C: ' + message);
+                });
+            }
+            bt2446cWebGPURenderer.setEnabled(checkbox.checked).catch(function(error) {
+                checkbox.checked = false;
+                status.textContent = 'error: ' + error.message;
+                logDemo('WebGPU BT.2446-C error: ' + error.message);
+            });
         }
 
         function player_seekto() {
@@ -1684,6 +1710,9 @@
             loadSettings();
             showVersion();
             player_load();
+            if (document.getElementById('bt2446cWebGPUEnabled').checked) {
+                set_bt2446c_webgpu_enabled();
+            }
         });
     </script>
     

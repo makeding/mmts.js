@@ -38,6 +38,26 @@
     height: 100%;
 }
 
+.bt2446c-webgpu-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: none;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.bt2446c-webgpu-canvas.active {
+    display: block;
+}
+
+.bt2446c-webgpu-status {
+    margin-left: 6px;
+    font-family: Menlo, Consolas, monospace;
+    font-size: 11px;
+}
+
 .ttml-subtitle-overlay {
     position: absolute;
     inset: 0;
