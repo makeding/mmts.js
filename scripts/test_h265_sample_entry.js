@@ -64,7 +64,13 @@ function loadNormalizer() {
 function loadH265() {
     return loadModule('src/demux/h265.ts', {
         '../utils/logger': {__esModule: true, default: {e() {}, v() {}, w() {}, i() {}, d() {}}},
+        '../utils/exception': {IllegalStateException: class IllegalStateException extends Error {}},
     });
+}
+
+function loadMP4Generator() {
+    const exports = loadModule('src/remux/mp4-generator.js', {});
+    return exports.default;
 }
 
 function makeNalu(type, length) {
@@ -157,10 +163,80 @@ function testHev1ConfigurationAllowsInBandParameterSets() {
     assert.strictEqual(inBand[35] & 0x80, 0);
 }
 
+function findBoxType(data, type) {
+    const typeBytes = Array.from(type, (char) => char.charCodeAt(0));
+    for (let offset = 4; offset <= data.length - typeBytes.length; offset++) {
+        if (typeBytes.every((value, index) => data[offset + index] === value)) {
+            return offset;
+        }
+    }
+    return -1;
+}
+
+function testHevcSampleEntryCarriesNclxColorInformation() {
+    const MP4 = loadMP4Generator();
+    MP4.init();
+    const entry = MP4.hvc1({
+        codec: 'hev1.2.4.L153.B0',
+        codecWidth: 3840,
+        codecHeight: 2160,
+        hvcc: new Uint8Array([1, 2, 3]),
+        videoFullRangeFlag: false,
+        colourPrimaries: 9,
+        transferCharacteristics: 18,
+        matrixCoefficients: 9,
+    });
+
+    const colrTypeOffset = findBoxType(entry, 'colr');
+    assert.notStrictEqual(colrTypeOffset, -1);
+    assert.deepStrictEqual(
+        Array.from(entry.subarray(colrTypeOffset + 4, colrTypeOffset + 15)),
+        [0x6E, 0x63, 0x6C, 0x78, 0x00, 0x09, 0x00, 0x12, 0x00, 0x09, 0x00]
+    );
+}
+
+function testHevcSampleEntryOmitsColorBoxWithoutCompleteMetadata() {
+    const MP4 = loadMP4Generator();
+    MP4.init();
+    const entry = MP4.hvc1({
+        codec: 'hvc1.2.4.L153.B0',
+        codecWidth: 3840,
+        codecHeight: 2160,
+        hvcc: new Uint8Array([1, 2, 3]),
+    });
+
+    assert.strictEqual(findBoxType(entry, 'colr'), -1);
+}
+
+function testHevcSampleEntryCanAdvertiseSDRWithoutChangingYuvMatrix() {
+    const MP4 = loadMP4Generator();
+    MP4.init();
+    const entry = MP4.hvc1({
+        codec: 'hev1.2.4.L153.B0',
+        codecWidth: 3840,
+        codecHeight: 2160,
+        hvcc: new Uint8Array([1, 2, 3]),
+        videoFullRangeFlag: false,
+        colourPrimaries: 1,
+        transferCharacteristics: 1,
+        matrixCoefficients: 9,
+    });
+
+    const colrTypeOffset = findBoxType(entry, 'colr');
+    assert.notStrictEqual(colrTypeOffset, -1);
+    assert.deepStrictEqual(
+        Array.from(entry.subarray(colrTypeOffset + 4, colrTypeOffset + 15)),
+        [0x6E, 0x63, 0x6C, 0x78, 0x00, 0x01, 0x00, 0x01, 0x00, 0x09, 0x00]
+    );
+}
+
 testHvc1RemovesParameterSetsAndPreservesOrder();
 testHvc1LeavesConformantAccessUnitUntouched();
 testHev1RetainsParameterSets();
 testUnsupportedSampleEntryIsRejected();
 testHev1ConfigurationAllowsInBandParameterSets();
+testHevcSampleEntryCarriesNclxColorInformation();
+testHevcSampleEntryOmitsColorBoxWithoutCompleteMetadata();
+testHevcSampleEntryCanAdvertiseSDRWithoutChangingYuvMatrix();
 
 console.log('h265 sample-entry tests passed');

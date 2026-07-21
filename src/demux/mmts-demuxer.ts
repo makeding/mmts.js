@@ -912,6 +912,21 @@ class MMTSDemuxer extends BaseDemuxer {
             if (kind === 'vps') {
                 details = H265Parser.parseVPS(naluData);
             } else if (kind === 'sps') {
+                // Chromium / VideoToolbox may prefer the HEVC SPS VUI over the MP4 colr box. For the explicit
+                // SDR-tag prototype, rewrite the two fixed-width CICP bytes in both hvcC and in-band hev1 SPS
+                // units before they reach the decoder. matrix_coeffs remains untouched at BT.2020-NCL.
+                if (this.config_.mmtsForceSDRColorimetry === true) {
+                    const rewritten = (H265Parser as any).rewriteSPSColorimetry(naluData, 1, 1);
+                    if (rewritten !== null) {
+                        const payload = new H265NaluPayload();
+                        payload.type = H265NaluType.kSliceSPS;
+                        payload.data = rewritten;
+                        nalu.data = new H265NaluHVC1(payload).data;
+                        naluData = rewritten;
+                    } else {
+                        Log.w(this.TAG, 'Cannot force SDR colorimetry: HEVC SPS has no VUI colour description.');
+                    }
+                }
                 details = H265Parser.parseSPS(naluData);
             } else {
                 details = H265Parser.parsePPS(naluData);
@@ -4063,6 +4078,21 @@ class MMTSDemuxer extends BaseDemuxer {
         meta.chromaFormat = details.chroma_format;
         meta.sarRatio = details.sar_ratio;
         meta.frameRate = details.frame_rate || {fps_num: 60, fps_den: 1, fps: 60};
+        // MSE の HEVC デコーダーが SPS 内の VUI だけでは色特性を反映しない実装に備え、
+        // ISO BMFF の colr/nclx box へ書き出す値を init segment metadata に引き継ぐ。
+        meta.videoFullRangeFlag = details.video_full_range_flag;
+        // ブラウザー内蔵の HLG tone mapping を回避できるか切り分けるため、demo から明示的に
+        // 有効化した場合だけ SDR BT.709 の primaries / transfer を広告する。YUV から非線形 RGB への
+        // 変換係数まで BT.709 に変えると元の BT.2020-NCL と一致しないため、matrix は放送値を保持する。
+        const forceSDRColorimetry = this.config_.mmtsForceSDRColorimetry === true;
+        meta.colourPrimaries = forceSDRColorimetry ? 1 : details.colour_primaries;
+        meta.transferCharacteristics = forceSDRColorimetry ? 1 : details.transfer_characteristics;
+        meta.matrixCoefficients = details.matrix_coeffs;
+        if (forceSDRColorimetry) {
+            Log.i(this.TAG, 'Force MMTS HEVC sample-entry colorimetry to SDR ' +
+                `(primaries=${details.colour_primaries}->1, transfer=${details.transfer_characteristics}->1, ` +
+                `matrix=${details.matrix_coeffs}).`);
+        }
         meta.refSampleDuration = 1000 * (meta.frameRate.fps_den / meta.frameRate.fps_num);
         if (Number.isInteger(this.video_timestamp_timescale_) && this.video_timestamp_timescale_ > 0) {
             meta.mmtsMp4Timescale = this.video_timestamp_timescale_;

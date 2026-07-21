@@ -17,6 +17,7 @@ function parseArgs(argv) {
         chunkSize: 2 * 1024 * 1024,
         gapThresholdMs: 80,
         live: false,
+        forceSDRColorimetry: false,
         firefoxLiveAudioRebuild: false,
         printFirstSegments: 0,
         verbose: false,
@@ -60,6 +61,8 @@ function parseArgs(argv) {
             args.gapThresholdMs = Number(argv[++i]);
         } else if (arg === '--live') {
             args.live = true;
+        } else if (arg === '--force-sdr-colorimetry') {
+            args.forceSDRColorimetry = true;
         } else if (arg === '--firefox-live-audio-rebuild') {
             args.firefoxLiveAudioRebuild = true;
         } else if (arg === '--print-first-segments') {
@@ -126,7 +129,7 @@ function parseArgs(argv) {
     }
 
     if (!args.file) {
-        throw new Error('usage: node scripts/probe_mmts_demux_remux_stream.js <mmts-file> [--seconds N] [--bytes N] [--chunk-size N] [--live] [--firefox-live-audio-rebuild] [--print-first-segments N] [--verbose] [--audio-switch-packet-id N --audio-switch-at-read-seconds N --audio-switch-timeline-seconds N] [--initial-audio-output FILE] [--audio-switch-output FILE] [--audio-switch-required-forward-seconds N] [--audio-switch-second-packet-id N --audio-switch-second-at-read-seconds N --audio-switch-second-timeline-seconds N --audio-switch-second-output FILE] [--video-switch-packet-id N --video-switch-at-read-seconds N] [--initial-video-output FILE] [--video-switch-output FILE] [--video-switch-required-forward-seconds N] [--video-switch-second-packet-id N --video-switch-second-at-read-seconds N --video-switch-second-output FILE] [--audio-switch-rebuild-from-seek --seek-target-seconds N --seek-duration-seconds N] [--seek-after-seconds N] [--seek-lookback-bytes N] [--seek-max-read-bytes N]');
+        throw new Error('usage: node scripts/probe_mmts_demux_remux_stream.js <mmts-file> [--seconds N] [--bytes N] [--chunk-size N] [--live] [--force-sdr-colorimetry] [--firefox-live-audio-rebuild] [--print-first-segments N] [--verbose] [--audio-switch-packet-id N --audio-switch-at-read-seconds N --audio-switch-timeline-seconds N] [--initial-audio-output FILE] [--audio-switch-output FILE] [--audio-switch-required-forward-seconds N] [--audio-switch-second-packet-id N --audio-switch-second-at-read-seconds N --audio-switch-second-timeline-seconds N --audio-switch-second-output FILE] [--video-switch-packet-id N --video-switch-at-read-seconds N] [--initial-video-output FILE] [--video-switch-output FILE] [--video-switch-required-forward-seconds N] [--video-switch-second-packet-id N --video-switch-second-at-read-seconds N --video-switch-second-output FILE] [--audio-switch-rebuild-from-seek --seek-target-seconds N --seek-duration-seconds N] [--seek-after-seconds N] [--seek-lookback-bytes N] [--seek-max-read-bytes N]');
     }
     if (!Number.isFinite(args.chunkSize) || args.chunkSize <= 0) {
         throw new Error('--chunk-size must be a positive number');
@@ -1043,6 +1046,7 @@ function main() {
     const probeData = MMTSDemuxer.probe(toArrayBuffer(firstChunk)) || {syncOffset: 0, packetCount: 0};
     const config = configModule.createDefaultConfig();
     configModule.applyMediaDataSourceConfig(config, {type: 'mmts', isLive: args.live}, undefined);
+    config.mmtsForceSDRColorimetry = args.forceSDRColorimetry;
     config.mmtsVideoTailStashDuration = 0.5;
     const demuxer = new MMTSDemuxer(probeData, config);
     const remuxer = new MP4Remuxer(config);

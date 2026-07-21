@@ -22,7 +22,7 @@ class MP4 {
 
     static init() {
         MP4.types = {
-            avc1: [], avcC: [], btrt: [], dinf: [],
+            avc1: [], avcC: [], btrt: [], colr: [], dinf: [],
             dref: [], esds: [], ftyp: [], hdlr: [],
             hvc1: [], hev1: [], hvcC: [], av01: [], av1C: [],
             mdat: [], mdhd: [], mdia: [], mfhd: [],
@@ -717,7 +717,36 @@ class MP4 {
             0xFF, 0xFF               // pre_defined = -1
         ]);
         const sampleEntry = meta.codec.startsWith('hev1') ? MP4.types.hev1 : MP4.types.hvc1;
-        return MP4.box(sampleEntry, data, MP4.box(MP4.types.hvcC, hvcc));
+        const boxes = [MP4.box(MP4.types.hvcC, hvcc)];
+        const colorInformation = MP4.colr(meta);
+        if (colorInformation !== null) {
+            boxes.push(colorInformation);
+        }
+        return MP4.box(sampleEntry, data, ...boxes);
+    }
+
+    // Colour information box (ISO/IEC 14496-12 nclx colour type)
+    static colr(meta) {
+        const colourPrimaries = meta.colourPrimaries;
+        const transferCharacteristics = meta.transferCharacteristics;
+        const matrixCoefficients = meta.matrixCoefficients;
+        if (![colourPrimaries, transferCharacteristics, matrixCoefficients].every(Number.isInteger)) {
+            return null;
+        }
+
+        // nclx の full_range_flag は最上位 1 bit、残り 7 bit は予約領域として 0 にする。
+        const fullRangeByte = meta.videoFullRangeFlag === true ? 0x80 : 0x00;
+        const data = new Uint8Array([
+            0x6E, 0x63, 0x6C, 0x78,  // colour_type: 'nclx'
+            (colourPrimaries >>> 8) & 0xFF,
+            colourPrimaries & 0xFF,
+            (transferCharacteristics >>> 8) & 0xFF,
+            transferCharacteristics & 0xFF,
+            (matrixCoefficients >>> 8) & 0xFF,
+            matrixCoefficients & 0xFF,
+            fullRangeByte,
+        ]);
+        return MP4.box(MP4.types.colr, data);
     }
 
     static av01(meta) {

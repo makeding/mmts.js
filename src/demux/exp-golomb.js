@@ -84,6 +84,12 @@ class ExpGolomb {
         return this.readBits(8);
     }
 
+    getBitPosition() {
+        // _buffer_index points immediately after the bytes currently cached in _current_word.
+        // Subtracting the unread bits therefore yields an absolute RBSP bit offset.
+        return this._buffer_index * 8 - this._current_word_bits_left;
+    }
+
     _skipLeadingZero() {
         let zero_count;
         for (zero_count = 0; zero_count < this._current_word_bits_left; zero_count++) {

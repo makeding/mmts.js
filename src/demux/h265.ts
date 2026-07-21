@@ -188,6 +188,10 @@ export type SPSHEVCDecoderConfigurationRecordType = {
     chroma_format_idc: number,
     bit_depth_luma_minus8: number,
     bit_depth_chroma_minus8: number,
+    video_full_range_flag: boolean,
+    colour_primaries: number,
+    transfer_characteristics: number,
+    matrix_coeffs: number,
 }
 
 export type PPSHEVCDecoderConfigurationRecordType = {

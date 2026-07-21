@@ -48,6 +48,11 @@ const H265NaluParser = loadModule('src/demux/h265-parser.js', {
     './exp-golomb.js': expGolomb,
 }).default;
 
+// SPS extracted from the BS Fuji 4K HLG sample used by the demo. It includes several emulation-prevention
+// bytes, so the test also covers the EBSP -> RBSP -> EBSP round trip used by the prototype rewriter.
+const BS4K_HLG_SPS_BASE64 =
+    'QgEGAiAAAAMAsAAAAwAAAwCZAACgAeAgAhxNjRiCZJCllOAoQkSCbKUAAAMD6QAA6mCAPpwAgUvAAATEtAAABMXsXAAATEtAAABMXsXAAATEtAAABMXsXAAATEtAAABMXsRA';
+
 class BitWriter {
     constructor() {
         this.bits = [];
@@ -182,6 +187,25 @@ const sps = {
     assert.strictEqual(parsed.temporal_id, 2);
     assert.strictEqual(H265NaluParser.parseNaluHeader(new Uint8Array([0x80, 0x01])), null);
     assert.strictEqual(H265NaluParser.parseNaluHeader(new Uint8Array([0x02, 0x00])), null);
+})();
+
+(function testSPSColorimetryRewritePreservesBt2020Matrix() {
+    const source = new Uint8Array(Buffer.from(BS4K_HLG_SPS_BASE64, 'base64'));
+    const before = H265NaluParser.parseSPS(source);
+    assert.strictEqual(before.colour_primaries, 9);
+    assert.strictEqual(before.transfer_characteristics, 18);
+    assert.strictEqual(before.matrix_coeffs, 9);
+
+    const rewritten = H265NaluParser.rewriteSPSColorimetry(source, 1, 1);
+    assert(rewritten instanceof Uint8Array);
+    const after = H265NaluParser.parseSPS(rewritten);
+    assert.strictEqual(after.colour_primaries, 1);
+    assert.strictEqual(after.transfer_characteristics, 1);
+    assert.strictEqual(after.matrix_coeffs, 9);
+    assert.strictEqual(after.codec_size.width, before.codec_size.width);
+    assert.strictEqual(after.codec_size.height, before.codec_size.height);
+    assert.strictEqual(after.frame_rate.fps_num, before.frame_rate.fps_num);
+    assert.strictEqual(after.frame_rate.fps_den, before.frame_rate.fps_den);
 })();
 
 (function testPpsAllowsNonzeroTemporalId() {

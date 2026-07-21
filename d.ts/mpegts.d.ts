@@ -186,6 +186,13 @@ declare namespace Mpegts {
         mmtsVideoPacketId?: number;
 
         /**
+         * @desc Prototype switch that advertises MMTS HEVC as SDR BT.709 primaries/transfer while preserving
+         *       the source matrix coefficients. This tests whether browser HDR tone mapping can be bypassed.
+         * @defaultvalue false
+         */
+        mmtsForceSDRColorimetry?: boolean;
+
+        /**
          * @desc Defer initial MMTS HEVC video SourceBuffer creation until the audio init segment has arrived.
          * @defaultvalue true for MMTS VOD except Firefox; false for MMTS live
          */

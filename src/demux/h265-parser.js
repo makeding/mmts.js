@@ -101,6 +101,69 @@ class H265NaluParser {
         return new Uint8Array(dst.buffer, 0, dst_idx);
     }
 
+    static _rbsp2ebsp(uint8array) {
+        if (!(uint8array instanceof Uint8Array) || uint8array.byteLength < 2) {
+            throw new Error('Invalid HEVC RBSP');
+        }
+
+        // The two-byte NAL unit header is not part of RBSP escaping. Preserve it verbatim and only
+        // insert emulation-prevention bytes into the payload that follows it.
+        const output = [uint8array[0], uint8array[1]];
+        let consecutiveZeroBytes = 0;
+        for (let index = 2; index < uint8array.byteLength; index++) {
+            const value = uint8array[index];
+            if (consecutiveZeroBytes >= 2 && value <= 0x03) {
+                output.push(0x03);
+                consecutiveZeroBytes = 0;
+            }
+            output.push(value);
+            consecutiveZeroBytes = value === 0x00 ? consecutiveZeroBytes + 1 : 0;
+        }
+        return Uint8Array.from(output);
+    }
+
+    static _writeBits(uint8array, bitOffset, bitLength, value) {
+        if (!Number.isInteger(bitOffset) || !Number.isInteger(bitLength) || bitOffset < 0 || bitLength <= 0 ||
+            bitLength > 32 || bitOffset + bitLength > uint8array.byteLength * 8) {
+            throw new Error('Invalid HEVC RBSP bit range');
+        }
+        for (let index = 0; index < bitLength; index++) {
+            const absoluteBitOffset = bitOffset + index;
+            const byteOffset = absoluteBitOffset >>> 3;
+            const bitInByte = 7 - (absoluteBitOffset & 0x07);
+            const bit = (value >>> (bitLength - index - 1)) & 0x01;
+            uint8array[byteOffset] = (uint8array[byteOffset] & ~(1 << bitInByte)) | (bit << bitInByte);
+        }
+    }
+
+    static rewriteSPSColorimetry(uint8array, colourPrimaries, transferCharacteristics) {
+        if (![colourPrimaries, transferCharacteristics].every((value) => {
+            return Number.isInteger(value) && value >= 0 && value <= 0xff;
+        })) {
+            throw new Error('Invalid HEVC colour description value');
+        }
+
+        const details = H265NaluParser.parseSPS(uint8array);
+        if (!Number.isInteger(details.colour_primaries_bit_offset) ||
+            !Number.isInteger(details.transfer_characteristics_bit_offset)) {
+            // Adding a missing VUI colour_description would shift all following syntax elements. The prototype
+            // intentionally handles only broadcast SPS units that already carry the three fixed-width CICP bytes.
+            return null;
+        }
+
+        const rbsp = H265NaluParser._ebsp2rbsp(uint8array).slice();
+        H265NaluParser._writeBits(rbsp, details.colour_primaries_bit_offset, 8, colourPrimaries);
+        H265NaluParser._writeBits(rbsp, details.transfer_characteristics_bit_offset, 8, transferCharacteristics);
+        const rewritten = H265NaluParser._rbsp2ebsp(rbsp);
+        const rewrittenDetails = H265NaluParser.parseSPS(rewritten);
+        if (rewrittenDetails.colour_primaries !== colourPrimaries ||
+            rewrittenDetails.transfer_characteristics !== transferCharacteristics ||
+            rewrittenDetails.matrix_coeffs !== details.matrix_coeffs) {
+            throw new Error('HEVC SPS colour description rewrite verification failed');
+        }
+        return rewritten;
+    }
+
     static parseVPS(uint8array) {
         const header = H265NaluParser.parseNaluHeader(uint8array);
         if (header === null || header.nal_unit_type !== 32 || header.nuh_layer_id !== 0 || header.temporal_id !== 0) {
@@ -335,9 +398,13 @@ class H265NaluParser {
         let sps_temporal_mvp_enabled_flag = gb.readBool();
         let strong_intra_smoothing_enabled_flag = gb.readBool();
         let vui_parameters_present_flag = gb.readBool();
+        let video_full_range_flag = false;
         let colour_primaries = 2;
         let transfer_characteristics = 2;
         let matrix_coeffs = 2;
+        let colour_primaries_bit_offset = null;
+        let transfer_characteristics_bit_offset = null;
+        let matrix_coeffs_bit_offset = null;
         if (vui_parameters_present_flag) {
             let aspect_ratio_info_present_flag = gb.readBool();
             if (aspect_ratio_info_present_flag) {
@@ -361,11 +428,14 @@ class H265NaluParser {
             let video_signal_type_present_flag = gb.readBool();
             if (video_signal_type_present_flag) {
                 gb.readBits(3);
-                gb.readBool();
+                video_full_range_flag = gb.readBool();
                 let colour_description_present_flag = gb.readBool();
                 if (colour_description_present_flag) {
+                    colour_primaries_bit_offset = gb.getBitPosition();
                     colour_primaries = gb.readByte();
+                    transfer_characteristics_bit_offset = gb.getBitPosition();
                     transfer_characteristics = gb.readByte();
+                    matrix_coeffs_bit_offset = gb.getBitPosition();
                     matrix_coeffs = gb.readByte();
                 }
             }
@@ -552,9 +622,13 @@ class H265NaluParser {
             bit_depth_luma_minus8,
             bit_depth_chroma_minus8,
 
+            video_full_range_flag,
             colour_primaries,
             transfer_characteristics,
             matrix_coeffs,
+            colour_primaries_bit_offset,
+            transfer_characteristics_bit_offset,
+            matrix_coeffs_bit_offset,
 
             frame_rate: {
                 fixed: fps_fixed,

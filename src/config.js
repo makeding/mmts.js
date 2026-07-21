@@ -66,6 +66,9 @@ export const defaultConfig = {
     fixAudioTimestampGap: true,
 
     mmtsVideoPacketId: undefined,
+    // Prototype switch: advertise HLG samples as SDR to stop the browser from applying its HDR tone mapper.
+    // The BT.2020-NCL matrix is intentionally preserved so decoded YUV components are not mixed with BT.709 coefficients.
+    mmtsForceSDRColorimetry: false,
     mmtsDeferHevcVideoInitUntilAudio: false,
     mmtsPreserveRemuxerTimestampOnPacketDiscontinuity: false,
     mmtsClampAudioTimestampGap: false,
