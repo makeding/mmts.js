@@ -14,11 +14,22 @@
     var HLG_SYSTEM_GAMMA = 1.2;
     var HLG_PEAK_NITS = 1000;
     var SDR_PEAK_NITS = 100;
+    var METHOD_B_PEAK_NITS = 291;
+    var METHOD_B_SYSTEM_GAMMA = 1.03;
+    var METHOD_B_BREAKPOINT_NITS = 55;
+    // The logarithmic shoulder keeps unit slope at the 55-nit breakpoint and
+    // maps the 291-nit HLG nominal peak to the 100-nit SDR peak.
+    var METHOD_B_SHOULDER_SCALE = 16.49284154081724;
     var CROSSTALK_ALPHA = 0.04;
     var K1 = 0.83802;
-    var K2 = 15.09968;
-    var K3 = 0.74204;
-    var K4 = 78.99439;
+    // BT.2446-C allows another parameter set when production intent requires a
+    // different HDR/SDR level relationship.  BS Fuji's 1080i simulcast matches
+    // 75% HLG reference white to 90% SDR signal instead of the report's 96% default.
+    // K1 and the 58.5-nit knee stay unchanged, so shadows and midtones are identical;
+    // only the logarithmic highlight shoulder is compressed more strongly.
+    var K2 = 6.654726555738288;
+    var K3 = 0.8862439905002002;
+    var K4 = 72.96537506666456;
     var HDR_INFLECTION_NITS = 58.5 / K1;
 
     function clamp(value, minimum, maximum) {
@@ -99,7 +110,7 @@
         return K2 * Math.log(hdrNits / HDR_INFLECTION_NITS - K3) + K4;
     }
 
-    function mapHLGToSDR(hlgRGB) {
+    function decodeHLGToDisplayLight(hlgRGB, peakNits, systemGamma) {
         var sceneRGB = [
             hlgInverseOETF(hlgRGB[0]),
             hlgInverseOETF(hlgRGB[1]),
@@ -107,12 +118,54 @@
         ];
         var sceneLuminance = 0.2627 * sceneRGB[0] + 0.6780 * sceneRGB[1] + 0.0593 * sceneRGB[2];
         var ootfScale = sceneLuminance > 0 ?
-            HLG_PEAK_NITS * Math.pow(sceneLuminance, HLG_SYSTEM_GAMMA - 1) : 0;
-        var hdrRGB = [
+            peakNits * Math.pow(sceneLuminance, systemGamma - 1) : 0;
+        return [
             sceneRGB[0] * ootfScale,
             sceneRGB[1] * ootfScale,
             sceneRGB[2] * ootfScale,
         ];
+    }
+
+    function toneMapMethodBLuminance(hdrNits) {
+        if (hdrNits <= METHOD_B_BREAKPOINT_NITS) {
+            return hdrNits;
+        }
+        return METHOD_B_BREAKPOINT_NITS + METHOD_B_SHOULDER_SCALE * Math.log(
+            1 + (hdrNits - METHOD_B_BREAKPOINT_NITS) / METHOD_B_SHOULDER_SCALE
+        );
+    }
+
+    function encodeLinearBT709ToSRGB(sdr709) {
+        return [
+            clamp(linearToSRGB(sdr709[0] / SDR_PEAK_NITS), 0, 1),
+            clamp(linearToSRGB(sdr709[1] / SDR_PEAK_NITS), 0, 1),
+            clamp(linearToSRGB(sdr709[2] / SDR_PEAK_NITS), 0, 1),
+        ];
+    }
+
+    function mapHLGToSDRMethodB(hlgRGB) {
+        // BT.2446-1 Method B models the HLG reference display at 291 cd/m2 with
+        // a system gamma close to 1.03. This is deliberately much gentler than
+        // Method C for SDR-originated programmes carried inside an HLG service.
+        var hdrRGB = decodeHLGToDisplayLight(hlgRGB, METHOD_B_PEAK_NITS, METHOD_B_SYSTEM_GAMMA);
+        var hdrY = Math.max(0, 0.2627 * hdrRGB[0] + 0.6780 * hdrRGB[1] + 0.0593 * hdrRGB[2]);
+        var sdrY = toneMapMethodBLuminance(hdrY);
+        var luminanceScale = hdrY > 1e-8 ? sdrY / hdrY : 0;
+        var sdr2020 = [
+            hdrRGB[0] * luminanceScale,
+            hdrRGB[1] * luminanceScale,
+            hdrRGB[2] * luminanceScale,
+        ];
+
+        // Method B recommends ICtCp colour-volume management. For this first
+        // broadcast-SDR prototype, keep hue intact and clip only after the
+        // BT.2020-to-BT.709 matrix. The earlier constant-luminance projection
+        // visibly turned saturated red graphics pink.
+        return encodeLinearBT709ToSRGB(rgb2020ToRGB709(sdr2020));
+    }
+
+    function mapHLGToSDRMethodC(hlgRGB) {
+        var hdrRGB = decodeHLGToDisplayLight(hlgRGB, HLG_PEAK_NITS, HLG_SYSTEM_GAMMA);
 
         // BT.2446-C 6.1.2 through 6.1.6.  The optional highlight chroma correction
         // in 6.1.8 is deliberately omitted so this remains a fixed, inexpensive LUT.
@@ -128,17 +181,22 @@
         ];
         var sdr2020 = applyInverseCrosstalk(xyzToRGB2020(sdrXYZ), CROSSTALK_ALPHA);
 
-        // BT.2446-C leaves BT.2020 -> BT.709 gamut conversion to BT.2407.  For this
-        // prototype the normal linear matrix plus output-gamut clipping is sufficient.
-        var sdr709 = rgb2020ToRGB709(sdr2020);
-        return [
-            clamp(linearToSRGB(sdr709[0] / SDR_PEAK_NITS), 0, 1),
-            clamp(linearToSRGB(sdr709[1] / SDR_PEAK_NITS), 0, 1),
-            clamp(linearToSRGB(sdr709[2] / SDR_PEAK_NITS), 0, 1),
-        ];
+        // BT.2446-C leaves BT.2020 -> BT.709 gamut conversion to BT.2407.  Keep
+        // the prototype's direct matrix conversion and output clipping here.  The
+        // Annex 5 constant-luminance projection made saturated broadcast graphics
+        // visibly pink because it preserved BT.2020 red luminance by adding white.
+        return encodeLinearBT709ToSRGB(rgb2020ToRGB709(sdr2020));
     }
 
-    function mapDisplayedSDRToBT2446C(displayedSRGB) {
+    function normalizeMode(mode) {
+        return mode === 'bt2446c' ? 'bt2446c' : 'bt2446b';
+    }
+
+    function modeLabel(mode) {
+        return normalizeMode(mode) === 'bt2446c' ? 'BT.2446-C 90% reference' : 'BT.2446-B 291 nit';
+    }
+
+    function mapDisplayedSDRToBT2446(displayedSRGB, mode) {
         // The demuxer prototype labels HLG as BT.709 so MSE exposes an SDR external
         // texture. Undo that browser BT.709 -> sRGB presentation conversion first;
         // the recovered channel values are the original HLG R'G'B' signal values.
@@ -147,11 +205,13 @@
             linearToBT709(srgbToLinear(displayedSRGB[1])),
             linearToBT709(srgbToLinear(displayedSRGB[2])),
         ];
-        return mapHLGToSDR(hlgRGB);
+        return normalizeMode(mode) === 'bt2446c' ?
+            mapHLGToSDRMethodC(hlgRGB) : mapHLGToSDRMethodB(hlgRGB);
     }
 
-    function buildLUT(size) {
+    function buildLUT(size, mode) {
         size = size || LUT_SIZE;
+        mode = normalizeMode(mode);
         var rowBytes = size * 4;
         var bytesPerRow = Math.ceil(rowBytes / 256) * 256;
         var data = new Uint8Array(bytesPerRow * size * size);
@@ -159,11 +219,11 @@
             for (var green = 0; green < size; green++) {
                 var rowOffset = (blue * size + green) * bytesPerRow;
                 for (var red = 0; red < size; red++) {
-                    var mapped = mapDisplayedSDRToBT2446C([
+                    var mapped = mapDisplayedSDRToBT2446([
                         red / (size - 1),
                         green / (size - 1),
                         blue / (size - 1),
-                    ]);
+                    ], mode);
                     var offset = rowOffset + red * 4;
                     data[offset] = Math.round(mapped[0] * 255);
                     data[offset + 1] = Math.round(mapped[1] * 255);
@@ -179,7 +239,7 @@
         };
     }
 
-    function Renderer(video, canvas, statusCallback) {
+    function Renderer(video, canvas, statusCallback, mode) {
         this.video = video;
         this.canvas = canvas;
         this.statusCallback = statusCallback || function() {};
@@ -197,6 +257,7 @@
         this.lutSampler = null;
         this.frameCount = 0;
         this.lastFpsTime = 0;
+        this.mode = normalizeMode(mode);
     }
 
     Renderer.prototype.report = function(message) {
@@ -276,7 +337,7 @@
             minFilter: 'linear',
         });
 
-        var lut = buildLUT(LUT_SIZE);
+        var lut = buildLUT(LUT_SIZE, this.mode);
         this.lutTexture = this.device.createTexture({
             size: [lut.size, lut.size, lut.size],
             dimension: '3d',
@@ -296,7 +357,34 @@
             this.report('device lost: ' + info.message);
         }.bind(this));
         this.initialized = true;
-        this.report('ready, fixed 33^3 LUT, alpha=0.04');
+        this.report('ready, ' + modeLabel(this.mode) + ', fixed 33^3 LUT');
+    };
+
+    Renderer.prototype.uploadLUT = function() {
+        var lut = buildLUT(LUT_SIZE, this.mode);
+        this.device.queue.writeTexture(
+            {texture: this.lutTexture},
+            lut.data,
+            {bytesPerRow: lut.bytesPerRow, rowsPerImage: lut.size},
+            {width: lut.size, height: lut.size, depthOrArrayLayers: lut.size}
+        );
+    };
+
+    Renderer.prototype.setMode = function(mode) {
+        var normalizedMode = normalizeMode(mode);
+        if (this.mode === normalizedMode) {
+            return;
+        }
+        this.mode = normalizedMode;
+        if (this.initialized) {
+            this.uploadLUT();
+            this.report('active, ' + modeLabel(this.mode) + ' LUT');
+            if (this.enabled) {
+                // A paused video does not produce another video-frame callback.
+                // Redraw immediately so the comparison selector still responds.
+                this.renderFrame();
+            }
+        }
     };
 
     Renderer.prototype.setEnabled = async function(enabled) {
@@ -322,6 +410,7 @@
         this.canvas.classList.add('active');
         this.frameCount = 0;
         this.lastFpsTime = performance.now();
+        this.renderFrame();
         this.scheduleFrame();
     };
 
@@ -395,7 +484,7 @@
             var now = performance.now();
             if (now - this.lastFpsTime >= 2000) {
                 var fps = this.frameCount * 1000 / (now - this.lastFpsTime);
-                this.report('active, fixed BT.2446-C LUT, ' + fps.toFixed(1) + 'fps, ' +
+                this.report('active, ' + modeLabel(this.mode) + ' LUT, ' + fps.toFixed(1) + 'fps, ' +
                     this.video.videoWidth + 'x' + this.video.videoHeight);
                 this.frameCount = 0;
                 this.lastFpsTime = now;
@@ -408,8 +497,10 @@
     return {
         Renderer: Renderer,
         buildLUT: buildLUT,
-        mapHLGToSDR: mapHLGToSDR,
-        mapDisplayedSDRToBT2446C: mapDisplayedSDRToBT2446C,
+        mapHLGToSDR: mapHLGToSDRMethodB,
+        mapHLGToSDRMethodB: mapHLGToSDRMethodB,
+        mapHLGToSDRMethodC: mapHLGToSDRMethodC,
+        mapDisplayedSDRToBT2446: mapDisplayedSDRToBT2446,
         bt709ToLinear: bt709ToLinear,
         linearToSRGB: linearToSRGB,
     };

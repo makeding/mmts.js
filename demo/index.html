@@ -44,7 +44,7 @@
         </div>
         <div class="video-container">
             <div>
-                <video name="videoElement" class="centeredVideo" controls playsinline>
+                <video name="videoElement" muted class="centeredVideo" controls playsinline>
                     Your browser is too old which doesn't support HTML5 video.
                 </video>
                 <canvas id="bt2446cWebGPUCanvas" class="bt2446c-webgpu-canvas"></canvas>
@@ -64,7 +64,11 @@
             <button onclick="probe_video_frame_color_space()">Probe VideoFrame color</button>
             <button onclick="inject_test_ttml_subtitle()">Test TTML</button>
             <input type="checkbox" id="bt2446cWebGPUEnabled" onchange="set_bt2446c_webgpu_enabled()" checked />
-            <label for="bt2446cWebGPUEnabled">WebGPU BT.2446-C (fixed)</label>
+            <label for="bt2446cWebGPUEnabled">WebGPU HDR to SDR</label>
+            <select id="bt2446WebGPUMode" onchange="set_bt2446_webgpu_mode()">
+                <option value="bt2446b" selected>BT.2446-B (291 nit HLG)</option>
+                <option value="bt2446c">BT.2446-C (90% reference)</option>
+            </select>
             <span id="bt2446cWebGPUStatus" class="bt2446c-webgpu-status">off</span>
         </div>
         <div class="track-panel">
@@ -596,17 +600,25 @@
             var status = document.getElementById('bt2446cWebGPUStatus');
             var element = document.getElementsByName('videoElement')[0];
             var canvas = document.getElementById('bt2446cWebGPUCanvas');
+            var mode = document.getElementById('bt2446WebGPUMode').value;
             if (!bt2446cWebGPURenderer) {
                 bt2446cWebGPURenderer = new BT2446CWebGPU.Renderer(element, canvas, function(message) {
                     status.textContent = message;
-                    logDemo('WebGPU BT.2446-C: ' + message);
-                });
+                    logDemo('WebGPU HDR to SDR: ' + message);
+                }, mode);
             }
+            bt2446cWebGPURenderer.setMode(mode);
             bt2446cWebGPURenderer.setEnabled(checkbox.checked).catch(function(error) {
                 checkbox.checked = false;
                 status.textContent = 'error: ' + error.message;
-                logDemo('WebGPU BT.2446-C error: ' + error.message);
+                logDemo('WebGPU HDR to SDR error: ' + error.message);
             });
+        }
+
+        function set_bt2446_webgpu_mode() {
+            if (bt2446cWebGPURenderer) {
+                bt2446cWebGPURenderer.setMode(document.getElementById('bt2446WebGPUMode').value);
+            }
         }
 
         function player_seekto() {
