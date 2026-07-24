@@ -3158,6 +3158,19 @@ function testCompleteShortVideoMpuDoesNotForceRecovery() {
         false
     );
 
+    demuxer.video_reference_recovery_pending_ = true;
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.TRAIL_R, 7),
+        false
+    );
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 7),
+        true
+    );
+    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
+
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 10, true),
         false
@@ -3169,7 +3182,7 @@ function testCompleteShortVideoMpuDoesNotForceRecovery() {
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 9),
         true
     );
-    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(resetCount, 2);
     assert.strictEqual(demuxer.video_reference_recovery_pending_, false);
     assert.strictEqual(demuxer.video_reference_recovery_watch_remaining_, 16);
     assert.strictEqual(demuxer.video_reference_recovery_watch_delay_, 3);
@@ -3184,7 +3197,43 @@ function testCompleteShortVideoMpuDoesNotForceRecovery() {
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
         false
     );
-    assert.strictEqual(resetCount, 1);
+    assert.strictEqual(resetCount, 2);
+}
+
+function testPacketSequenceGapArmsVideoReferenceRecovery() {
+    const demuxer = makeVideoSampleAppendHarness();
+    demuxer.video_init_segment_dispatched_ = true;
+    demuxer.audio_init_segment_dispatched_ = true;
+    demuxer.video_reference_recovery_pending_ = false;
+    demuxer.logged_video_discontinuity_count_ = 8;
+    demuxer.pending_video_mpu_sequence_number_ = undefined;
+    demuxer.video_mpu_assembler_ = {
+        reconcileMpuDiscontinuity() {
+            return {completed: [], dropped: null};
+        },
+        getNextAccessUnitIndex() {
+            return 0;
+        }
+    };
+
+    demuxer.handleMpuDiscontinuity(
+        0x100,
+        {packetId: 0x100, assetType: 'hev1', mediaType: 'video'},
+        {mpuSequenceNumber: 11, mfuFragments: []},
+        {
+            packetSequenceGap: true,
+            fragmentedUnitDropped: true,
+            duplicatePacket: false,
+            expectedSeq: 22,
+            actualSeq: 24
+        },
+        true
+    );
+
+    assert.strictEqual(demuxer.video_reference_recovery_pending_, true);
+    assert.strictEqual(demuxer.video_waiting_random_access_, true);
+    assert.strictEqual(demuxer.rejected_video_mpus_['256:11'], true);
+    assert.strictEqual(demuxer.pending_video_discontinuity_.reason, 'packet-sequence-gap');
 }
 
 function testRemuxerAttachesParserResetInitToRecoveryRap() {
@@ -3289,6 +3338,7 @@ testDemuxerKeepsHev1PpsUpdatesInBand();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe();
 testCompleteShortVideoMpuDoesNotForceRecovery();
+testPacketSequenceGapArmsVideoReferenceRecovery();
 testRemuxerAttachesParserResetInitToRecoveryRap();
 
 console.log('mmts demux/remux timeline tests passed');

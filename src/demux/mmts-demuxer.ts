@@ -1512,14 +1512,14 @@ class MMTSDemuxer extends BaseDemuxer {
             this.logged_video_reference_recovery_count_++;
             Log.w(
                 this.TAG,
-                `Recover MMTS HEVC references at parameter-set splice, ` +
+                `Recover MMTS HEVC decoder references, ` +
                 `packet_id=${formatHex(packetId, 4)}, mpu_seq=${mpuSequenceNumber}, ` +
                 `au_count=${accessUnits.length}, nominal=${this.nominal_video_mpu_access_unit_count_}; ` +
                 `drop leading RASL pictures`
             );
         }
         if (referenceRecovery) {
-            // Flush everything preceding the splice, then make the recovery
+            // Flush everything preceding the recovery boundary, then make its
             // CRA the first sample after a real SourceBuffer parser reset.
             // Merely marking it as sync does not clear VideoToolbox's DPB.
             this.dispatchVideoMediaSegment(true);
@@ -1566,8 +1566,8 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (recoverReferences) {
-            // A parameter-set splice may invalidate pictures referenced by the
-            // following CRA. Recover only after the quarantined transition.
+            // A parameter-set splice or packet loss may invalidate pictures
+            // referenced by the following CRA. Recover only at that boundary.
             this.hevc_poc_recovery_.reset(true);
             this.video_reference_recovery_parameter_set_generation_limit_ = Math.max(
                 this.video_reference_recovery_parameter_set_generation_limit_,
@@ -1575,10 +1575,10 @@ class MMTSDemuxer extends BaseDemuxer {
             );
             this.video_reference_recovery_watch_remaining_ = 16;
             this.video_reference_recovery_watch_delay_ = 3;
+            this.video_reference_recovery_pending_ = false;
         }
 
         this.nominal_video_mpu_access_unit_count_ = Math.max(previousNominal, accessUnitCount);
-        this.video_reference_recovery_pending_ = quarantineParameterSetChange;
         return recoverReferences;
     }
 
@@ -2304,6 +2304,10 @@ class MMTSDemuxer extends BaseDemuxer {
             )] = true;
         }
         this.hevc_poc_recovery_.rejectMpu();
+        // Waiting for a CRA does not clear the decoder's missing references.
+        // Arm the existing recovery path so the CRA is appended only after a
+        // SourceBuffer parser reset and a fresh initialization segment.
+        this.video_reference_recovery_pending_ = true;
         const shouldResetRemuxer = allowRemuxerReset &&
             this.shouldResetRemuxerOnMpuDiscontinuity(packetId, mpuSequenceNumber);
         this.markPendingVideoDiscontinuity(packetId, mpuSequenceNumber, loss);
