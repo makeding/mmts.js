@@ -13,11 +13,16 @@
     var HLG_C = 0.5 - HLG_A * Math.log(4 * HLG_A);
     var HLG_SYSTEM_GAMMA = 1.2;
     var HLG_PEAK_NITS = 1000;
-    // BT.2446-1 (2021) reports only Method A and Method C. The earlier
-    // "Method B" 291-nit transitional model was removed, so this prototype now
-    // implements A and C and uses A as the default.
+    // BT.2446 tone mapping is kept for native HDR. SDR-originated HLG material
+    // uses the inverse mappings published in ARIB STD-B72 Attachment 4 instead.
     var REFERENCE_WHITE_NITS = 203;
     var SDR_PEAK_NITS = 100;
+    // ARIB STD-B72 Attachment 4 sets the gain so 75% HLG maps to 100% SDR.
+    // For neutral HLG, the display-light result is sceneLight^systemGamma.
+    var ARIB_REFERENCE_HLG = 0.75;
+    var ARIB_SCENE_GAIN = 1 / hlgInverseOETF(ARIB_REFERENCE_HLG);
+    var ARIB_DISPLAY_GAIN = 1 /
+        Math.pow(hlgInverseOETF(ARIB_REFERENCE_HLG), HLG_SYSTEM_GAMMA);
     // Method A tone-curve constants (BT.2446-1 6.1.2 / hdr-toys bt2446a.glsl).
     var METHOD_A_MAX_LUMA = 1000;
     // Method C crosstalk + Lab chroma correction constants (BT.2446-1 6.1.2..6.1.8).
@@ -37,20 +42,26 @@
     // ICC-style black point compensation (Method A stage 2).
     var BLACK_POINT_SOURCE = 0.0;
     var BLACK_POINT_DEST = 0.001;
-    // ARIB broadcast SDR simulcast mode. Uses a 291-nit HLG OOTF model (system
-    // gamma 1.03) followed by a YCbCr chroma-scaling tone curve calibrated so
-    // that 75% HLG (the 203-nit HDR reference white) maps to ~0.90 sRGB, which
-    // matches the on-air look of Japanese BS 4K / 1080i simulcast. The curve is
-    // linear below the 40-nit knee and logarithmic above it, with the shoulder
-    // parameters solved so sdrY(74 nits) = 79 nits (~0.9 sRGB) and
-    // sdrY(291 nits) = 100 nits (1.0 sRGB).
+    // Legacy experimental 291-nit tone mapper. This predates the ARIB
+    // STD-B72-based inverse mappings below and is retained only for comparison.
+    // It uses a 291-nit HLG OOTF model with system gamma 1.03, then a YCbCr
+    // chroma-scaling tone curve calibrated so that:
+    //   - 1:1 linear mapping below the 55-nit breakpoint (78% SDR signal),
+    //   - log compression above, with unity slope at the breakpoint,
+    //   - 75% HLG (HDR reference white, 74 nits under 291-nit OOTF) -> 86% SDR
+    //     signal (~0.832 sRGB),
+    //   - 100% HLG (291 nits) -> 100% SDR signal (1.0 sRGB).
+    // The tone-mapping is applied only to Y (luminance); Cb/Cr are scaled by
+    // Yr = Ysdr / Y to preserve hue.
     var ARIB_PEAK_NITS = 291;
     var ARIB_SYSTEM_GAMMA = 1.03;
-    var ARIB_KNEE_NITS = 40;
-    var ARIB_K1 = 1.440;
-    var ARIB_K2 = 11.289;
-    var ARIB_K3 = 0.85;
-    var ARIB_K4 = 79.0;
+    var ARIB_BREAKPOINT_NITS = 55;
+    // Solved from: sdrY(55)=55, sdrY(74)=BT.1886(0.86)=69.6, sdrY(291)=100,
+    // unity slope at breakpoint. K3=0.80 gives K1~=1.003 (essentially unity).
+    var ARIB_K1 = 1.003;
+    var ARIB_K2 = 14.406;
+    var ARIB_K3 = 0.80;
+    var ARIB_K4 = 78.362;
 
     function clamp(value, minimum, maximum) {
         return Math.min(maximum, Math.max(minimum, value));
@@ -73,6 +84,18 @@
     function bt709ToLinear(value) {
         value = Math.max(0, value);
         return value < 0.081 ? value / 4.5 : Math.pow((value + 0.099) / 1.099, 1 / 0.45);
+    }
+
+    // Emulate the browser's BT.709-video-to-sRGB presentation step. The HLG
+    // input is deliberately tagged as BT.709 so WebGPU can import it as SDR;
+    // the final mapped SDR signal must pass through the same presentation
+    // conversion as an ordinary BT.709 video to match the HD simulcast.
+    function encodeBT709SignalToSRGB(signalRGB) {
+        return [
+            clamp(linearToSRGB(bt709ToLinear(clamp(signalRGB[0], 0, 1))), 0, 1),
+            clamp(linearToSRGB(bt709ToLinear(clamp(signalRGB[1], 0, 1))), 0, 1),
+            clamp(linearToSRGB(bt709ToLinear(clamp(signalRGB[2], 0, 1))), 0, 1),
+        ];
     }
 
     function hlgInverseOETF(value) {
@@ -191,14 +214,14 @@
         return METHOD_C_K2 * Math.log(Y / inflection - METHOD_C_K3) + METHOD_C_K4;
     }
 
-    // ARIB simulcast tone curve: linear below the 40-nit knee, log shoulder above.
-    // Calibrated so that HLG 75% (74 nits under the 291-nit OOTF) maps to ~79 nits
-    // SDR (~0.9 sRGB) and HLG 100% (291 nits) maps to 100 nits (1.0 sRGB).
+    // Legacy experimental simulcast tone curve: linear 1:1 below the 55-nit
+    // breakpoint, then logarithmic compression. This is not an ARIB normative
+    // conversion and is retained only for visual comparison.
     function toneMapARIB(hdrNits) {
-        if (hdrNits <= ARIB_KNEE_NITS) {
+        if (hdrNits <= ARIB_BREAKPOINT_NITS) {
             return ARIB_K1 * hdrNits;
         }
-        return ARIB_K2 * Math.log(hdrNits / ARIB_KNEE_NITS - ARIB_K3) + ARIB_K4;
+        return ARIB_K2 * Math.log(hdrNits / ARIB_BREAKPOINT_NITS - ARIB_K3) + ARIB_K4;
     }
 
     // CIELAB <-> XYZ/RGB for Method C 6.1.8 optional chroma correction.
@@ -390,18 +413,57 @@
         return encodeLinearBT709ToSRGB(rgb2020ToRGB709(rgb));
     }
 
-    // ARIB broadcast SDR simulcast mode. Combines a 291-nit HLG OOTF model with
-    // the Method A YCbCr chroma-scaling approach (without Method A's red
-    // highlight compensation, since broadcast SDR look does not need that lift).
-    // The tone curve is calibrated to on-air Japanese BS 4K / 1080i practice:
-    // 75% HLG reference white -> ~0.90 sRGB, 100% HLG -> 1.0 sRGB.
+    // ARIB STD-B72 Attachment 4 scene-referred inverse mapping:
+    // HLG OETF^-1 -> gain (75% HLG = 100% SDR) -> BT.2020-to-BT.709 matrix ->
+    // SDR OETF -> hard clip. It intentionally has no tone-mapping and is the
+    // preferred path for SDR-originated content carried in an HLG container.
+    function mapHLGToSDRARIBSceneSignal(hlgRGB) {
+        var scene2020 = [
+            hlgInverseOETF(hlgRGB[0]) * ARIB_SCENE_GAIN,
+            hlgInverseOETF(hlgRGB[1]) * ARIB_SCENE_GAIN,
+            hlgInverseOETF(hlgRGB[2]) * ARIB_SCENE_GAIN,
+        ];
+        var scene709 = rgb2020ToRGB709(scene2020);
+        return [
+            clamp(linearToBT709(scene709[0]), 0, 1),
+            clamp(linearToBT709(scene709[1]), 0, 1),
+            clamp(linearToBT709(scene709[2]), 0, 1),
+        ];
+    }
+
+    function mapHLGToSDRARIBScene(hlgRGB) {
+        return encodeBT709SignalToSRGB(mapHLGToSDRARIBSceneSignal(hlgRGB));
+    }
+
+    // ARIB STD-B72 Attachment 4 display-referred inverse mapping:
+    // HLG EOTF -> gain (75% HLG = 100% SDR) -> BT.2020-to-BT.709 matrix ->
+    // inverse SDR EOTF (BT.1886 gamma 2.4) -> hard clip.
+    function mapHLGToSDRARIBDisplaySignal(hlgRGB) {
+        var display2020 = hlgToLinearDisplayNorm(hlgRGB).map(function (channel) {
+            return channel * ARIB_DISPLAY_GAIN;
+        });
+        var display709 = rgb2020ToRGB709(display2020);
+        return [
+            clamp(Math.pow(Math.max(display709[0], 0), 1 / 2.4), 0, 1),
+            clamp(Math.pow(Math.max(display709[1], 0), 1 / 2.4), 0, 1),
+            clamp(Math.pow(Math.max(display709[2], 0), 1 / 2.4), 0, 1),
+        ];
+    }
+
+    function mapHLGToSDRARIBDisplay(hlgRGB) {
+        return encodeBT709SignalToSRGB(mapHLGToSDRARIBDisplaySignal(hlgRGB));
+    }
+
+    // Legacy experimental broadcast-match tone mapper. Combines a 291-nit HLG
+    // OOTF model with YCbCr chroma scaling and a fitted logarithmic shoulder.
     function mapHLGToSDRARIB(hlgRGB) {
         var linearNits = hlgToLinearDisplayNits(
             hlgRGB, ARIB_PEAK_NITS, ARIB_SYSTEM_GAMMA);
         var ycbcr = rgb2020ToYCbCr(linearNits);
         var Y = ycbcr[0], Cb = ycbcr[1], Cr = ycbcr[2];
         var Ysdr = toneMapARIB(Y);
-        var Yr = Ysdr / Math.max(1.1 * Y, 1e-6);
+        // Chroma scaling: Cb/Cr follow Y by ratio Yr = Ysdr / Y.
+        var Yr = Ysdr / Math.max(Y, 1e-6);
         var CbScaled = Cb * Yr;
         var CrScaled = Cr * Yr;
         // Convert absolute nits to normalised linear (1.0 = 100 nits SDR peak),
@@ -413,9 +475,12 @@
     }
 
     function normalizeMode(mode) {
+        if (mode === 'arib-display') { return 'arib-display'; }
+        if (mode === 'arib-scene') { return 'arib-scene'; }
+        if (mode === 'bt2446arib') { return 'bt2446arib'; }
         if (mode === 'bt2446c') { return 'bt2446c'; }
         if (mode === 'bt2446a') { return 'bt2446a'; }
-        return 'bt2446arib';
+        return 'arib-display';
     }
 
     function modeLabel(mode) {
@@ -426,7 +491,13 @@
         if (normalized === 'bt2446a') {
             return 'BT.2446-A (YCbCr chroma scaling)';
         }
-        return 'ARIB (291-nit simulcast)';
+        if (normalized === 'arib-display') {
+            return 'ARIB inverse (display-referred)';
+        }
+        if (normalized === 'bt2446arib') {
+            return 'Experimental 291-nit tone map';
+        }
+        return 'ARIB inverse (scene-referred)';
     }
 
     function mapDisplayedSDRToBT2446(displayedSRGB, mode) {
@@ -439,6 +510,8 @@
             linearToBT709(srgbToLinear(displayedSRGB[2])),
         ];
         var normalized = normalizeMode(mode);
+        if (normalized === 'arib-scene') { return mapHLGToSDRARIBScene(hlgRGB); }
+        if (normalized === 'arib-display') { return mapHLGToSDRARIBDisplay(hlgRGB); }
         if (normalized === 'bt2446c') { return mapHLGToSDRMethodC(hlgRGB); }
         if (normalized === 'bt2446a') { return mapHLGToSDRMethodA(hlgRGB); }
         return mapHLGToSDRARIB(hlgRGB);
@@ -732,9 +805,13 @@
     return {
         Renderer: Renderer,
         buildLUT: buildLUT,
-        mapHLGToSDR: mapHLGToSDRARIB,
+        mapHLGToSDR: mapHLGToSDRARIBDisplay,
         mapHLGToSDRMethodA: mapHLGToSDRMethodA,
         mapHLGToSDRMethodC: mapHLGToSDRMethodC,
+        mapHLGToSDRARIBScene: mapHLGToSDRARIBScene,
+        mapHLGToSDRARIBSceneSignal: mapHLGToSDRARIBSceneSignal,
+        mapHLGToSDRARIBDisplay: mapHLGToSDRARIBDisplay,
+        mapHLGToSDRARIBDisplaySignal: mapHLGToSDRARIBDisplaySignal,
         mapHLGToSDRARIB: mapHLGToSDRARIB,
         mapDisplayedSDRToBT2446: mapDisplayedSDRToBT2446,
         bt709ToLinear: bt709ToLinear,

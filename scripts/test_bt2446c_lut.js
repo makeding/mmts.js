@@ -10,17 +10,81 @@ function assertClose(actual, expected, tolerance, label) {
     );
 }
 
-// --- ARIB broadcast simulcast mode (default) ---
+function narrow10BitToSignal(code) {
+    return (code - 64) / (940 - 64);
+}
 
-// 75% HLG is the 203-nit HDR reference white. ARIB simulcast maps it to ~0.90
-// sRGB, matching the on-air look of Japanese BS 4K / 1080i channels.
+function signalToNarrow10Bit(signal) {
+    return Math.round(64 + (940 - 64) * signal);
+}
+
+function assertNarrow10BitRGB(actualSignal, expectedCodes, tolerance, label) {
+    actualSignal.forEach((value, channel) => {
+        const actualCode = signalToNarrow10Bit(value);
+        assert.ok(
+            Math.abs(actualCode - expectedCodes[channel]) <= tolerance,
+            `${label}[${channel}]: expected code ${expectedCodes[channel]}, got ${actualCode}`
+        );
+    });
+}
+
+// --- ARIB STD-B72 Attachment 4 inverse mappings (default: display-referred) ---
+
+// Table G4-1 contains narrow-range 10-bit RGB signal levels before and after
+// conversion. Up to two codes of tolerance cover the rounded matrix constants
+// published by BT.2407 and the table's own rounding.
+const aribTableG41 = [
+    ['75% White', [721, 721, 721], [940, 940, 940], [940, 940, 940]],
+    ['75% Yellow', [721, 721, 64], [940, 940, 64], [940, 939, 64]],
+    ['75% Cyan', [64, 721, 721], [64, 940, 940], [64, 940, 924]],
+    ['75% Green', [64, 721, 64], [64, 940, 64], [64, 940, 64]],
+    ['75% Magenta', [721, 64, 721], [940, 64, 940], [940, 64, 894]],
+    ['75% Red', [721, 64, 64], [940, 64, 64], [940, 64, 64]],
+    ['75% Blue', [64, 64, 721], [64, 64, 940], [64, 64, 789]],
+    ['75% BT.709 Yellow', [713, 719, 316], [939, 940, 64], [933, 934, 64]],
+    ['75% BT.709 Cyan', [538, 709, 718], [64, 940, 939], [64, 924, 922]],
+    ['75% BT.709 Green', [512, 706, 296], [71, 939, 66], [124, 915, 99]],
+    ['75% BT.709 Magenta', [651, 286, 705], [940, 65, 940], [854, 89, 853]],
+    ['75% BT.709 Red', [639, 269, 164], [940, 64, 64], [835, 64, 64]],
+    ['75% BT.709 Blue', [227, 147, 702], [66, 64, 940], [93, 64, 768]],
+];
+
+for (const [name, inputCodes, expectedScene, expectedDisplay] of aribTableG41) {
+    const inputSignal = inputCodes.map(narrow10BitToSignal);
+    assertNarrow10BitRGB(
+        bt.mapHLGToSDRARIBSceneSignal(inputSignal),
+        expectedScene,
+        2,
+        `ARIB scene ${name}`
+    );
+    assertNarrow10BitRGB(
+        bt.mapHLGToSDRARIBDisplaySignal(inputSignal),
+        expectedDisplay,
+        2,
+        `ARIB display ${name}`
+    );
+}
+
+// The scene-referred path restores SDR reference white instead of compressing
+// it. WebGPU output is sRGB presentation light, so neutral white is 1.0.
+const gray75Scene = bt.mapHLGToSDRARIBScene([0.75, 0.75, 0.75]);
+assertClose(gray75Scene[0], 1.0, 1e-6, 'ARIB scene 75% HLG gray');
+const gray75Display = bt.mapHLGToSDRARIBDisplay([0.75, 0.75, 0.75]);
+assertClose(gray75Display[0], 1.0, 1e-6, 'ARIB display 75% HLG gray');
+const defaultGray75 = bt.mapHLGToSDR([0.75, 0.75, 0.75]);
+assertClose(defaultGray75[0], gray75Display[0], 1e-6, 'default mode is ARIB display');
+
+// --- Legacy experimental 291-nit tone mapper ---
+
+// 75% HLG is the 203-nit HDR reference white. Under the 291-nit OOTF it becomes
+// 74 nits HDR display light; the tone curve maps it to 86% SDR signal
+// (BT.1886-encoded 0.86 -> 69.6 nits -> sRGB-encoded 0.852).
 const gray75ARIB = bt.mapHLGToSDRARIB([0.75, 0.75, 0.75]);
-assertClose(gray75ARIB[0], 0.90, 0.01, 'ARIB 75% HLG gray');
-assertClose(gray75ARIB[1], 0.90, 0.01, 'ARIB 75% HLG gray');
-assertClose(gray75ARIB[2], 0.90, 0.01, 'ARIB 75% HLG gray');
+assertClose(gray75ARIB[0], 0.852, 0.01, 'ARIB 75% HLG gray');
+assertClose(gray75ARIB[1], 0.852, 0.01, 'ARIB 75% HLG gray');
+assertClose(gray75ARIB[2], 0.852, 0.01, 'ARIB 75% HLG gray');
 
-// 100% HLG maps to ~1.0 sRGB (peak). The curve must be monotonic and not clip
-// before 100%.
+// 100% HLG (291 nits under OOTF) maps to 100 nits SDR = 1.0 sRGB (peak).
 const gray100ARIB = bt.mapHLGToSDRARIB([1, 1, 1]);
 assertClose(gray100ARIB[0], 1.0, 0.01, 'ARIB 100% HLG gray');
 
@@ -132,6 +196,14 @@ assert.ok(midSatA[0] > midSatA[1] && midSatA[1] > midSatA[2], 'Method A hue orde
 assert.ok(midSatC[0] > midSatC[1] && midSatC[1] > midSatC[2], 'Method C hue ordering preserved');
 
 // LUT dimensions: 33^3 packed into 256-byte rows.
+const lutScene = bt.buildLUT(33, 'arib-scene');
+assert.strictEqual(lutScene.size, 33);
+assert.strictEqual(lutScene.bytesPerRow, 256);
+assert.strictEqual(lutScene.data.length, 256 * 33 * 33);
+
+const lutDisplay = bt.buildLUT(33, 'arib-display');
+assert.strictEqual(lutDisplay.data.length, 256 * 33 * 33);
+
 const lutA = bt.buildLUT(33, 'bt2446a');
 assert.strictEqual(lutA.size, 33);
 assert.strictEqual(lutA.bytesPerRow, 256);
@@ -146,4 +218,4 @@ const displayed = bt.mapDisplayedSDRToBT2446([0.5, 0.5, 0.5], 'bt2446a');
 assertClose(displayed[0], displayed[1], 1e-6, 'mapDisplayed gray R==G');
 assertClose(displayed[1], displayed[2], 1e-6, 'mapDisplayed gray G==B');
 
-console.log('BT.2446-A/C LUT tests passed.');
+console.log('ARIB inverse and BT.2446 LUT tests passed.');
