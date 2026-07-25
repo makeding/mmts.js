@@ -66,8 +66,9 @@
             <input type="checkbox" id="bt2446cWebGPUEnabled" onchange="set_bt2446c_webgpu_enabled()" checked />
             <label for="bt2446cWebGPUEnabled">WebGPU HDR to SDR</label>
             <select id="bt2446WebGPUMode" onchange="set_bt2446_webgpu_mode()">
-                <option value="bt2446b" selected>BT.2446-B (291 nit HLG)</option>
-                <option value="bt2446c">BT.2446-C (90% reference)</option>
+                <option value="bt2446arib" selected>ARIB (291-nit simulcast)</option>
+                <option value="bt2446a">BT.2446-A (YCbCr chroma scaling)</option>
+                <option value="bt2446c">BT.2446-C (Lab chroma correction)</option>
             </select>
             <span id="bt2446cWebGPUStatus" class="bt2446c-webgpu-status">off</span>
         </div>

@@ -13,24 +13,44 @@
     var HLG_C = 0.5 - HLG_A * Math.log(4 * HLG_A);
     var HLG_SYSTEM_GAMMA = 1.2;
     var HLG_PEAK_NITS = 1000;
+    // BT.2446-1 (2021) reports only Method A and Method C. The earlier
+    // "Method B" 291-nit transitional model was removed, so this prototype now
+    // implements A and C and uses A as the default.
+    var REFERENCE_WHITE_NITS = 203;
     var SDR_PEAK_NITS = 100;
-    var METHOD_B_PEAK_NITS = 291;
-    var METHOD_B_SYSTEM_GAMMA = 1.03;
-    var METHOD_B_BREAKPOINT_NITS = 55;
-    // The logarithmic shoulder keeps unit slope at the 55-nit breakpoint and
-    // maps the 291-nit HLG nominal peak to the 100-nit SDR peak.
-    var METHOD_B_SHOULDER_SCALE = 16.49284154081724;
+    // Method A tone-curve constants (BT.2446-1 6.1.2 / hdr-toys bt2446a.glsl).
+    var METHOD_A_MAX_LUMA = 1000;
+    // Method C crosstalk + Lab chroma correction constants (BT.2446-1 6.1.2..6.1.8).
     var CROSSTALK_ALPHA = 0.04;
-    var K1 = 0.83802;
-    // BT.2446-C allows another parameter set when production intent requires a
-    // different HDR/SDR level relationship.  BS Fuji's 1080i simulcast matches
-    // 75% HLG reference white to 90% SDR signal instead of the report's 96% default.
-    // K1 and the 58.5-nit knee stay unchanged, so shadows and midtones are identical;
-    // only the logarithmic highlight shoulder is compressed more strongly.
-    var K2 = 6.654726555738288;
-    var K3 = 0.8862439905002002;
-    var K4 = 72.96537506666456;
-    var HDR_INFLECTION_NITS = 58.5 / K1;
+    var CHROMA_CORRECTION_SIGMA = 0.33;
+    var METHOD_C_IP = 0.58535;
+    var METHOD_C_K1 = 0.83802;
+    var METHOD_C_K3 = 0.74204;
+    var METHOD_C_K2 = (METHOD_C_K1 * (METHOD_C_IP / METHOD_C_K1)) * (1 - METHOD_C_K3);
+    var METHOD_C_K4 = METHOD_C_K1 * (METHOD_C_IP / METHOD_C_K1) -
+        METHOD_C_K2 * Math.log(1 - METHOD_C_K3);
+    // BT.2407-style signal scaling: 0..1019/940 (super-white 108.4%) -> 0.001..1.0.
+    var SIGNAL_SCALE_A = 0.0;
+    var SIGNAL_SCALE_B = 1019 / 940;
+    var SIGNAL_SCALE_C = 0.001;
+    var SIGNAL_SCALE_D = 1.0;
+    // ICC-style black point compensation (Method A stage 2).
+    var BLACK_POINT_SOURCE = 0.0;
+    var BLACK_POINT_DEST = 0.001;
+    // ARIB broadcast SDR simulcast mode. Uses a 291-nit HLG OOTF model (system
+    // gamma 1.03) followed by a YCbCr chroma-scaling tone curve calibrated so
+    // that 75% HLG (the 203-nit HDR reference white) maps to ~0.90 sRGB, which
+    // matches the on-air look of Japanese BS 4K / 1080i simulcast. The curve is
+    // linear below the 40-nit knee and logarithmic above it, with the shoulder
+    // parameters solved so sdrY(74 nits) = 79 nits (~0.9 sRGB) and
+    // sdrY(291 nits) = 100 nits (1.0 sRGB).
+    var ARIB_PEAK_NITS = 291;
+    var ARIB_SYSTEM_GAMMA = 1.03;
+    var ARIB_KNEE_NITS = 40;
+    var ARIB_K1 = 1.440;
+    var ARIB_K2 = 11.289;
+    var ARIB_K3 = 0.85;
+    var ARIB_K4 = 79.0;
 
     function clamp(value, minimum, maximum) {
         return Math.min(maximum, Math.max(minimum, value));
@@ -71,52 +91,76 @@
     }
 
     function applyInverseCrosstalk(rgb, alpha) {
+        var b = 1 - alpha;
         var scale = 1 / (1 - 3 * alpha);
         return [
-            scale * ((1 - alpha) * rgb[0] - alpha * rgb[1] - alpha * rgb[2]),
-            scale * (-alpha * rgb[0] + (1 - alpha) * rgb[1] - alpha * rgb[2]),
-            scale * (-alpha * rgb[0] - alpha * rgb[1] + (1 - alpha) * rgb[2]),
+            scale * (b * rgb[0] - alpha * rgb[1] - alpha * rgb[2]),
+            scale * (-alpha * rgb[0] + b * rgb[1] - alpha * rgb[2]),
+            scale * (-alpha * rgb[0] - alpha * rgb[1] + b * rgb[2]),
         ];
     }
 
-    function rgb2020ToXYZ(rgb) {
+    // Full-precision BT.2020 <-> XYZ matrices (same values as hdr-toys / BT.2100).
+    var RGB2020_TO_XYZ = [
+        0.6369580483012914, 0.14461690358620832, 0.1688809751641721,
+        0.2627002120112671, 0.6779980715188708,  0.05930171646986196,
+        0.0,               0.028072693049087428, 1.060985057710791,
+    ];
+    var XYZ_TO_RGB2020 = [
+         1.716651187971268,  -0.355670783776392, -0.253366281373660,
+        -0.666684351832489,   1.616481236634939,  0.0157685458139111,
+         0.017639857445311,  -0.042770613257809,  0.942103121235474,
+    ];
+    var RGB2020_TO_RGB709 = [
+        1.660491, -0.587641, -0.072850,
+        -0.124550, 1.132900, -0.008349,
+        -0.018151, -0.100579, 1.118730,
+    ];
+
+    function mat3MulVec(m, v) {
         return [
-            0.6370 * rgb[0] + 0.1446 * rgb[1] + 0.1689 * rgb[2],
-            0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2],
-            0.0000 * rgb[0] + 0.0281 * rgb[1] + 1.0610 * rgb[2],
+            m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+            m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+            m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
         ];
     }
 
-    function xyzToRGB2020(xyz) {
-        return [
-            1.7167 * xyz[0] - 0.3557 * xyz[1] - 0.2534 * xyz[2],
-            -0.6667 * xyz[0] + 1.6165 * xyz[1] + 0.0158 * xyz[2],
-            0.0176 * xyz[0] - 0.0428 * xyz[1] + 0.9421 * xyz[2],
-        ];
-    }
+    function rgb2020ToXYZ(rgb) { return mat3MulVec(RGB2020_TO_XYZ, rgb); }
+    function xyzToRGB2020(xyz) { return mat3MulVec(XYZ_TO_RGB2020, xyz); }
+    function rgb2020ToRGB709(rgb) { return mat3MulVec(RGB2020_TO_RGB709, rgb); }
 
-    function rgb2020ToRGB709(rgb) {
-        return [
-            1.660491 * rgb[0] - 0.587641 * rgb[1] - 0.072850 * rgb[2],
-            -0.124550 * rgb[0] + 1.132900 * rgb[1] - 0.008349 * rgb[2],
-            -0.018151 * rgb[0] - 0.100579 * rgb[1] + 1.118730 * rgb[2],
-        ];
-    }
-
-    function toneMapLuminance(hdrNits) {
-        if (hdrNits < HDR_INFLECTION_NITS) {
-            return K1 * hdrNits;
-        }
-        return K2 * Math.log(hdrNits / HDR_INFLECTION_NITS - K3) + K4;
-    }
-
-    function decodeHLGToDisplayLight(hlgRGB, peakNits, systemGamma) {
+    // HLG signal -> linear display light normalised so that 1.0 = HLG_PEAK_NITS.
+    // This matches hdr-toys' hlg_inv.glsl + OOTF convention: the BT.2446 tone
+    // curves operate on linear BT.2020 RGB expressed in units of the HDR
+    // reference white (203 nits), i.e. pure HLG 100% maps to 1000/203 ~= 4.93.
+    function hlgToLinearDisplayNorm(hlgRGB) {
         var sceneRGB = [
             hlgInverseOETF(hlgRGB[0]),
             hlgInverseOETF(hlgRGB[1]),
             hlgInverseOETF(hlgRGB[2]),
         ];
-        var sceneLuminance = 0.2627 * sceneRGB[0] + 0.6780 * sceneRGB[1] + 0.0593 * sceneRGB[2];
+        var sceneLuminance =
+            0.2627 * sceneRGB[0] + 0.6780 * sceneRGB[1] + 0.0593 * sceneRGB[2];
+        var ootfScale = sceneLuminance > 0 ?
+            HLG_PEAK_NITS * Math.pow(sceneLuminance, HLG_SYSTEM_GAMMA - 1) : 0;
+        return [
+            sceneRGB[0] * ootfScale / HLG_PEAK_NITS,
+            sceneRGB[1] * ootfScale / HLG_PEAK_NITS,
+            sceneRGB[2] * ootfScale / HLG_PEAK_NITS,
+        ];
+    }
+
+    // HLG signal -> linear display light in absolute nits, for an arbitrary
+    // OOTF peak luminance. Used by the ARIB mode (291-nit model) which needs
+    // absolute nits because its tone curve was calibrated against nits.
+    function hlgToLinearDisplayNits(hlgRGB, peakNits, systemGamma) {
+        var sceneRGB = [
+            hlgInverseOETF(hlgRGB[0]),
+            hlgInverseOETF(hlgRGB[1]),
+            hlgInverseOETF(hlgRGB[2]),
+        ];
+        var sceneLuminance =
+            0.2627 * sceneRGB[0] + 0.6780 * sceneRGB[1] + 0.0593 * sceneRGB[2];
         var ootfScale = sceneLuminance > 0 ?
             peakNits * Math.pow(sceneLuminance, systemGamma - 1) : 0;
         return [
@@ -126,74 +170,263 @@
         ];
     }
 
-    function toneMapMethodBLuminance(hdrNits) {
-        if (hdrNits <= METHOD_B_BREAKPOINT_NITS) {
-            return hdrNits;
+    // xyY helpers (Method C tone-maps luminance only, preserving chromaticity).
+    function xyzToxyY(xyz) {
+        var sum = xyz[0] + xyz[1] + xyz[2];
+        if (sum === 0) { sum = 1e-6; }
+        return [xyz[0] / sum, xyz[1] / sum, xyz[1]];
+    }
+    function xyYToXYZ(xyY) {
+        var x = xyY[0], y = xyY[1], Y = xyY[2];
+        var mult = Y / Math.max(y, 1e-6);
+        return [x * mult, Y, (1 - x - y) * mult];
+    }
+
+    // Method C core luminance tone curve (BT.2446-1 6.1.4).
+    function toneMapMethodC(Y) {
+        var inflection = METHOD_C_IP / METHOD_C_K1;
+        if (Y < inflection) {
+            return Y * METHOD_C_K1;
         }
-        return METHOD_B_BREAKPOINT_NITS + METHOD_B_SHOULDER_SCALE * Math.log(
-            1 + (hdrNits - METHOD_B_BREAKPOINT_NITS) / METHOD_B_SHOULDER_SCALE
-        );
+        return METHOD_C_K2 * Math.log(Y / inflection - METHOD_C_K3) + METHOD_C_K4;
     }
 
-    function encodeLinearBT709ToSRGB(sdr709) {
+    // ARIB simulcast tone curve: linear below the 40-nit knee, log shoulder above.
+    // Calibrated so that HLG 75% (74 nits under the 291-nit OOTF) maps to ~79 nits
+    // SDR (~0.9 sRGB) and HLG 100% (291 nits) maps to 100 nits (1.0 sRGB).
+    function toneMapARIB(hdrNits) {
+        if (hdrNits <= ARIB_KNEE_NITS) {
+            return ARIB_K1 * hdrNits;
+        }
+        return ARIB_K2 * Math.log(hdrNits / ARIB_KNEE_NITS - ARIB_K3) + ARIB_K4;
+    }
+
+    // CIELAB <-> XYZ/RGB for Method C 6.1.8 optional chroma correction.
+    var LAB_DELTA = 6 / 29;
+    var LAB_DELTA_C = LAB_DELTA * 2 / 3;
+    var LAB_XYZ_N = [0.95047, 1.0, 1.08883];
+
+    function cbrtSigned(x) { return Math.sign(x) * Math.pow(Math.abs(x), 1 / 3); }
+    function labF(x) {
+        return x > Math.pow(LAB_DELTA, 3) ?
+            cbrtSigned(x) : LAB_DELTA_C + x / (3 * Math.pow(LAB_DELTA, 2));
+    }
+    function labFInv(x) {
+        return x > LAB_DELTA ?
+            Math.pow(x, 3) : (x - LAB_DELTA_C) * (3 * Math.pow(LAB_DELTA, 2));
+    }
+    function rgb2020ToLab(rgb) {
+        var xyz = rgb2020ToXYZ(rgb);
+        var fx = labF(xyz[0] / LAB_XYZ_N[0]);
+        var fy = labF(xyz[1] / LAB_XYZ_N[1]);
+        var fz = labF(xyz[2] / LAB_XYZ_N[2]);
+        return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+    }
+    function labToRGB2020(lab) {
+        var fy = (lab[0] + 16) / 116;
+        var fx = fy + lab[1] / 500;
+        var fz = fy - lab[2] / 200;
+        return xyzToRGB2020([
+            labFInv(fx) * LAB_XYZ_N[0],
+            labFInv(fy) * LAB_XYZ_N[1],
+            labFInv(fz) * LAB_XYZ_N[2],
+        ]);
+    }
+    function labToLCh(lab) {
+        var chroma = Math.hypot(lab[1], lab[2]);
+        var hue = (Math.abs(lab[1]) < 1e-6 && Math.abs(lab[2]) < 1e-6) ?
+            0 : Math.atan2(lab[2], lab[1]);
+        return [lab[0], chroma, hue];
+    }
+    function lchToLab(lch) {
+        return [lch[0], lch[1] * Math.cos(lch[2]), lch[1] * Math.sin(lch[2])];
+    }
+    function chromaCorrection(L, Lref, Lmax, sigma) {
+        if (L <= Lref) { return 1; }
+        return Math.max(1 - sigma * (L - Lref) / (Lmax - Lref), 0);
+    }
+
+    // BT.2020 YCbCr (Method A) — BT.2100 / BT.2020 luma coefficients.
+    var Y_COEF_A = 0.2627002120112671;
+    var Y_COEF_B = 0.6779980715188708;
+    var Y_COEF_C = 0.05930171646986196;
+    var YCBCR_D = 2 * (1 - Y_COEF_C);
+    var YCBCR_E = 2 * (1 - Y_COEF_A);
+
+    function rgb2020ToYCbCr(rgb) {
         return [
-            clamp(linearToSRGB(sdr709[0] / SDR_PEAK_NITS), 0, 1),
-            clamp(linearToSRGB(sdr709[1] / SDR_PEAK_NITS), 0, 1),
-            clamp(linearToSRGB(sdr709[2] / SDR_PEAK_NITS), 0, 1),
+            Y_COEF_A * rgb[0] + Y_COEF_B * rgb[1] + Y_COEF_C * rgb[2],
+            -Y_COEF_A / YCBCR_D * rgb[0] - Y_COEF_B / YCBCR_D * rgb[1] + 0.5 * rgb[2],
+            0.5 * rgb[0] - Y_COEF_B / YCBCR_E * rgb[1] - Y_COEF_C / YCBCR_E * rgb[2],
+        ];
+    }
+    function yCbCrToRGB2020(ycbcr) {
+        var Y = ycbcr[0], Cb = ycbcr[1], Cr = ycbcr[2];
+        return [
+            Y + YCBCR_E * Cr,
+            Y + (-Y_COEF_C / Y_COEF_B * YCBCR_D) * Cb +
+                (-Y_COEF_A / Y_COEF_B * YCBCR_E) * Cr,
+            Y + YCBCR_D * Cb,
         ];
     }
 
-    function mapHLGToSDRMethodB(hlgRGB) {
-        // BT.2446-1 Method B models the HLG reference display at 291 cd/m2 with
-        // a system gamma close to 1.03. This is deliberately much gentler than
-        // Method C for SDR-originated programmes carried inside an HLG service.
-        var hdrRGB = decodeHLGToDisplayLight(hlgRGB, METHOD_B_PEAK_NITS, METHOD_B_SYSTEM_GAMMA);
-        var hdrY = Math.max(0, 0.2627 * hdrRGB[0] + 0.6780 * hdrRGB[1] + 0.0593 * hdrRGB[2]);
-        var sdrY = toneMapMethodBLuminance(hdrY);
-        var luminanceScale = hdrY > 1e-8 ? sdrY / hdrY : 0;
-        var sdr2020 = [
-            hdrRGB[0] * luminanceScale,
-            hdrRGB[1] * luminanceScale,
-            hdrRGB[2] * luminanceScale,
-        ];
+    // Method A perceptual tone curve (BT.2446-1 6.1.2, ported from hdr-toys).
+    function methodAToneCurve(Y, maxLuma) {
+        Y = Math.pow(Y, 1 / 2.4);
+        var pHDR = 1 + 32 * Math.pow(maxLuma / 10000, 1 / 2.4);
+        var pSDR = 1 + 32 * Math.pow(REFERENCE_WHITE_NITS / 10000, 1 / 2.4);
+        var Yp = Math.log(1 + (pHDR - 1) * Y) / Math.log(pHDR);
+        var Yc;
+        if (Yp <= 0.7399) {
+            Yc = Yp * 1.0770;
+        } else if (Yp < 0.9909) {
+            Yc = Yp * (-1.1510 * Yp + 2.7811) - 0.6302;
+        } else {
+            Yc = Yp * 0.5 + 0.5;
+        }
+        var Ysdr = (Math.pow(pSDR, Yc) - 1) / (pSDR - 1);
+        return Math.pow(Ysdr, 2.4);
+    }
 
-        // Method B recommends ICtCp colour-volume management. For this first
-        // broadcast-SDR prototype, keep hue intact and clip only after the
-        // BT.2020-to-BT.709 matrix. The earlier constant-luminance projection
-        // visibly turned saturated red graphics pink.
+    // ICC-style black point compensation (Method A stage 2 / hdr-toys bt2446a.glsl).
+    function blackPointCompensation(xyz, srcBlack, dstBlack) {
+        var ratio = (1 - dstBlack) / (1 - srcBlack);
+        var white = rgb2020ToXYZ([1, 1, 1]);
+        return [
+            ratio * xyz[0] + (1 - ratio) * white[0],
+            ratio * xyz[1] + (1 - ratio) * white[1],
+            ratio * xyz[2] + (1 - ratio) * white[2],
+        ];
+    }
+
+    // BT.2407 hue-preserving gamut reduction after BT.2020 -> BT.709 matrix.
+    // Saturated BT.2020 colours land outside [0, 1] in BT.709 linear; hard
+    // per-channel clipping would shift their hue. Add white light to lift the
+    // minimum channel, then uniformly scale if the maximum still exceeds 1.
+    function gamutClipBT709Linear(sdr709) {
+        var red = sdr709[0];
+        var green = sdr709[1];
+        var blue = sdr709[2];
+        var minChannel = Math.min(red, green, blue);
+        if (minChannel < 0) {
+            var shift = -minChannel;
+            red += shift; green += shift; blue += shift;
+        }
+        var maxChannel = Math.max(red, green, blue);
+        if (maxChannel > 1) {
+            var scale = 1 / maxChannel;
+            red *= scale; green *= scale; blue *= scale;
+        }
+        return [red, green, blue];
+    }
+
+    function encodeLinearBT709ToSRGB(sdr709Linear) {
+        var clipped = gamutClipBT709Linear(sdr709Linear);
+        return [
+            clamp(linearToSRGB(clipped[0]), 0, 1),
+            clamp(linearToSRGB(clipped[1]), 0, 1),
+            clamp(linearToSRGB(clipped[2]), 0, 1),
+        ];
+    }
+
+    // BT.2446-1 Method A: YCbCr-based tone mapping with chroma scaling.
+    // The chroma scaling ratio Yr = Ysdr / (1.1 * Y) keeps hue intact while
+    // desaturating highlights; the max(0.1 * Cr, 0) term compensates the
+    // otherwise-too-bright red highlights. A second pass applies ICC-style
+    // black point compensation in XYZ space to prevent shadow crush.
+    // Ported from hdr-toys bt2446a.glsl.
+    function mapHLGToSDRMethodA(hlgRGB) {
+        var linearNorm = hlgToLinearDisplayNorm(hlgRGB);
+        var ycbcr = rgb2020ToYCbCr(linearNorm);
+        var scale = METHOD_A_MAX_LUMA / REFERENCE_WHITE_NITS;
+        var Y = ycbcr[0] / scale;
+        var Cb = ycbcr[1] / scale;
+        var Cr = ycbcr[2] / scale;
+        var Ysdr = methodAToneCurve(Y, METHOD_A_MAX_LUMA);
+        var Yr = Ysdr / Math.max(1.1 * Y, 1e-6);
+        var CbScaled = Cb * Yr;
+        var CrScaled = Cr * Yr;
+        var YFinal = Ysdr - Math.max(0.1 * CrScaled, 0);
+        var sdr2020 = yCbCrToRGB2020([YFinal, CbScaled, CrScaled]);
+        var xyz = rgb2020ToXYZ(sdr2020);
+        xyz = blackPointCompensation(xyz, BLACK_POINT_SOURCE, BLACK_POINT_DEST);
+        sdr2020 = xyzToRGB2020(xyz);
         return encodeLinearBT709ToSRGB(rgb2020ToRGB709(sdr2020));
     }
 
+    // BT.2446-1 Method C: crosstalk -> Lab chroma correction -> xyY tone map
+    // -> inverse crosstalk -> signal scaling. The Lab stage linearly reduces
+    // chroma for L above the HDR reference white (203 nits) so that highlights
+    // trend toward achromatic, which is the production-look intended by SDR
+    // simulcast. Ported from hdr-toys bt2446c.glsl.
     function mapHLGToSDRMethodC(hlgRGB) {
-        var hdrRGB = decodeHLGToDisplayLight(hlgRGB, HLG_PEAK_NITS, HLG_SYSTEM_GAMMA);
-
-        // BT.2446-C 6.1.2 through 6.1.6.  The optional highlight chroma correction
-        // in 6.1.8 is deliberately omitted so this remains a fixed, inexpensive LUT.
-        var crosstalkRGB = applyCrosstalk(hdrRGB, CROSSTALK_ALPHA);
-        var hdrXYZ = rgb2020ToXYZ(crosstalkRGB);
-        var hdrY = Math.max(0, hdrXYZ[1]);
-        var sdrY = toneMapLuminance(hdrY);
-        var luminanceScale = hdrY > 1e-8 ? sdrY / hdrY : 0;
-        var sdrXYZ = [
-            hdrXYZ[0] * luminanceScale,
-            hdrXYZ[1] * luminanceScale,
-            hdrXYZ[2] * luminanceScale,
+        var rgb = hlgToLinearDisplayNorm(hlgRGB);
+        rgb = applyCrosstalk(rgb, CROSSTALK_ALPHA);
+        var Lref = rgb2020ToLab([1, 1, 1])[0];
+        var Lmax = rgb2020ToLab([
+            1000 / REFERENCE_WHITE_NITS,
+            1000 / REFERENCE_WHITE_NITS,
+            1000 / REFERENCE_WHITE_NITS,
+        ])[0];
+        var lab = rgb2020ToLab(rgb);
+        var lch = labToLCh(lab);
+        lch[1] *= chromaCorrection(lch[0], Lref, Lmax, CHROMA_CORRECTION_SIGMA);
+        rgb = labToRGB2020(lchToLab(lch));
+        var xyz = rgb2020ToXYZ(rgb);
+        var xyY = xyzToxyY(xyz);
+        xyY[2] = toneMapMethodC(xyY[2]);
+        xyz = xyYToXYZ(xyY);
+        rgb = xyzToRGB2020(xyz);
+        rgb = applyInverseCrosstalk(rgb, CROSSTALK_ALPHA);
+        // Signal scaling: handle 109% super-whites and lift black point.
+        rgb = [
+            (rgb[0] - SIGNAL_SCALE_A) * (SIGNAL_SCALE_D - SIGNAL_SCALE_C) /
+                (SIGNAL_SCALE_B - SIGNAL_SCALE_A) + SIGNAL_SCALE_C,
+            (rgb[1] - SIGNAL_SCALE_A) * (SIGNAL_SCALE_D - SIGNAL_SCALE_C) /
+                (SIGNAL_SCALE_B - SIGNAL_SCALE_A) + SIGNAL_SCALE_C,
+            (rgb[2] - SIGNAL_SCALE_A) * (SIGNAL_SCALE_D - SIGNAL_SCALE_C) /
+                (SIGNAL_SCALE_B - SIGNAL_SCALE_A) + SIGNAL_SCALE_C,
         ];
-        var sdr2020 = applyInverseCrosstalk(xyzToRGB2020(sdrXYZ), CROSSTALK_ALPHA);
+        return encodeLinearBT709ToSRGB(rgb2020ToRGB709(rgb));
+    }
 
-        // BT.2446-C leaves BT.2020 -> BT.709 gamut conversion to BT.2407.  Keep
-        // the prototype's direct matrix conversion and output clipping here.  The
-        // Annex 5 constant-luminance projection made saturated broadcast graphics
-        // visibly pink because it preserved BT.2020 red luminance by adding white.
+    // ARIB broadcast SDR simulcast mode. Combines a 291-nit HLG OOTF model with
+    // the Method A YCbCr chroma-scaling approach (without Method A's red
+    // highlight compensation, since broadcast SDR look does not need that lift).
+    // The tone curve is calibrated to on-air Japanese BS 4K / 1080i practice:
+    // 75% HLG reference white -> ~0.90 sRGB, 100% HLG -> 1.0 sRGB.
+    function mapHLGToSDRARIB(hlgRGB) {
+        var linearNits = hlgToLinearDisplayNits(
+            hlgRGB, ARIB_PEAK_NITS, ARIB_SYSTEM_GAMMA);
+        var ycbcr = rgb2020ToYCbCr(linearNits);
+        var Y = ycbcr[0], Cb = ycbcr[1], Cr = ycbcr[2];
+        var Ysdr = toneMapARIB(Y);
+        var Yr = Ysdr / Math.max(1.1 * Y, 1e-6);
+        var CbScaled = Cb * Yr;
+        var CrScaled = Cr * Yr;
+        // Convert absolute nits to normalised linear (1.0 = 100 nits SDR peak),
+        // matching the convention expected by encodeLinearBT709ToSRGB.
+        var sdr2020 = yCbCrToRGB2020([Ysdr, CbScaled, CrScaled]).map(function (c) {
+            return c / SDR_PEAK_NITS;
+        });
         return encodeLinearBT709ToSRGB(rgb2020ToRGB709(sdr2020));
     }
 
     function normalizeMode(mode) {
-        return mode === 'bt2446c' ? 'bt2446c' : 'bt2446b';
+        if (mode === 'bt2446c') { return 'bt2446c'; }
+        if (mode === 'bt2446a') { return 'bt2446a'; }
+        return 'bt2446arib';
     }
 
     function modeLabel(mode) {
-        return normalizeMode(mode) === 'bt2446c' ? 'BT.2446-C 90% reference' : 'BT.2446-B 291 nit';
+        var normalized = normalizeMode(mode);
+        if (normalized === 'bt2446c') {
+            return 'BT.2446-C (Lab chroma correction)';
+        }
+        if (normalized === 'bt2446a') {
+            return 'BT.2446-A (YCbCr chroma scaling)';
+        }
+        return 'ARIB (291-nit simulcast)';
     }
 
     function mapDisplayedSDRToBT2446(displayedSRGB, mode) {
@@ -205,8 +438,10 @@
             linearToBT709(srgbToLinear(displayedSRGB[1])),
             linearToBT709(srgbToLinear(displayedSRGB[2])),
         ];
-        return normalizeMode(mode) === 'bt2446c' ?
-            mapHLGToSDRMethodC(hlgRGB) : mapHLGToSDRMethodB(hlgRGB);
+        var normalized = normalizeMode(mode);
+        if (normalized === 'bt2446c') { return mapHLGToSDRMethodC(hlgRGB); }
+        if (normalized === 'bt2446a') { return mapHLGToSDRMethodA(hlgRGB); }
+        return mapHLGToSDRARIB(hlgRGB);
     }
 
     function buildLUT(size, mode) {
@@ -497,9 +732,10 @@
     return {
         Renderer: Renderer,
         buildLUT: buildLUT,
-        mapHLGToSDR: mapHLGToSDRMethodB,
-        mapHLGToSDRMethodB: mapHLGToSDRMethodB,
+        mapHLGToSDR: mapHLGToSDRARIB,
+        mapHLGToSDRMethodA: mapHLGToSDRMethodA,
         mapHLGToSDRMethodC: mapHLGToSDRMethodC,
+        mapHLGToSDRARIB: mapHLGToSDRARIB,
         mapDisplayedSDRToBT2446: mapDisplayedSDRToBT2446,
         bt709ToLinear: bt709ToLinear,
         linearToSRGB: linearToSRGB,
