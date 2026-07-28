@@ -70,8 +70,10 @@ export const defaultConfig = {
 
     mmtsVideoPacketId: undefined,
     // Safari exposes HEVC MSE through the hvc1 codec identifier even when the
-    // MMTS asset is signalled as hev1. Firefox accepts hev1 and must retain it
-    // for streams whose parameter sets remain in-band.
+    // MMTS asset is signalled as hev1. Firefox 147-152 also needs conventional
+    // hvc1/out-of-band parameter sets: its HEVC change monitor otherwise
+    // treats every separately appended SPS-less hev1 fragment as a stream
+    // change and repeatedly recreates the decoder.
     mmtsForceHvc1SampleEntry: false,
     // Prototype switch: advertise HLG samples as SDR to stop the browser from applying its HDR tone mapper.
     // The BT.2020-NCL matrix is intentionally preserved so decoded YUV components are not mixed with BT.709 coefficients.
@@ -132,7 +134,7 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
         config.mseRebuildMediaSourceOnSeek = Browser.safari && !config.isLive;
     }
     if (!customConfig || customConfig.mmtsForceHvc1SampleEntry === undefined) {
-        config.mmtsForceHvc1SampleEntry = Browser.safari;
+        config.mmtsForceHvc1SampleEntry = Browser.safari || Browser.firefox;
     }
     if (!customConfig || customConfig.mmtsDeferHevcVideoInitUntilAudio === undefined) {
         config.mmtsDeferHevcVideoInitUntilAudio = !config.isLive && !Browser.firefox;

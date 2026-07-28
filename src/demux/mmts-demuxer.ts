@@ -1062,7 +1062,7 @@ class MMTSDemuxer extends BaseDemuxer {
             ...chain.pps.details
         };
         if (this.video_init_segment_dispatched_ &&
-            this.video_parameter_sets_in_band_ &&
+            this.video_sample_entry_type_ === 'hev1' &&
             !this.hasCriticalVideoMetadataChange(details)) {
             this.video_metadata_ = {
                 vps: chain.vps.nalu,
@@ -1850,7 +1850,7 @@ class MMTSDemuxer extends BaseDemuxer {
         const auIndex = accessUnit.auIndex;
         const filePosition = accessUnit.filePosition;
         const normalizedAccessUnit = normalizeH265AccessUnitForSampleEntry(
-            this.video_parameter_sets_in_band_ ? 'hev1' : this.video_sample_entry_type_,
+            this.video_sample_entry_type_,
             accessUnit.units,
             accessUnit.length
         );
@@ -4148,7 +4148,7 @@ class MMTSDemuxer extends BaseDemuxer {
             sps,
             pps,
             details,
-            this.video_sample_entry_type_ === 'hvc1' && !this.video_parameter_sets_in_band_
+            this.video_sample_entry_type_ === 'hvc1'
         ).getData();
 
         this.onTrackMetadata && this.onTrackMetadata('video', meta);
