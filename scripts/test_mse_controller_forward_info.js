@@ -138,6 +138,31 @@ function testSafariPreservesRecordsWhenDetachedSourceBufferRejectsBufferedRead()
     }
 }
 
+function testMMTSSourceBufferErrorIsFatalOnMSEThread() {
+    const controller = new MSEController({isLive: false, isMMTS: true});
+    const sourceBuffer = {buffered: makeRanges([])};
+    const errors = [];
+    controller._sourceBuffers.video = sourceBuffer;
+    controller.on('error', (error) => errors.push(error));
+
+    controller._onSourceBufferError({target: sourceBuffer, type: 'error'});
+
+    assert.strictEqual(controller._hasFatalMediaError, true);
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].code, 3);
+    assert.strictEqual(errors[0].msg, 'MMTS video SourceBuffer append/decode error');
+}
+
+function testNonMMTSSourceBufferErrorKeepsLegacyDiagnosticBehavior() {
+    const controller = new MSEController({isLive: false, isMMTS: false});
+    const sourceBuffer = {buffered: makeRanges([])};
+    controller._sourceBuffers.video = sourceBuffer;
+
+    controller._onSourceBufferError({target: sourceBuffer, type: 'error'});
+
+    assert.strictEqual(controller._hasFatalMediaError, false);
+}
+
 function makeSourceBuffer(changeType, operations) {
     const sourceBuffer = {
         updating: false,
@@ -293,6 +318,8 @@ testForwardDurationDoesNotJumpToFutureRange();
 testInflightRecordCountsBytesWithoutClaimingPlayableDuration();
 testBufferedBytesShrinkAfterPlayedRangeRemoval();
 testSafariPreservesRecordsWhenDetachedSourceBufferRejectsBufferedRead();
+testMMTSSourceBufferErrorIsFatalOnMSEThread();
+testNonMMTSSourceBufferErrorKeepsLegacyDiagnosticBehavior();
 testParserResetUsesChangeTypeWithoutRemovingAudioSourceBuffer();
 testParserResetAllowsChangeTypeToReopenEndedMediaSource();
 testParserResetWithoutChangeTypeFailsWithoutRemovingAudioSourceBuffer();

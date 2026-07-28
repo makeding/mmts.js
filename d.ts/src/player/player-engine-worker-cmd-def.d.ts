@@ -47,6 +47,10 @@ export type WorkerCommandPacketReadyStateChange = WorkerCommandPacket & {
     ready_state: number;
     current_time: number;
     event_type?: string;
+    media_error?: {
+        code?: number;
+        msg?: string;
+    };
     playback_operation?: PlaybackOperation;
 };
 export type WorkerCommandPacketSwitchAudio = WorkerCommandPacket & {

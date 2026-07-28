@@ -268,6 +268,7 @@ class PlayerEngineMainThread implements PlayerEngine {
             onMediaLoadedMetadata: this._onMediaLoadedMetadata.bind(this),
             onMediaTimeUpdate: this._onMediaTimeUpdate.bind(this),
             onMediaStateChange: this._onMediaStateChange.bind(this),
+            onMediaError: this._onMediaError.bind(this),
         };
     }
 
@@ -320,6 +321,7 @@ class PlayerEngineMainThread implements PlayerEngine {
         mediaElement.addEventListener('progress', this.e.onMediaStateChange);
         mediaElement.addEventListener('canplay', this.e.onMediaStateChange);
         mediaElement.addEventListener('loadeddata', this.e.onMediaStateChange);
+        mediaElement.addEventListener('error', this.e.onMediaError);
 
         this._mse_controller = this._createMSEController();
 
@@ -549,6 +551,7 @@ class PlayerEngineMainThread implements PlayerEngine {
             this._media_element.removeEventListener('progress', this.e.onMediaStateChange);
             this._media_element.removeEventListener('canplay', this.e.onMediaStateChange);
             this._media_element.removeEventListener('loadeddata', this.e.onMediaStateChange);
+            this._media_element.removeEventListener('error', this.e.onMediaError);
 
             // Detach media source from media element
             this._media_element.src = '';
@@ -869,6 +872,7 @@ class PlayerEngineMainThread implements PlayerEngine {
         this._transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED,
             (subtitle_data: any, operation: PlaybackOperation) => {
                 if (!this._adoptPlaybackOperation(operation)) return;
+                if (this._mse_buffer_state_machine?.isFatal) return;
                 this._emitter.emit(PlayerEvents.MMTS_SUBTITLE_DATA_ARRIVED, subtitle_data);
             });
 
@@ -2810,6 +2814,18 @@ class PlayerEngineMainThread implements PlayerEngine {
 
     private _onMediaStateChange(e?: Event): void {
         this._notifyMediaStateChanged(e ? e.type : 'media_state');
+    }
+
+    private _onMediaError(): void {
+        const mediaError = this._media_element && this._media_element.error;
+        if (!mediaError) {
+            return;
+        }
+        this._mse_buffer_state_machine?.onMediaElementError({
+            code: mediaError.code,
+            msg: mediaError.message || 'HTMLMediaElement playback failed',
+            currentTime: this._media_element.currentTime,
+        });
     }
 
     private _notifyMediaStateChanged(eventType: string = 'media_state'): void {

@@ -2136,6 +2136,37 @@ function testAudioBytesTriggerBackpressureAndRecovery() {
     );
 }
 
+function testFatalMediaElementStateStopsProducerAndDropsQueuedOutput() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.sourceBuffers.video.updating = true;
+    h.sourceBuffers.audio.updating = true;
+    h.sm.onMediaSegment('video', makeSegment('video', 0, 2, 1024));
+    h.sm.onMediaSegment('audio', makeSegment('audio', 0, 2, 512));
+    assert.strictEqual(h.sm._pending_media_segments.video.length, 1);
+    assert.strictEqual(h.sm._pending_media_segments.audio.length, 1);
+
+    h.sm.onMediaElementError({code: 3, msg: 'decode failed'});
+
+    assert.strictEqual(h.sm.isFatal, true);
+    assert.strictEqual(h.sm._pending_media_segments.video.length, 0);
+    assert.strictEqual(h.sm._pending_media_segments.audio.length, 0);
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'FATAL'),
+        true
+    );
+    assert.strictEqual(h.log.filter((entry) => entry[0] === 'fatal').length, 1);
+
+    h.sm.onMediaSegment('video', makeSegment('video', 2, 4, 1024));
+    h.sm.onMediaSegment('audio', makeSegment('audio', 2, 4, 512));
+    assert.strictEqual(h.sm._pending_media_segments.video.length, 0);
+    assert.strictEqual(h.sm._pending_media_segments.audio.length, 0);
+    h.sm.onMediaElementError({code: 3, msg: 'duplicate'});
+    assert.strictEqual(h.log.filter((entry) => entry[0] === 'fatal').length, 1);
+}
+
 function testForwardDurationCanTriggerBackpressureAndRecover() {
     const h = makeHarness({
         config: {
@@ -3287,6 +3318,7 @@ testBackpressureRequiresBothTrackDataButNotPlayableIntersection();
 testPendingQueuesTriggerBackpressureBeforeMSEAppend();
 testPendingTimelineDurationTriggersBackpressureAfterSeek();
 testAudioBytesTriggerBackpressureAndRecovery();
+testFatalMediaElementStateStopsProducerAndDropsQueuedOutput();
 testForwardDurationCanTriggerBackpressureAndRecover();
 testMMTSVodWaitingAtByteCapPrefetchesUntilPlaybackProgresses();
 testMMTSDirectSeekKeepsRequestedTimeWithBufferedVideoRandomAccessPreroll();

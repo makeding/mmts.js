@@ -137,6 +137,7 @@ declare class PlayerEngineMainThread implements PlayerEngine {
     private _onMSEUpdateEnd;
     private _onMediaTimeUpdate;
     private _onMediaStateChange;
+    private _onMediaError;
     private _notifyMediaStateChanged;
     private _onMSEBufferFull;
     private _logMSEBufferFull;

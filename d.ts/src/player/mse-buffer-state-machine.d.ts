@@ -118,6 +118,7 @@ declare class MSEBufferStateMachine {
     private _config;
     private _output;
     private _main_state;
+    get isFatal(): boolean;
     private _track_state;
     private _pending_init_segments;
     private _pending_media_segments;
@@ -198,6 +199,7 @@ declare class MSEBufferStateMachine {
     private _clearTrackSwitchTransactionState;
     private _trackSwitchFailureKey;
     private _enterFatal;
+    onMediaElementError(error: any): void;
     onEndOfStream(operation?: PlaybackOperation): void;
     onFatal(error: any): void;
     onExternalMSEError(error: any): void;

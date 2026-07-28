@@ -279,6 +279,7 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
         this._media_element.addEventListener('loadedmetadata', this.e.onMediaReadyStateChanged);
         this._media_element.addEventListener('progress', this.e.onMediaReadyStateChanged);
         this._media_element.addEventListener('stalled', this.e.onMediaReadyStateChanged);
+        this._media_element.addEventListener('error', this.e.onMediaReadyStateChanged);
 
         const startupOperation = this._config.isMMTS ?
             (this._active_playback_operation ||
@@ -314,6 +315,7 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
             this._media_element.removeEventListener('loadedmetadata', this.e.onMediaReadyStateChanged);
             this._media_element.removeEventListener('progress', this.e.onMediaReadyStateChanged);
             this._media_element.removeEventListener('stalled', this.e.onMediaReadyStateChanged);
+            this._media_element.removeEventListener('error', this.e.onMediaReadyStateChanged);
 
             // Detach media source from media element
             this._media_element.src = '';
@@ -803,7 +805,8 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
 
         const readyState = this._media_element.readyState;
         const currentTime = this._media_element.currentTime;
-        const forceNotify = e != null && (e.type === 'waiting' || e.type === 'stalled');
+        const forceNotify = e != null &&
+            (e.type === 'waiting' || e.type === 'stalled' || e.type === 'error');
         if (!forceNotify &&
             this._prev_ready_state === readyState &&
             Math.abs(this._prev_ready_state_current_time - currentTime) < 0.25) {
@@ -817,6 +820,10 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
             ready_state: readyState,
             current_time: currentTime,
             event_type: e ? e.type : 'readystatechange',
+            media_error: this._media_element.error ? {
+                code: this._media_element.error.code,
+                msg: this._media_element.error.message || 'HTMLMediaElement playback failed',
+            } : undefined,
             playback_operation: this._active_playback_operation,
         } as WorkerCommandPacketReadyStateChange);
     }

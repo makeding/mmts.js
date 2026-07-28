@@ -335,11 +335,17 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
             }
             case 'readystatechange': {
                 const packet = command_packet as WorkerCommandPacketReadyStateChange;
-                if (!acceptPlaybackOperation(packet.playback_operation)) break;
                 media_element_ready_state = packet.ready_state;
                 if (typeof packet.current_time === 'number' && isFinite(packet.current_time)) {
                     media_element_current_time = packet.current_time;
                 }
+                if (packet.media_error) {
+                    mse_buffer_state_machine?.onMediaElementError(Object.assign({
+                        currentTime: media_element_current_time,
+                    }, packet.media_error));
+                    break;
+                }
+                if (!acceptPlaybackOperation(packet.playback_operation)) break;
                 if (mse_buffer_state_machine) {
                     mse_buffer_state_machine.onMediaState(
                         media_element_current_time,
@@ -1668,6 +1674,7 @@ const PlayerEngineWorker = (self: DedicatedWorkerGlobalScope) => {
             emitPlayerEventsExtraData(PlayerEvents.MMTS_SUBTITLE_TRACKS, subtitle_tracks, operation);
         });
         transmuxer.on(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, (subtitle_data: any, operation: PlaybackOperation) => {
+            if (mse_buffer_state_machine?.isFatal) return;
             emitPlayerEventsExtraData(PlayerEvents.MMTS_SUBTITLE_DATA_ARRIVED, subtitle_data, operation);
         });
 

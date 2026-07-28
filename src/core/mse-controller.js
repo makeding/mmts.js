@@ -1151,8 +1151,25 @@ class MSEController {
     }
 
     _onSourceBufferError(e) {
-        Log.e(this.TAG, `SourceBuffer Error: ${e}`);
-        // this error might not always be fatal, just ignore it
+        let type = 'unknown';
+        if (e && e.target) {
+            for (let mediaType in this._sourceBuffers) {
+                if (this._sourceBuffers[mediaType] === e.target) {
+                    type = mediaType;
+                    break;
+                }
+            }
+        }
+        Log.e(this.TAG, `SourceBuffer Error: type=${type}, event=${e}`);
+        if (this._config.isMMTS === true) {
+            const error = new Error(`MMTS ${type} SourceBuffer append/decode error`);
+            error.name = 'SourceBufferError';
+            error.code = 3;
+            error.sourceBufferType = type;
+            this._emitFatalMediaError(error);
+        }
+        // Preserve the legacy non-MMTS behavior, where a SourceBuffer error
+        // event was diagnostic only and append exceptions owned fatality.
     }
 
 }

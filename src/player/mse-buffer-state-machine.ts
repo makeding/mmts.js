@@ -243,6 +243,10 @@ class MSEBufferStateMachine {
     private _config: any;
     private _output: MSEBufferStateMachineOutput;
     private _main_state: MSEBufferMainState = 'DETACHED';
+
+    public get isFatal(): boolean {
+        return this._main_state === 'FATAL';
+    }
     private _track_state: {[type: string]: MSEBufferTrackState} = {
         video: 'NO_SOURCEBUFFER',
         audio: 'NO_SOURCEBUFFER',
@@ -1239,9 +1243,20 @@ class MSEBufferStateMachine {
             return;
         }
         this._live_audio_track_switch_collection_hold = false;
-        this._clearPendingStartupGroup();
         this._main_state = 'FATAL';
+        this._pending_eos = false;
+        this.flushPending();
+        this._clearAllInflightOperations();
+        this._pauseTransmuxer('FATAL');
         this._output.emitFatal(error);
+    }
+
+    public onMediaElementError(error: any): void {
+        this._enterFatal(Object.assign({
+            code: error && error.code,
+            msg: error && (error.msg || error.message) || 'HTMLMediaElement entered a fatal state',
+            source: 'media-element',
+        }, error || {}));
     }
 
     public onEndOfStream(operation?: PlaybackOperation): void {
@@ -3858,7 +3873,8 @@ class MSEBufferStateMachine {
     }
 
     private _shouldReplacePauseReason(reason: string): boolean {
-        if (reason === 'SEEKING' || reason.indexOf('TRACK_SWITCHING') === 0 || reason === 'QUOTA') {
+        if (reason === 'FATAL' || reason === 'SEEKING' ||
+            reason.indexOf('TRACK_SWITCHING') === 0 || reason === 'QUOTA') {
             return true;
         }
         return this._transmuxer_pause_reason === 'BACKPRESSURE';
@@ -3868,6 +3884,9 @@ class MSEBufferStateMachine {
         const pauseReason = this._transmuxer_pause_reason;
         if (!pauseReason) {
             return true;
+        }
+        if (pauseReason === 'FATAL') {
+            return false;
         }
         if (pauseReason === 'BACKPRESSURE') {
             return reason === 'RECOVERED' ||
