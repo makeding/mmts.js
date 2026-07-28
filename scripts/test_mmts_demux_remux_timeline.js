@@ -3171,6 +3171,7 @@ function testDemuxerCanLabelHev1AssetAsHvc1WithoutStrippingInBandParameterSets()
     assert.strictEqual(demuxer.video_parameter_sets_in_band_, true);
 }
 
+
 function testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition() {
     const MMTSDemuxer = loadDemuxer();
     const demuxer = Object.create(MMTSDemuxer.prototype);

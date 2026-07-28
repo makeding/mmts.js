@@ -1821,7 +1821,6 @@ function testSeekStateWaitsForMediaElementSeekedEvent() {
     h.ranges.video.push({start: 9, end: 12});
     h.ranges.audio.push({start: 9, end: 12});
     h.sm._main_state = 'SEEKING';
-
     assert.strictEqual(
         h.sm._requestMediaSeekWhenPlayable(10, 'RECOMMEND_SEEKPOINT', 0.05),
         true
@@ -2068,17 +2067,22 @@ function testPlayableForwardDurationRequiresAudioVideoIntersection() {
     assert.strictEqual(info.forwardDuration, 5);
 }
 
-function testPendingVideoBytesDoNotPauseBeforeAudioArrives() {
+function testPendingVideoBytesPauseEvenWhenAudioIsMissing() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
-    h.sm.onMediaSegment('video', makeSegment('video', 0, 1, 130 * MiB));
+    h.sm.onMediaSegment('video', makeSegment('video', 0, 1, 1 * MiB));
     assert.strictEqual(
         h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
         false
     );
+    h.sm.onMediaSegment('video', makeSegment('video', 0, 1, 130 * MiB));
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
+        true
+    );
 }
 
-function testBackpressureRequiresBothTrackDataButNotPlayableIntersection() {
+function testBackpressureDoesNotRequireBothTrackData() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
     h.sourceBuffers.video.exists = true;
@@ -2092,16 +2096,42 @@ function testBackpressureRequiresBothTrackDataButNotPlayableIntersection() {
     h.sm.onMediaState(0, 4, 'timeupdate');
     assert.strictEqual(
         h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
-        false
+        true
     );
 
-    h.setForwardInfo({
+    const both = makeHarness({config: {isMMTS: true}});
+    both.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    both.sourceBuffers.video.exists = true;
+    both.sourceBuffers.audio.exists = true;
+    both.setForwardInfo({
         videoForwardBytes: 130 * MiB,
         videoForwardDuration: 0,
         audioForwardBytes: 512 * 1024,
         audioForwardDuration: 0,
     });
-    h.sm.onMediaState(0, 4, 'progress');
+    both.sm.onMediaState(0, 4, 'progress');
+    assert.strictEqual(
+        both.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
+        true
+    );
+}
+
+function testSeekBackpressureCapsSingleTrackDuration() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.sm._main_state = 'SEEKING';
+    h.sm._timeline_seek_target_time = 400;
+    h.setForwardInfo({
+        videoForwardBytes: 1 * MiB,
+        videoForwardDuration: 8,
+        audioForwardBytes: 0,
+        audioForwardDuration: 0,
+    });
+
+    h.sm.onMediaState(400, 1, 'progress');
+    assert.strictEqual(h.sm._main_state, 'SEEKING');
     assert.strictEqual(
         h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
         true
@@ -3434,8 +3464,9 @@ testHev1VideoInitWaitsForAudioInit();
 testMMTSVideoInitHonorsHevcDeferOptOut();
 testNonHevcMMTSVideoInitDoesNotWaitForAudioInit();
 testPlayableForwardDurationRequiresAudioVideoIntersection();
-testPendingVideoBytesDoNotPauseBeforeAudioArrives();
-testBackpressureRequiresBothTrackDataButNotPlayableIntersection();
+testPendingVideoBytesPauseEvenWhenAudioIsMissing();
+testBackpressureDoesNotRequireBothTrackData();
+testSeekBackpressureCapsSingleTrackDuration();
 testPendingQueuesTriggerBackpressureBeforeMSEAppend();
 testPendingTimelineDurationTriggersBackpressureAfterSeek();
 testAudioBytesTriggerBackpressureAndRecovery();

@@ -3187,6 +3187,8 @@ class MSEBufferStateMachine {
         const recoverForwardDuration = this._getRecoverForwardDuration(forwardTargetDuration);
         const videoBytes = info.videoForwardBytes || 0;
         const audioBytes = info.audioForwardBytes || 0;
+        const videoDuration = info.videoForwardDuration || 0;
+        const audioDuration = info.audioForwardDuration || 0;
         const playableDuration = info.forwardDuration || 0;
 
         this._scheduleAudioCleanupIfNeeded(info);
@@ -3195,17 +3197,20 @@ class MSEBufferStateMachine {
             return;
         }
 
-        if (!this._isBackpressureReady(info)) {
-            if (this._transmuxer_paused && this._main_state === 'BACKPRESSURE') {
-                this._resumeTransmuxer('RECOVERED');
-                this._main_state = 'STEADY';
-            }
-            return;
-        }
+        // Each elementary stream owns an independent producer budget.  Do not
+        // wait for an A/V intersection before enforcing it: after a seek a
+        // corrupt or temporarily missing AAC stream used to disable all
+        // backpressure and let video/subtitle demux run through minutes of the
+        // file.  A normal interleaved MMTS stream has ample room to expose the
+        // other track before these limits are reached.
+        const videoLimitReached = this._expectsVideo() &&
+            (videoBytes >= videoSoft || videoDuration >= forwardTargetDuration);
+        const audioLimitReached = this._expectsAudio() &&
+            (audioBytes >= audioSoft || audioDuration >= forwardTargetDuration);
+        const playableLimitReached = this._isBackpressureReady(info) &&
+            playableDuration >= forwardTargetDuration;
 
-        if (videoBytes >= videoSoft ||
-            audioBytes >= audioSoft ||
-            playableDuration >= forwardTargetDuration) {
+        if (videoLimitReached || audioLimitReached || playableLimitReached) {
             if (this._main_state !== 'FATAL' && this._main_state !== 'SEEKING') {
                 this._main_state = 'BACKPRESSURE';
             }
@@ -3214,6 +3219,8 @@ class MSEBufferStateMachine {
         } else if (this._transmuxer_paused &&
             videoBytes <= recoverVideoBytes &&
             audioBytes <= recoverAudioBytes &&
+            videoDuration <= recoverForwardDuration &&
+            audioDuration <= recoverForwardDuration &&
             playableDuration <= recoverForwardDuration) {
             this._resumeTransmuxer('RECOVERED');
             if (this._main_state === 'BACKPRESSURE') {
