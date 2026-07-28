@@ -1601,10 +1601,13 @@ class MSEBufferStateMachine {
             }
             this._main_state = 'SEEKING';
         } else {
-            this._current_time = startupTime;
-            if (this._output.seekMedia) {
-                this._output.seekMedia(startupTime, 'STARTUP_GROUP');
-            }
+            // SourceBuffer updateend says the append algorithm finished, but
+            // WebKit may not expose the new A/V ranges synchronously.  Do not
+            // put HTMLMediaElement into `seeking` until both tracks confirm a
+            // playable intersection at the startup point.  The pending seek
+            // is retried by the normal state-machine tick path and committed
+            // only once.
+            this._requestMediaSeekWhenPlayable(startupTime, 'STARTUP_GROUP', 0.05);
         }
         if (this._output.onStartupGroupAppended) {
             this._output.onStartupGroupAppended(appendedGroup);
@@ -3453,7 +3456,8 @@ class MSEBufferStateMachine {
     }
 
     private _requestMediaSeekWhenPlayable(targetTime: number, reason: string, minForwardDuration: number): boolean {
-        const seekAtNextPlayableIntersection = reason === 'RECOMMEND_SEEKPOINT' ||
+        const seekAtNextPlayableIntersection = reason === 'STARTUP_GROUP' ||
+            reason === 'RECOMMEND_SEEKPOINT' ||
             reason === 'AUDIO_TRACK_SWITCH_REBUILD';
         const playableTarget = seekAtNextPlayableIntersection ?
             this._findPlayableSeekTimeAtOrAfter(targetTime, minForwardDuration) :

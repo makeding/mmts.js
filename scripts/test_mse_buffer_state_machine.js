@@ -2353,14 +2353,38 @@ function testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease() {
     assert.strictEqual(h.log.some((entry) => entry[0] === 'seekMedia'), false);
     h.updateEnd('audio');
     assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'seekMedia'),
+        false
+    );
+    assert.strictEqual(h.sm._pending_media_seek_target, 10);
+
+    h.ranges.video.push({start: 10, end: 12});
+    h.sm.tick('video_range_visible');
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'seekMedia'),
+        false
+    );
+
+    h.ranges.audio.push({start: 9.9, end: 12.1});
+    h.sm.tick('audio_range_visible');
+    assert.strictEqual(
         h.log.some((entry) => entry[0] === 'seekMedia' && entry[1] === 10 && entry[2] === 'STARTUP_GROUP'),
         true
+    );
+    h.sm.tick('duplicate_startup_tick');
+    assert.strictEqual(
+        h.log.filter((entry) =>
+            entry[0] === 'seekMedia' && entry[1] === 10 && entry[2] === 'STARTUP_GROUP'
+        ).length,
+        1
     );
 }
 
 function testOverlappingStartupAppendsKeepPerTrackCompletionIdentity() {
     resetTimers();
     const h = makeHarness({config: {isMMTS: true}});
+    h.ranges.video.push({start: 10, end: 13});
+    h.ranges.audio.push({start: 9.9, end: 12.1});
     h.sm.onStartupGroup(makeStartupGroup());
 
     h.updateEnd('video');

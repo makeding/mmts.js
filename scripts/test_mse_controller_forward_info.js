@@ -138,6 +138,47 @@ function testSafariPreservesRecordsWhenDetachedSourceBufferRejectsBufferedRead()
     }
 }
 
+function testSafariUnloadSkipsDetachedSourceBufferAfterAbortFailure() {
+    const controller = new MSEController({isLive: false});
+    controller._mediaSource = {readyState: 'open'};
+    controller._sourceBuffers.video = {
+        abort() {
+            const error = new Error('The object is in an invalid state.');
+            error.name = 'InvalidStateError';
+            throw error;
+        },
+        get buffered() {
+            throw new Error('buffered must not be read after abort rejects');
+        },
+    };
+    sandbox.Browser.safari = true;
+    try {
+        assert.doesNotThrow(() => controller.clearBufferedRanges());
+        assert.strictEqual(controller._pendingRemoveRanges.video.length, 0);
+    } finally {
+        sandbox.Browser.safari = false;
+    }
+}
+
+function testSafariUnloadSkipsDetachedSourceBufferBufferedRead() {
+    const controller = new MSEController({isLive: false});
+    controller._mediaSource = {readyState: 'ended'};
+    controller._sourceBuffers.video = {
+        get buffered() {
+            const error = new Error('The object is in an invalid state.');
+            error.name = 'InvalidStateError';
+            throw error;
+        },
+    };
+    sandbox.Browser.safari = true;
+    try {
+        assert.doesNotThrow(() => controller.clearBufferedRanges());
+        assert.strictEqual(controller._pendingRemoveRanges.video.length, 0);
+    } finally {
+        sandbox.Browser.safari = false;
+    }
+}
+
 function testMMTSSourceBufferErrorIsFatalOnMSEThread() {
     const controller = new MSEController({isLive: false, isMMTS: true});
     const sourceBuffer = {buffered: makeRanges([])};
@@ -318,6 +359,8 @@ testForwardDurationDoesNotJumpToFutureRange();
 testInflightRecordCountsBytesWithoutClaimingPlayableDuration();
 testBufferedBytesShrinkAfterPlayedRangeRemoval();
 testSafariPreservesRecordsWhenDetachedSourceBufferRejectsBufferedRead();
+testSafariUnloadSkipsDetachedSourceBufferAfterAbortFailure();
+testSafariUnloadSkipsDetachedSourceBufferBufferedRead();
 testMMTSSourceBufferErrorIsFatalOnMSEThread();
 testNonMMTSSourceBufferErrorKeepsLegacyDiagnosticBehavior();
 testParserResetUsesChangeTypeWithoutRemovingAudioSourceBuffer();

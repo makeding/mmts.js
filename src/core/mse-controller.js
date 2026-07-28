@@ -573,6 +573,14 @@ class MSEController {
                 // Ignore it.
                 sb.abort();
             } catch (error) {
+                if (Browser.safari || this._useManagedMediaSource) {
+                    // WebKit may leave a detached SourceBuffer wrapper in the
+                    // map while its parent MediaSource still reports "open".
+                    // Once abort() rejects that wrapper, reading `.buffered`
+                    // below throws again and aborts the caller's unload flow.
+                    Log.w(this.TAG, `Skip clearing stale ${type} SourceBuffer: ${error.message}`);
+                    return;
+                }
                 Log.e(this.TAG, error.message);
             }
         }
@@ -582,10 +590,23 @@ class MSEController {
             return;
         }
 
+        let buffered;
+        if (Browser.safari || this._useManagedMediaSource) {
+            try {
+                buffered = sb.buffered;
+            } catch (error) {
+                Log.w(this.TAG, `Skip clearing stale ${type} SourceBuffer: ${error.message}`);
+                return;
+            }
+        } else {
+            // Keep the direct Chromium path unchanged.
+            buffered = sb.buffered;
+        }
+
         // record ranges to be remove from SourceBuffer
-        for (let i = 0; i < sb.buffered.length; i++) {
-            let start = sb.buffered.start(i);
-            let end = sb.buffered.end(i);
+        for (let i = 0; i < buffered.length; i++) {
+            let start = buffered.start(i);
+            let end = buffered.end(i);
             this._pendingRemoveRanges[type].push({start, end});
         }
         Log.v(this.TAG, `Clear ${type} SourceBuffer`);
