@@ -696,6 +696,46 @@ async function testFirefoxVodSeekRefinesLandingThatIsTooFarBeforeTarget() {
         retry.estimatedPosition - retry.fileposition,
         32 * 1024 * 1024
     );
+    assert.strictEqual(retry.refinementAnchorTime, 278621);
+    assert.strictEqual(retry.refinementAnchorFilePosition, 900000000);
+}
+
+function testFirefoxVodSeekSecondRefinementUsesPriorLandingPair() {
+    const h = makeHarness({safari: false, firefox: true});
+    const operation = makePlaybackOperation(
+        'seek', 10, 403000, undefined, 'adaptive-retry', 10, 1
+    );
+    h.controller._config = {
+        isMMTS: true,
+        mseSeekPrerollKeepDuration: 20,
+        mmtsVodSeekLookbackBytes: 32 * 1024 * 1024,
+    };
+    const pending = {
+        milliseconds: 403000,
+        segmentInfo: makeSeekableSegmentInfo(
+            [166, 92526],
+            [650375, 217476185],
+            1325057
+        ),
+        segment: {filesize: 3391627787},
+        estimatedPosition: 1200000000,
+        fileposition: 1200000000 - 32 * 1024 * 1024,
+        estimated: true,
+        refinementAnchorTime: 278621,
+        refinementAnchorFilePosition: 900000000,
+        operation,
+    };
+
+    const retry = h.controller._makeMMTSVodForwardSeekRetry(
+        pending,
+        389000,
+        1230000000
+    );
+    assert(retry);
+    assert.strictEqual(retry.refinementAnchorTime, 389000);
+    assert.strictEqual(retry.refinementAnchorFilePosition, 1230000000);
+    assert(retry.estimatedPosition > 1230000000);
+    assert(retry.estimatedPosition < 1300000000);
 }
 
 async function testVodSeekRetriesWhenIndexedRangeStartsAfterTarget() {
@@ -2001,6 +2041,7 @@ async function main() {
     testStartupGroupReplaysCollectedAudioContinuations();
     await testVodSeekRetriesWhenEstimatedRangeStartsAfterTarget();
     await testFirefoxVodSeekRefinesLandingThatIsTooFarBeforeTarget();
+    testFirefoxVodSeekSecondRefinementUsesPriorLandingPair();
     await testVodSeekRetriesWhenIndexedRangeStartsAfterTarget();
     testVodIndexedSeekRetryMovesBeforeRejectedIndex();
     await testVodSeekAtMaxLookbackFallsBackToSegmentStart();

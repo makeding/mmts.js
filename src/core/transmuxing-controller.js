@@ -1013,6 +1013,8 @@ class TransmuxingController {
                 fileposition: keyframe.fileposition,
                 estimated: keyframe.estimated === true,
                 ignoreKeyframeIndex: keyframe.ignoreKeyframeIndex === true,
+                refinementAnchorTime: keyframe.refinementAnchorTime,
+                refinementAnchorFilePosition: keyframe.refinementAnchorFilePosition,
                 operation: operation ? clonePlaybackOperation(operation) : null,
             };
             this._mmtsPlaybackOutputState.beginSeekPreroll(operation);
@@ -1307,7 +1309,7 @@ class TransmuxingController {
         const keepDuration = typeof this._config.mseSeekPrerollKeepDuration === 'number' &&
             isFinite(this._config.mseSeekPrerollKeepDuration) ?
                 this._config.mseSeekPrerollKeepDuration : 6;
-        const maximumPreroll = Math.max(1, keepDuration - 1) * 1000;
+        const maximumPreroll = Math.max(1, Math.min(5, keepDuration - 1)) * 1000;
         if (syncPointTime >= pending.milliseconds - maximumPreroll) {
             return null;
         }
@@ -1315,9 +1317,15 @@ class TransmuxingController {
         const index = pending.segmentInfo && pending.segmentInfo.keyframesIndex;
         const times = index && index.times;
         const positions = index && index.filepositions;
-        let anchorTime = NaN;
-        let anchorPosition = NaN;
-        if (Array.isArray(times) && Array.isArray(positions)) {
+        let anchorTime = pending.refinementAnchorTime;
+        let anchorPosition = pending.refinementAnchorFilePosition;
+        if (!(typeof anchorTime === 'number' && isFinite(anchorTime) &&
+            typeof anchorPosition === 'number' && isFinite(anchorPosition) &&
+            anchorTime < syncPointTime - 1000 &&
+            anchorPosition < syncPointFilePosition) &&
+            Array.isArray(times) && Array.isArray(positions)) {
+            anchorTime = NaN;
+            anchorPosition = NaN;
             const length = Math.min(times.length, positions.length);
             for (let i = length - 1; i >= 0; i--) {
                 if (typeof times[i] === 'number' && isFinite(times[i]) &&
@@ -1364,6 +1372,8 @@ class TransmuxingController {
             lookback,
             estimated: true,
             ignoreKeyframeIndex: true,
+            refinementAnchorTime: syncPointTime,
+            refinementAnchorFilePosition: syncPointFilePosition,
         };
     }
 

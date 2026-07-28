@@ -596,6 +596,19 @@ function testPressureCleanupOnlyRemovesPlayedData() {
     );
 }
 
+function testVideoCleanupRetainsDecoderRoot() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sourceBuffers.video.exists = true;
+    h.ranges.video.push({start: 380, end: 450});
+    h.sm._current_time = 403;
+    h.sm._video_random_access_points.push({dts: 390000, pts: 390000});
+
+    h.sm._scheduleBackwardCleanup('video', 2);
+    assert.strictEqual(h.sm._pending_remove_ranges.video.length, 1);
+    assert.strictEqual(h.sm._pending_remove_ranges.video[0].start, 380);
+    assert.strictEqual(h.sm._pending_remove_ranges.video[0].end, 390);
+}
+
 function testVodAudioTrackSwitchPreparationCanBeCancelledWithoutLeavingPause() {
     const h = makeHarness({config: {isMMTS: true, isLive: false}});
     const operation = makePlaybackOperation(
@@ -3372,6 +3385,7 @@ testQueuedMediaSegmentsAreBatchedForMSEAppend();
 testRemoveBeforeAppendUnderBudgetPressure();
 testPressureDoesNotDeleteFutureRanges();
 testPressureCleanupOnlyRemovesPlayedData();
+testVideoCleanupRetainsDecoderRoot();
 testHardBudgetCountsBackwardBytesAndOverridesLongEmergencyRetention();
 testAudioLeadBlocksUntilVideoCatchesUp();
 testVideoLeadYieldsToPendingAudio();
