@@ -84,6 +84,7 @@ function loadController() {
     }
     FakeIOController.instances = [];
     const lifecycle = loadStartupGroupLifecycle();
+    const playbackOutputState = loadPlaybackOutputState();
     const clock = createFakeClock();
     const requireMap = {
         '../utils/logger.js': {__esModule: true, default: {e() {}, v() {}, w() {}}},
@@ -115,6 +116,7 @@ function loadController() {
         '../io/loader.js': {LoaderStatus: {}, LoaderErrors: {}},
         './playback-operation': Object.assign({__esModule: true}, operationContract),
         './mmts-startup-group-lifecycle': lifecycle,
+        './mmts-playback-output-state': playbackOutputState,
     };
     const sandbox = {
         require: (id) => Object.prototype.hasOwnProperty.call(requireMap, id) ? requireMap[id] : require(id),
@@ -223,6 +225,26 @@ function loadStartupGroupLifecycle() {
     return moduleObject.exports;
 }
 
+function loadPlaybackOutputState() {
+    const sourcePath = path.resolve(__dirname, '../src/core/mmts-playback-output-state.ts');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const compiled = ts.transpileModule(source, {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2018,
+        }
+    }).outputText;
+    const moduleObject = {exports: {}};
+    vm.runInNewContext(compiled, {
+        require: (id) => id === './playback-operation' ? loadPlaybackOperation() : require(id),
+        module: moduleObject,
+        exports: moduleObject.exports,
+        Object,
+        TypeError,
+    }, {filename: sourcePath});
+    return moduleObject.exports;
+}
+
 function loadTransmuxer() {
     const sourcePath = path.resolve(__dirname, '../src/core/transmuxer.js');
     const source = fs.readFileSync(sourcePath, 'utf8');
@@ -300,6 +322,37 @@ function testPlaybackOperationValidationAndMonotonicAdvance() {
     );
 }
 
+function testPlaybackOutputStateCoordinatesTracksByOperation() {
+    const PlaybackOutputState = loadPlaybackOutputState().default;
+    const state = new PlaybackOutputState();
+    const seek = makePlaybackOperation('seek', 31, 237682);
+    const newerSeek = makePlaybackOperation('seek', 32, 338000);
+    const audio = {type: 'audio'};
+
+    assert.strictEqual(state.phase, 'READY');
+    assert.strictEqual(state.shouldPublishSubtitle(seek), true);
+
+    state.beginSeekPreroll(seek);
+    assert.strictEqual(state.phase, 'SEEK_PREROLL');
+    assert.strictEqual(state.shouldPublishSubtitle(seek), false);
+    assert.strictEqual(state.shouldPublishSubtitle(newerSeek), false);
+    assert.strictEqual(state.queueAudio(audio, seek), true);
+    assert.strictEqual(state.queueAudio({type: 'stale-audio'}, newerSeek), false);
+    assert.strictEqual(state.acceptVideoLanding(newerSeek), null);
+
+    const release = state.acceptVideoLanding(seek);
+    assert(release);
+    assert.strictEqual(release.audioSegments.length, 1);
+    assert.strictEqual(release.audioSegments[0], audio);
+    assert.strictEqual(state.phase, 'READY');
+    assert.strictEqual(state.shouldPublishSubtitle(seek), true);
+    assert.strictEqual(state.shouldPublishSubtitle(newerSeek), false);
+
+    state.beginSeekPreroll(newerSeek);
+    assert.strictEqual(state.pendingAudioSegments.length, 0);
+    assert.strictEqual(state.shouldPublishSubtitle(seek), false);
+}
+
 function makeHarness() {
     const {TransmuxingController, MMTSDemuxer} = loadController();
     const events = [];
@@ -316,8 +369,8 @@ function makeHarness() {
     controller._mmtsStartupGroup = controller._createMMTSStartupGroupState(operation);
     controller._pendingMMTSVodSeek = null;
     controller._pendingMMTSVodSeekRetry = null;
-    controller._pendingMMTSVodSeekAudioSegments = [];
-    controller._pendingMMTSVodSeekAudioOperation = null;
+    const PlaybackOutputState = loadPlaybackOutputState().default;
+    controller._mmtsPlaybackOutputState = new PlaybackOutputState();
     controller._pendingResolveSeekPoint = null;
     controller._pendingPlaybackOperationRetry = null;
     controller._playbackOperationRetrySequence = 0;
@@ -848,7 +901,7 @@ function testVodAudioSwitchIntentIsReappliedAcrossAdaptiveSeekRetry() {
         mmtsAudioTrackSwitch: currentIdentity,
     };
     h.controller._onRemuxerMediaSegmentArrival('audio', freshAudioMedia);
-    assert.strictEqual(h.controller._pendingMMTSVodSeekAudioSegments[0], freshAudioMedia);
+    assert.strictEqual(h.controller._mmtsPlaybackOutputState.pendingAudioSegments[0], freshAudioMedia);
     const freshVideoMedia = makeVideoSegment(20.821, 21.2);
     freshVideoMedia.info.syncPoints = [{originalDts: 17785, dts: 17785, pts: 17785}];
     h.controller._onRemuxerMediaSegmentArrival('video', freshVideoMedia);
@@ -949,6 +1002,7 @@ function testVodAudioSwitchAudioFirstSegmentUsesStartupCollector() {
         useFirstSyncPoint: true,
         operation: Object.assign({}, h.controller._playbackOperation),
     };
+    h.controller._mmtsPlaybackOutputState.beginSeekPreroll(h.controller._playbackOperation);
     h.controller._setMMTSStartupGroupMediaInfo({hasVideo: true, hasAudio: true});
     h.controller._collectMMTSStartupInitSegment('video', {type: 'video'});
     h.controller._collectMMTSStartupInitSegment('audio', {mmtsAudioTrackSwitch: identity});
@@ -957,7 +1011,7 @@ function testVodAudioSwitchAudioFirstSegmentUsesStartupCollector() {
         mmtsAudioTrackSwitch: identity,
     };
     h.controller._onRemuxerMediaSegmentArrival('audio', audio);
-    assert.strictEqual(h.controller._pendingMMTSVodSeekAudioSegments[0], audio);
+    assert.strictEqual(h.controller._mmtsPlaybackOutputState.pendingAudioSegments[0], audio);
     const video = makeVideoSegment(10.5, 11.2);
     video.info.syncPoints = [{originalDts: 10400, dts: 10400, pts: 10400}];
     h.controller._onRemuxerMediaSegmentArrival('video', video);
@@ -1058,9 +1112,9 @@ function testVodSeekRecommendsRequestedTimeAfterFindingEarlierRap() {
             syncPoints: [{originalDts: 228896, dts: 228896, pts: 229062}],
         },
     };
-    h.controller._pendingMMTSVodSeekAudioSegments.push(audioSegment);
-    h.controller._pendingMMTSVodSeekAudioOperation = Object.assign(
-        {},
+    h.controller._mmtsPlaybackOutputState.beginSeekPreroll(h.controller._playbackOperation);
+    h.controller._mmtsPlaybackOutputState.queueAudio(
+        audioSegment,
         h.controller._playbackOperation
     );
     h.controller._emitRemuxerMediaSegment = (type, segment) => {
@@ -1074,6 +1128,46 @@ function testVodSeekRecommendsRequestedTimeAfterFindingEarlierRap() {
     assert.deepStrictEqual(h.events[1], ['media_segment', 'audio', audioSegment]);
     assert.deepStrictEqual(h.events[2], ['recommend_seekpoint', 237682]);
     assert.strictEqual(h.controller._pendingMMTSVodSeek, null);
+}
+
+function testVodSeekSuppressesSubtitlePrerollUntilVideoLanding() {
+    const h = makeHarness();
+    h.controller._mmtsPlaybackOutputState.beginSeekPreroll(h.controller._playbackOperation);
+    h.controller._pendingMMTSVodSeek = {
+        milliseconds: 237682,
+        segmentIndex: 0,
+        lookback: 32 * 1024 * 1024,
+        fileposition: 2120320332,
+        operation: Object.assign({}, h.controller._playbackOperation),
+    };
+    h.controller._pendingResolveSeekPoint = {
+        milliseconds: 237682,
+        useFirstSyncPoint: true,
+        operation: Object.assign({}, h.controller._playbackOperation),
+    };
+    h.controller._emitRemuxerMediaSegment = () => false;
+
+    const prerollSubtitle = {packetId: 0xf330, text: 'preroll'};
+    h.controller._onMMTSSubtitleData(prerollSubtitle);
+    assert.strictEqual(
+        h.events.some((event) => event[1] === prerollSubtitle),
+        false
+    );
+
+    h.controller._onRemuxerMediaSegmentArrival('video', {
+        type: 'video',
+        info: {
+            syncPoints: [{originalDts: 228896, dts: 228896, pts: 229062}],
+        },
+    });
+    assert.strictEqual(h.controller._pendingMMTSVodSeek, null);
+
+    const landedSubtitle = {packetId: 0xf330, text: 'landed'};
+    h.controller._onMMTSSubtitleData(landedSubtitle);
+    assert.strictEqual(
+        h.events.some((event) => event[1] === landedSubtitle),
+        true
+    );
 }
 
 function testVodSeekUsesKnownCheckpointWithinIndexedCoverage() {
@@ -1753,6 +1847,7 @@ async function testInlineAndWorkerStartupFailureFencing() {
 
 async function main() {
     testPlaybackOperationValidationAndMonotonicAdvance();
+    testPlaybackOutputStateCoordinatesTracksByOperation();
     testIOProducerOperationIsImmutableAndLateCallbacksAreInert();
     testAudioStartupGroupMovesToLaterRapWindow();
     testVideoOnlyStartupGroupDeclaresAudioUnavailable();
@@ -1767,6 +1862,7 @@ async function main() {
     testVodAudioSwitchAudioFirstSegmentUsesStartupCollector();
     testVodAudioSwitchStartupUsesOperationIdentityAndSafeVideoPreroll();
     testVodSeekRecommendsRequestedTimeAfterFindingEarlierRap();
+    testVodSeekSuppressesSubtitlePrerollUntilVideoLanding();
     testVodSeekUsesKnownCheckpointWithinIndexedCoverage();
     testVodSeekUsesNearbyKnownKeyframe();
     testVodSeekUsesObservedNearbyKeyframeSpanWithIncompleteDuration();

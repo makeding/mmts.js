@@ -59,6 +59,30 @@ function loadAAC(userAgent) {
     });
 }
 
+function loadAACParser() {
+    const exceptionModule = {
+        IllegalStateException: class IllegalStateException extends Error {},
+        InvalidArgumentException: class InvalidArgumentException extends Error {},
+    };
+    const expGolomb = loadModule('src/demux/exp-golomb.js', {
+        '../utils/exception.js': exceptionModule,
+    });
+    return loadModule('src/demux/aac.ts', {
+        './mpeg4-audio': {
+            MPEG4SamplingFrequencies: [
+                96000, 88200, 64000, 48000, 44100, 32000,
+                24000, 22050, 16000, 12000, 11025, 8000, 7350
+            ],
+            MPEG4AudioObjectTypes: {},
+            MPEG4SamplingFrequencyIndex: {},
+        },
+        '../utils/logger': {__esModule: true, default: {e() {}, v() {}, w() {}}},
+        './exp-golomb': expGolomb,
+    }, {
+        navigator: {userAgent: 'Mozilla/5.0 Chrome/120.0'},
+    });
+}
+
 function loadConfig() {
     return loadModule('src/config.js', {
         './utils/browser.js': {__esModule: true, default: {firefox: false}},
@@ -114,6 +138,16 @@ function testFivePointOneAACKeepsLCProfile() {
     assert.strictEqual(asc.original_codec_mimetype, 'mp4a.40.2');
     assert.strictEqual(asc.channel_count, 6);
     assert.strictEqual(asc.config.length, 2);
+}
+
+function testMalformedLOASCandidateDoesNotEscapeParser() {
+    const aac = loadAACParser();
+    // A syntactically valid LOAS sync/length header with a one-byte,
+    // truncated AudioMuxElement used to throw from ExpGolomb and surface as an
+    // IOController loader error during MMTS seek lookback scanning.
+    const parser = new aac.AACLOASParser(Uint8Array.from([0x56, 0xe0, 0x01, 0x00]));
+    assert.doesNotThrow(() => parser.readNextAACFrame());
+    assert.strictEqual(parser.readNextAACFrame(), null);
 }
 
 function testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected() {
@@ -244,6 +278,7 @@ function testFirstVideoPlayableWindowUsesRemuxedTimeline() {
 }
 
 testFivePointOneAACKeepsLCProfile();
+testMalformedLOASCandidateDoesNotEscapeParser();
 testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected();
 testMMTSDefaultsPreserveAudioAndVideoGaps();
 testHEVCInitUsesHvc1SampleEntry();

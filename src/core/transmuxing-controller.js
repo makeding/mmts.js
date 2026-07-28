@@ -45,6 +45,7 @@ import {
     createMMTSStartupGroupFailure,
     resolveMMTSStartupGroupTimeout,
 } from './mmts-startup-group-lifecycle';
+import MMTSPlaybackOutputState from './mmts-playback-output-state';
 
 class PlaybackOperationEventEmitter extends EventEmitter {
     constructor(getOperation, requireOperation) {
@@ -174,8 +175,7 @@ class TransmuxingController {
         this._pendingMMTSVodSeekRetry = null;
         this._pendingPlaybackOperationRetry = null;
         this._playbackOperationRetrySequence = 0;
-        this._pendingMMTSVodSeekAudioSegments = [];
-        this._pendingMMTSVodSeekAudioOperation = null;
+        this._mmtsPlaybackOutputState = new MMTSPlaybackOutputState();
         this._pendingMMTSVodAudioSwitchIntent = null;
         this._pendingMMTSVodVideoSwitchIntent = null;
         this._mmtsStartupGroup = this._createMMTSStartupGroupState(null);
@@ -892,8 +892,6 @@ class TransmuxingController {
             operation: operation ? clonePlaybackOperation(operation) : null,
         };
         if (this._demuxer instanceof MMTSDemuxer) {
-            this._pendingMMTSVodSeekAudioSegments.splice(0, this._pendingMMTSVodSeekAudioSegments.length);
-            this._pendingMMTSVodSeekAudioOperation = null;
             this._pendingMMTSVodSeek = {
                 milliseconds: requestedMilliseconds,
                 segmentIndex,
@@ -907,6 +905,7 @@ class TransmuxingController {
                 ignoreKeyframeIndex: keyframe.ignoreKeyframeIndex === true,
                 operation: operation ? clonePlaybackOperation(operation) : null,
             };
+            this._mmtsPlaybackOutputState.beginSeekPreroll(operation);
         } else {
             this._pendingMMTSVodSeek = null;
         }
@@ -916,8 +915,7 @@ class TransmuxingController {
         this._pendingMMTSVodSeekRetry = null;
         this._pendingResolveSeekPoint = null;
         this._pendingMMTSVodSeek = null;
-        this._pendingMMTSVodSeekAudioSegments.splice(0, this._pendingMMTSVodSeekAudioSegments.length);
-        this._pendingMMTSVodSeekAudioOperation = null;
+        this._mmtsPlaybackOutputState.reset();
     }
 
     _getMMTSVodSeekInitialLookback() {
@@ -1170,21 +1168,17 @@ class TransmuxingController {
         return Math.max(17, Math.min(100, 1000 / fps + 8));
     }
 
-    _emitPendingMMTSVodSeekAudioSegments() {
-        const audioSegments = this._pendingMMTSVodSeekAudioSegments;
-        const operation = this._pendingMMTSVodSeekAudioOperation;
-        if (this._config.isMMTS === true && !this._isCurrentPlaybackOperation(operation)) {
-            audioSegments.splice(0, audioSegments.length);
-            this._pendingMMTSVodSeekAudioOperation = null;
-            return;
+    _releaseMMTSVodSeekOutput(operation) {
+        const release = this._mmtsPlaybackOutputState.acceptVideoLanding(operation);
+        if (!release || !this._isCurrentPlaybackOperation(release.operation)) {
+            return false;
         }
-        this._withProducerPlaybackOperation(operation, () => {
-            for (let i = 0; i < audioSegments.length; i++) {
-                this._emitRemuxerMediaSegment('audio', audioSegments[i]);
+        this._withProducerPlaybackOperation(release.operation, () => {
+            for (let i = 0; i < release.audioSegments.length; i++) {
+                this._emitRemuxerMediaSegment('audio', release.audioSegments[i]);
             }
         });
-        audioSegments.splice(0, audioSegments.length);
-        this._pendingMMTSVodSeekAudioOperation = null;
+        return true;
     }
 
     _prepareDemuxerForSeek(milliseconds) {
@@ -1522,6 +1516,10 @@ class TransmuxingController {
     }
 
     _onMMTSSubtitleData(subtitle_data) {
+        const operation = this._getCurrentProducerPlaybackOperation();
+        if (!this._mmtsPlaybackOutputState.shouldPublishSubtitle(operation)) {
+            return;
+        }
         this._emitter.emit(TransmuxingEvents.MMTS_SUBTITLE_DATA_ARRIVED, subtitle_data);
     }
 
@@ -1622,17 +1620,10 @@ class TransmuxingController {
                 return;
             }
             if (type === 'audio') {
-                if (this._pendingMMTSVodSeekAudioSegments.length === 0) {
-                    this._pendingMMTSVodSeekAudioOperation = clonePlaybackOperation(
-                        mediaSegment.playbackOperation
-                    );
-                } else if (!isSamePlaybackOperation(
-                    this._pendingMMTSVodSeekAudioOperation,
+                this._mmtsPlaybackOutputState.queueAudio(
+                    mediaSegment,
                     mediaSegment.playbackOperation
-                )) {
-                    return;
-                }
-                this._pendingMMTSVodSeekAudioSegments.push(mediaSegment);
+                );
                 return;
             }
             if (type === 'video') {
@@ -1664,7 +1655,7 @@ class TransmuxingController {
                     videoSwitch.packetId === videoIntent.packetId) {
                     this._pendingMMTSVodVideoSwitchIntent = null;
                 }
-                this._emitPendingMMTSVodSeekAudioSegments();
+                this._releaseMMTSVodSeekOutput(mediaSegment.playbackOperation);
                 this._clearPendingSeekPoint();
                 this._emitter.emit(
                     TransmuxingEvents.RECOMMEND_SEEKPOINT,

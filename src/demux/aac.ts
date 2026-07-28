@@ -185,6 +185,12 @@ export class AACLOASParser {
             let syncword_offset = this.current_syncword_offset_;
             let offset = syncword_offset;
 
+            if (offset + 2 >= data.byteLength) {
+                this.eof_flag_ = true;
+                this.has_last_incomplete_data = true;
+                break;
+            }
+
             let audioMuxLengthBytes = ((data[offset + 1] & 0x1F) << 8) | data[offset + 2];
             if (offset + 3 + audioMuxLengthBytes > this.data_.byteLength) {
                 // data not enough for extracting last sample
@@ -194,16 +200,19 @@ export class AACLOASParser {
             }
 
             // AudioMuxElement(1)
-            let gb = new ExpGolomb(data.subarray(offset + 3, offset + 3 + audioMuxLengthBytes));
-            let useSameStreamMux = gb.readBool();
-            let streamMuxConfig: LOASAACFrame | null = null;
-            if (!useSameStreamMux) {
+            let gb: ExpGolomb | null = null;
+            try {
+                gb = new ExpGolomb(data.subarray(offset + 3, offset + 3 + audioMuxLengthBytes));
+                let useSameStreamMux = gb.readBool();
+                let streamMuxConfig: LOASAACFrame | null = null;
+                if (!useSameStreamMux) {
                 let audioMuxVersion = gb.readBool();
                 let audioMuxVersionA = audioMuxVersion && gb.readBool();
                 if (audioMuxVersionA) {
                     Log.e(this.TAG, 'audioMuxVersionA is Not Supported');
                     gb.destroy();
-                    break;
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
+                    continue;
                 }
                 if (audioMuxVersion) {
                     this.getLATMValue(gb);
@@ -212,25 +221,29 @@ export class AACLOASParser {
                 if (!allStreamsSameTimeFraming) {
                     Log.e(this.TAG, 'allStreamsSameTimeFraming zero is Not Supported');
                     gb.destroy();
-                    break;
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
+                    continue;
                 }
                 let numSubFrames = gb.readBits(6);
                 if (numSubFrames !== 0) {
                     Log.e(this.TAG, 'more than 2 numSubFrames Not Supported');
                     gb.destroy();
-                    break;
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
+                    continue;
                 }
                 let numProgram = gb.readBits(4);
                 if (numProgram !== 0) {
                     Log.e(this.TAG, 'more than 2 numProgram Not Supported');
                     gb.destroy();
-                    break;
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
+                    continue;
                 }
                 let numLayer = gb.readBits(3);
                 if (numLayer !== 0) {
                     Log.e(this.TAG, 'more than 2 numLayer Not Supported');
                     gb.destroy();
-                    break;
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
+                    continue;
                 }
 
                 let fillBits = audioMuxVersion ? this.getLATMValue(gb) : 0;
@@ -246,7 +259,8 @@ export class AACLOASParser {
                 } else {
                     Log.e(this.TAG, `frameLengthType = ${frameLengthType}. Only frameLengthType = 0 Supported`);
                     gb.destroy();
-                    break;
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
+                    continue;
                 }
 
                 let otherDataPresent = gb.readBool();
@@ -277,36 +291,47 @@ export class AACLOASParser {
                 streamMuxConfig.sampling_frequency = MPEG4SamplingFrequencies[streamMuxConfig.sampling_freq_index];
                 streamMuxConfig.channel_config = channel_config;
                 streamMuxConfig.other_data_present = otherDataPresent;
-            } else if (privious == null) {
-                Log.w(this.TAG, 'StreamMuxConfig Missing')
+                } else if (privious == null) {
+                    Log.w(this.TAG, 'StreamMuxConfig Missing')
+                    this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 3 + audioMuxLengthBytes);
+                    gb.destroy();
+                    continue;
+                } else {
+                    streamMuxConfig = privious;
+                }
+
+                let length = 0;
+                while (true) {
+                    let tmp = gb.readByte();
+                    length += tmp;
+                    if (tmp !== 0xFF) { break; }
+                }
+
+                let aac_data = new Uint8Array(length);
+                for (let i = 0; i < length; i++) {
+                    aac_data[i] = gb.readByte();
+                }
+
+                aac_frame = new LOASAACFrame();
+                aac_frame.audio_object_type = (streamMuxConfig.audio_object_type) as MPEG4AudioObjectTypes;
+                aac_frame.sampling_freq_index = (streamMuxConfig.sampling_freq_index) as MPEG4SamplingFrequencyIndex;
+                aac_frame.sampling_frequency = MPEG4SamplingFrequencies[streamMuxConfig.sampling_freq_index];
+                aac_frame.channel_config = streamMuxConfig.channel_config;
+                aac_frame.other_data_present = streamMuxConfig.other_data_present;
+                aac_frame.data = aac_data;
+
                 this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 3 + audioMuxLengthBytes);
-                gb.destroy();
-                continue;
-            } else {
-                streamMuxConfig = privious;
+            } catch (error) {
+                if (gb !== null) {
+                    gb.destroy();
+                }
+                Log.w(
+                    this.TAG,
+                    `Discard malformed LOAS frame at offset=${offset}, ` +
+                    `length=${audioMuxLengthBytes}: ${error && error.message ? error.message : error}`
+                );
+                this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
             }
-
-            let length = 0;
-            while (true) {
-                let tmp = gb.readByte();
-                length += tmp;
-                if (tmp !== 0xFF) { break; }
-            }
-
-            let aac_data = new Uint8Array(length);
-            for (let i = 0; i < length; i++) {
-                aac_data[i] = gb.readByte();
-            }
-
-            aac_frame = new LOASAACFrame();
-            aac_frame.audio_object_type = (streamMuxConfig.audio_object_type) as MPEG4AudioObjectTypes;
-            aac_frame.sampling_freq_index = (streamMuxConfig.sampling_freq_index) as MPEG4SamplingFrequencyIndex;
-            aac_frame.sampling_frequency = MPEG4SamplingFrequencies[streamMuxConfig.sampling_freq_index];
-            aac_frame.channel_config = streamMuxConfig.channel_config;
-            aac_frame.other_data_present = streamMuxConfig.other_data_present;
-            aac_frame.data = aac_data;
-
-            this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 3 + audioMuxLengthBytes);
         }
 
         return aac_frame;
