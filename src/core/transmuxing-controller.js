@@ -838,7 +838,8 @@ class TransmuxingController {
             if (nearest != null && nearest.milliseconds <= milliseconds) {
                 const keyframes = segmentInfo.keyframesIndex;
                 const lastIndexedTime = keyframes.times[keyframes.times.length - 1];
-                if (milliseconds <= lastIndexedTime) {
+                if (milliseconds <= lastIndexedTime &&
+                    this._isMMTSVodSeekCoveredByIndex(keyframes, nearest.index, milliseconds)) {
                     return nearest;
                 }
                 if (observedMMTSRate !== null) {
@@ -885,6 +886,44 @@ class TransmuxingController {
         }
 
         return null;
+    }
+
+    _isMMTSVodSeekCoveredByIndex(index, nearestIndex, milliseconds) {
+        const times = index && index.times;
+        if (!Array.isArray(times) || !Number.isInteger(nearestIndex) ||
+            nearestIndex < 0 || nearestIndex >= times.length) {
+            return false;
+        }
+        if (Math.abs(milliseconds - times[nearestIndex]) < 1) {
+            return true;
+        }
+        if (nearestIndex + 1 >= times.length) {
+            return false;
+        }
+
+        const containingGap = times[nearestIndex + 1] - times[nearestIndex];
+        if (!isFinite(containingGap) || containingGap <= 0) {
+            return false;
+        }
+        const gaps = [];
+        for (let i = 1; i < times.length; i++) {
+            const gap = times[i] - times[i - 1];
+            if (isFinite(gap) && gap > 0) {
+                gaps.push(gap);
+            }
+        }
+        if (gaps.length === 0) {
+            return false;
+        }
+        gaps.sort((a, b) => a - b);
+        const middle = Math.floor(gaps.length / 2);
+        const medianGap = gaps.length % 2 === 0 ?
+            (gaps[middle - 1] + gaps[middle]) / 2 : gaps[middle];
+        // A VOD index accumulated across non-contiguous Range reads contains
+        // large holes.  Treat only the normal RAP cadence as indexed coverage;
+        // otherwise getNearestKeyframe() can send a backward seek to a stale
+        // checkpoint hundreds of seconds before the requested position.
+        return containingGap <= Math.max(10000, medianGap * 8);
     }
 
     _getObservedMMTSVodByteRate(segmentInfo) {
@@ -1005,7 +1044,7 @@ class TransmuxingController {
         return Math.max(maxLookback, this._getMMTSVodSeekInitialLookback());
     }
 
-    _retryPendingMMTSVodSeekIfNeeded(segmentIndex) {
+    _retryPendingMMTSVodSeekIfNeeded(segmentIndex, retryKeyframe = null) {
         const pending = this._pendingMMTSVodSeek;
         if (pending == null || pending.segmentIndex !== segmentIndex) {
             return false;
@@ -1020,38 +1059,46 @@ class TransmuxingController {
         }
 
         const maxLookback = this._getMMTSVodSeekMaxLookback();
-        let nextLookback = pending.lookback > 0 ?
-            pending.lookback * 2 : this._getMMTSVodSeekInitialLookback();
-        nextLookback = Math.min(nextLookback, maxLookback);
-        if (nextLookback <= pending.lookback && pending.fileposition === 0) {
-            this._clearPendingSeekPoint();
-            return false;
-        }
-
-        let keyframe = this._resolveSeekPoint(
-            pending.segmentInfo,
-            pending.segment,
-            pending.milliseconds,
-            nextLookback,
-            true,
-            pending.estimatedPosition
-        );
-        if (keyframe != null) {
-            keyframe.ignoreKeyframeIndex = true;
-        }
-        if (keyframe == null || keyframe.fileposition >= pending.fileposition) {
-            if (pending.fileposition === 0) {
+        let nextLookback;
+        let keyframe;
+        if (retryKeyframe != null) {
+            keyframe = Object.assign({}, retryKeyframe, {ignoreKeyframeIndex: true});
+            nextLookback = typeof keyframe.lookback === 'number' ?
+                keyframe.lookback : this._getMMTSVodSeekInitialLookback();
+        } else {
+            nextLookback = pending.lookback > 0 ?
+                pending.lookback * 2 : this._getMMTSVodSeekInitialLookback();
+            nextLookback = Math.min(nextLookback, maxLookback);
+            if (nextLookback <= pending.lookback && pending.fileposition === 0) {
                 this._clearPendingSeekPoint();
                 return false;
             }
-            keyframe = {
-                milliseconds: pending.milliseconds,
-                fileposition: 0,
-                estimatedPosition: pending.estimatedPosition,
-                lookback: pending.estimatedPosition,
-                estimated: true,
-                ignoreKeyframeIndex: true
-            };
+
+            keyframe = this._resolveSeekPoint(
+                pending.segmentInfo,
+                pending.segment,
+                pending.milliseconds,
+                nextLookback,
+                true,
+                pending.estimatedPosition
+            );
+            if (keyframe != null) {
+                keyframe.ignoreKeyframeIndex = true;
+            }
+            if (keyframe == null || keyframe.fileposition >= pending.fileposition) {
+                if (pending.fileposition === 0) {
+                    this._clearPendingSeekPoint();
+                    return false;
+                }
+                keyframe = {
+                    milliseconds: pending.milliseconds,
+                    fileposition: 0,
+                    estimatedPosition: pending.estimatedPosition,
+                    lookback: pending.estimatedPosition,
+                    estimated: true,
+                    ignoreKeyframeIndex: true
+                };
+            }
         }
 
         const sourceOperation = this._playbackOperation;
@@ -1202,14 +1249,26 @@ class TransmuxingController {
         return true;
     }
 
-    _schedulePendingMMTSVodSeekRetryIfNeeded(segmentIndex, syncPointTime) {
+    _schedulePendingMMTSVodSeekRetryIfNeeded(
+        segmentIndex,
+        syncPointTime,
+        syncPointFilePosition
+    ) {
         const pending = this._pendingMMTSVodSeek;
         const tolerance = this._getMMTSVodSeekLandingTolerance(
             pending ? pending.segmentInfo : null
         );
+        const landsAfterTarget = pending != null &&
+            syncPointTime > pending.milliseconds + tolerance;
+        const forwardRetryKeyframe = !landsAfterTarget ?
+            this._makeMMTSVodForwardSeekRetry(
+                pending,
+                syncPointTime,
+                syncPointFilePosition
+            ) : null;
         if (pending == null || pending.segmentIndex !== segmentIndex ||
             typeof syncPointTime !== 'number' || !isFinite(syncPointTime) ||
-            syncPointTime <= pending.milliseconds + tolerance ||
+            (!landsAfterTarget && forwardRetryKeyframe == null) ||
             pending.fileposition === 0) {
             return false;
         }
@@ -1227,10 +1286,85 @@ class TransmuxingController {
             }
             this._pendingMMTSVodSeekRetry = null;
             this._withProducerPlaybackOperation(producer.operation, () => {
-                this._retryPendingMMTSVodSeekIfNeeded(segmentIndex);
+                this._retryPendingMMTSVodSeekIfNeeded(
+                    segmentIndex,
+                    forwardRetryKeyframe
+                );
             });
         });
         return true;
+    }
+
+    _makeMMTSVodForwardSeekRetry(pending, syncPointTime, syncPointFilePosition) {
+        if (Browser.firefox !== true || pending == null || pending.estimated !== true ||
+            !pending.operation || pending.operation.attempt >= 4 ||
+            typeof syncPointTime !== 'number' || !isFinite(syncPointTime) ||
+            typeof syncPointFilePosition !== 'number' || !isFinite(syncPointFilePosition) ||
+            syncPointFilePosition < 0) {
+            return null;
+        }
+
+        const keepDuration = typeof this._config.mseSeekPrerollKeepDuration === 'number' &&
+            isFinite(this._config.mseSeekPrerollKeepDuration) ?
+                this._config.mseSeekPrerollKeepDuration : 6;
+        const maximumPreroll = Math.max(1, keepDuration - 1) * 1000;
+        if (syncPointTime >= pending.milliseconds - maximumPreroll) {
+            return null;
+        }
+
+        const index = pending.segmentInfo && pending.segmentInfo.keyframesIndex;
+        const times = index && index.times;
+        const positions = index && index.filepositions;
+        let anchorTime = NaN;
+        let anchorPosition = NaN;
+        if (Array.isArray(times) && Array.isArray(positions)) {
+            const length = Math.min(times.length, positions.length);
+            for (let i = length - 1; i >= 0; i--) {
+                if (typeof times[i] === 'number' && isFinite(times[i]) &&
+                    typeof positions[i] === 'number' && isFinite(positions[i]) &&
+                    times[i] < syncPointTime - 1000 &&
+                    positions[i] < syncPointFilePosition) {
+                    anchorTime = times[i];
+                    anchorPosition = positions[i];
+                    break;
+                }
+            }
+        }
+
+        let rate = (syncPointFilePosition - anchorPosition) /
+            (syncPointTime - anchorTime);
+        if (!isFinite(rate) || rate <= 0) {
+            rate = syncPointTime > 0 ? syncPointFilePosition / syncPointTime : NaN;
+        }
+        if (!isFinite(rate) || rate <= 0) {
+            return null;
+        }
+
+        const filesize = pending.segment && pending.segment.filesize;
+        if (typeof filesize !== 'number' || !isFinite(filesize) || filesize <= 1) {
+            return null;
+        }
+        const estimatedPosition = Math.max(0, Math.min(
+            Math.floor(
+                syncPointFilePosition +
+                (pending.milliseconds - syncPointTime) * rate
+            ),
+            Math.floor(filesize) - 1
+        ));
+        const lookback = this._getMMTSVodSeekInitialLookback();
+        const fileposition = Math.max(0, estimatedPosition - lookback);
+        if (fileposition <= pending.fileposition ||
+            estimatedPosition <= pending.estimatedPosition) {
+            return null;
+        }
+        return {
+            milliseconds: pending.milliseconds,
+            fileposition,
+            estimatedPosition,
+            lookback,
+            estimated: true,
+            ignoreKeyframeIndex: true,
+        };
     }
 
     _getMMTSVodSeekLandingTolerance(segmentInfo) {
@@ -1713,7 +1847,8 @@ class TransmuxingController {
                     firstSyncPoint.originalDts : firstSyncPoint.dts;
                 if (this._schedulePendingMMTSVodSeekRetryIfNeeded(
                     mmtsPending.segmentIndex,
-                    syncPointTime
+                    syncPointTime,
+                    firstSyncPoint.fileposition
                 )) {
                     return;
                 }

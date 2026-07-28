@@ -1472,9 +1472,13 @@ class MSEBufferStateMachine {
     private _queueStartupInitSegment(type: MSEBufferTrackType,
                                      segment: any,
                                      groupId: number): void {
+        const operation = this._pending_startup_group &&
+            this._pending_startup_group.playbackOperation;
+        const resetParserState = isPlaybackOperation(operation) && operation.kind === 'seek';
         const queuedSegment = Object.assign({}, segment, {
             mseStartupGroupId: groupId,
             mseStartupGroupPart: 'init',
+            resetParserState: resetParserState || segment.resetParserState === true,
         });
         this._pending_init_segments[type].push(queuedSegment);
         this._track_state[type] = queuedSegment.resetParserState === true ?
@@ -2096,8 +2100,14 @@ class MSEBufferStateMachine {
             return true;
         }
         if (result && result.ok) {
+            delete segment.resetParserState;
+            delete segment.rebuildSourceBuffer;
+            delete segment.mimeType;
             this._track_state[type] = 'NEED_INIT';
-            return false;
+            // Parser reset is synchronous.  Reset the other track as part of
+            // the same state-machine turn before either initialization
+            // segment is allowed to append.
+            return this._runPendingParserReset();
         }
         if (result && (result.error || result.fatal)) {
             const error = result.error || result;

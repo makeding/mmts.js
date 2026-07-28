@@ -642,6 +642,62 @@ async function testVodSeekRetriesWhenEstimatedRangeStartsAfterTarget() {
     assert.strictEqual(h.controller._pendingMMTSVodSeekRetry, null);
 }
 
+async function testFirefoxVodSeekRefinesLandingThatIsTooFarBeforeTarget() {
+    const h = makeHarness({safari: false, firefox: true});
+    const targetMilliseconds = 403000;
+    const operation = makePlaybackOperation('seek', 9, targetMilliseconds);
+    h.controller._playbackOperation = Object.assign({}, operation);
+    h.controller._config = {
+        isMMTS: true,
+        mseSeekPrerollKeepDuration: 6,
+        mmtsVodSeekLookbackBytes: 32 * 1024 * 1024,
+        mmtsVodSeekMaxLookbackBytes: 256 * 1024 * 1024,
+    };
+    const pending = {
+        milliseconds: targetMilliseconds,
+        segmentIndex: 0,
+        segmentInfo: makeSeekableSegmentInfo(
+            [166, 92526],
+            [650375, 217476185],
+            1325057
+        ),
+        segment: {filesize: 3391627787},
+        estimatedPosition: 946000000,
+        lookback: 32 * 1024 * 1024,
+        fileposition: 946000000 - 32 * 1024 * 1024,
+        estimated: true,
+        operation: Object.assign({}, operation),
+    };
+    h.controller._pendingMMTSVodSeek = pending;
+    h.controller._activeIOProducer = {
+        operation: Object.assign({}, operation),
+    };
+    let retry = null;
+    h.controller._retryPendingMMTSVodSeekIfNeeded = (segmentIndex, keyframe) => {
+        assert.strictEqual(segmentIndex, 0);
+        retry = keyframe;
+        return true;
+    };
+
+    assert.strictEqual(
+        h.controller._schedulePendingMMTSVodSeekRetryIfNeeded(
+            0,
+            278621,
+            900000000
+        ),
+        true
+    );
+    await Promise.resolve();
+    assert(retry);
+    assert.strictEqual(retry.estimated, true);
+    assert(retry.estimatedPosition > pending.estimatedPosition);
+    assert(retry.fileposition > pending.fileposition);
+    assert.strictEqual(
+        retry.estimatedPosition - retry.fileposition,
+        32 * 1024 * 1024
+    );
+}
+
 async function testVodSeekRetriesWhenIndexedRangeStartsAfterTarget() {
     const h = makeHarness();
     const targetMilliseconds = 49188.836;
@@ -1292,6 +1348,24 @@ function testVodSeekEstimateNeverStartsPastEndOfFile() {
     assert(seekPoint.fileposition < segment.filesize);
 }
 
+function testVodSeekDoesNotTreatDisjointIndexHoleAsCoverage() {
+    const h = makeHarness();
+    h.controller._demuxer = new h.MMTSDemuxer();
+    h.controller._config = {isMMTS: true, mmtsVodSeekLookbackBytes: 32 * 1024 * 1024};
+    const segment = {filesize: 3391627787};
+    const segmentInfo = makeSeekableSegmentInfo(
+        [166, 701, 1235, 300066, 300600],
+        [650375, 1625163, 2604989, 836666446, 838185607],
+        300616.68333333335
+    );
+
+    const seekPoint = h.controller._resolveSeekPoint(segmentInfo, segment, 100000);
+    assert.strictEqual(seekPoint.estimated, true);
+    assert(seekPoint.estimatedPosition > 200000000);
+    assert(seekPoint.fileposition > 150000000);
+    assert.notStrictEqual(seekPoint.fileposition, 2604989);
+}
+
 function testLateSeekOutputsNeverAcquireNewOperationIdentity() {
     const {TransmuxingController, FakeIOController, MMTSDemuxer} = loadController();
     const controller = new TransmuxingController({
@@ -1926,6 +2000,7 @@ async function main() {
     testStartupGroupReplaysCollectedVideoContinuations();
     testStartupGroupReplaysCollectedAudioContinuations();
     await testVodSeekRetriesWhenEstimatedRangeStartsAfterTarget();
+    await testFirefoxVodSeekRefinesLandingThatIsTooFarBeforeTarget();
     await testVodSeekRetriesWhenIndexedRangeStartsAfterTarget();
     testVodIndexedSeekRetryMovesBeforeRejectedIndex();
     await testVodSeekAtMaxLookbackFallsBackToSegmentStart();
@@ -1940,6 +2015,7 @@ async function main() {
     testVodSeekUsesObservedNearbyKeyframeSpanWithIncompleteDuration();
     testVodSeekEstimatesBeyondIncompleteDurationFromObservedByteRate();
     testVodSeekEstimateNeverStartsPastEndOfFile();
+    testVodSeekDoesNotTreatDisjointIndexHoleAsCoverage();
     testLateSeekOutputsNeverAcquireNewOperationIdentity();
     testSeekRebuildsStartupCollectorWithoutMixingOperations();
     testMMTSSegmentsCarryUpstreamGenerationAndRejectOldAttempt();

@@ -920,7 +920,16 @@ class MP4Remuxer {
         for (let i = 0; i < samples.length; i++) {
             let sample = samples[i];
             let originalDts = sample.dts - this._dtsBase;
-            let isKeyframe = sample.isKeyframe;
+            // Firefox's VideoToolbox backend may restart at every sample that
+            // ISO-BMFF advertises as sync.  An MMTS CRA followed by RASL is a
+            // coded random-access picture, but it is not a safe standalone
+            // decoder restart.  Expose only the verified no-RASL-output CRA
+            // as sync on Firefox so a media-element seek retains the reference
+            // chain rooted at that sample.  Other browsers keep normal CRA
+            // sync metadata.
+            let isKeyframe = sample.isKeyframe &&
+                !(this._isMMTS && Browser.firefox === true &&
+                    sample.mmtsRandomAccessSafe !== true);
             let timelineDts = originalDts - dtsCorrection;
             let timelineCts = sample.cts;
             let timelinePts = timelineDts + timelineCts;

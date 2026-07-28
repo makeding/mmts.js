@@ -308,7 +308,7 @@ function loadDemuxer(options = {}) {
     }).default;
 }
 
-function loadRemuxer(capture = {}) {
+function loadRemuxer(capture = {}, browser = {safari: false, firefox: false}) {
     class SampleInfo {
         constructor(dts, pts, duration, originalDts, isSyncPoint) {
             this.dts = dts;
@@ -357,7 +357,7 @@ function loadRemuxer(capture = {}) {
             }
         },
         './aac-silent.js': {__esModule: true, default: {}},
-        '../utils/browser.js': {__esModule: true, default: {safari: false}},
+        '../utils/browser.js': {__esModule: true, default: browser},
         '../core/media-segment-info.js': {
             SampleInfo,
             MediaSegmentInfo,
@@ -1467,6 +1467,48 @@ function testRemuxerDropsInitialVideoUntilRandomAccessPoint() {
     assert.strictEqual(segments.length, 2);
     assert.strictEqual(segments[1].segment.firstPlayableWindow.decodeStart, 0.051);
     assert.strictEqual(segments[1].segment.firstPlayableWindow.syncPoint, 0.051);
+}
+
+function testFirefoxRemuxerExposesOnlySafeMMTSCraAsSync() {
+    const capture = {};
+    const MP4Remuxer = loadRemuxer(capture, {safari: false, firefox: true});
+    const remuxer = new MP4Remuxer({
+        isLive: false,
+        isMMTS: true,
+        mmtsClampVideoTimestampGap: false,
+        mmtsVideoTailStashDuration: 0
+    });
+    remuxer._videoMeta = {refSampleDuration: 17};
+    remuxer._dtsBase = 0;
+    remuxer._dtsBaseInited = true;
+    const segments = [];
+    remuxer.onMediaSegment = (_type, segment) => segments.push(segment);
+
+    const safeCra = makeRemuxVideoSample(0, 0, 1, 1, 1);
+    safeCra.isKeyframe = true;
+    safeCra.mmtsRandomAccessSafe = true;
+    remuxer._remuxVideo({
+        type: 'video',
+        id: 1,
+        sequenceNumber: 0,
+        samples: [safeCra, makeRemuxVideoSample(17, 17, 1, 2, 2)],
+        length: 8
+    }, true);
+    assert.strictEqual(segments[0].info.syncPoints.length, 1);
+    assert.strictEqual(capture.moof.samples[0].flags.isNonSync, 0);
+
+    const ordinaryCra = makeRemuxVideoSample(34, 34, 2, 1, 3);
+    ordinaryCra.isKeyframe = true;
+    remuxer._remuxVideo({
+        type: 'video',
+        id: 1,
+        sequenceNumber: 1,
+        samples: [ordinaryCra, makeRemuxVideoSample(51, 51, 2, 2, 4)],
+        length: 8
+    }, true);
+    assert.strictEqual(segments[1].info.syncPoints.length, 0);
+    assert.strictEqual(capture.moof.samples[0].flags.isNonSync, 1);
+    assert.strictEqual(segments[1].firstPlayableWindow, undefined);
 }
 
 function testRemuxerPreservesExplicitDiscontinuityThroughVideoRemux() {
@@ -3354,6 +3396,7 @@ testNonMMTSRemuxKeepsUpstreamSingleSampleStash();
 testRemuxerPackagesMonotonicSamplesRegardlessOfMMTSSourceOrder();
 testRemuxerUsesExactMMTSVideoClockForMp4Only();
 testRemuxerDropsInitialVideoUntilRandomAccessPoint();
+testFirefoxRemuxerExposesOnlySafeMMTSCraAsSync();
 testRemuxerPreservesExplicitDiscontinuityThroughVideoRemux();
 testRemuxerPreservesMarkedVideoGapAcrossSegments();
 testRemuxerPreservesExplicitDiscontinuityMetadata();

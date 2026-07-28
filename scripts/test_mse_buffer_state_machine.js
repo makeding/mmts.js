@@ -2380,6 +2380,38 @@ function testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease() {
     );
 }
 
+function testSeekStartupGroupResetsBothSourceBufferParsers() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    const operation = makePlaybackOperation('seek', 101, undefined, 0, 'queued', 100000);
+    assert.strictEqual(h.sm.setPlaybackOperation(operation), true);
+    h.sm.onStartupGroup(attachStartupGroupOperation({
+        videoInitSegment: makeInit('video'),
+        audioInitSegment: makeInit('audio'),
+        videoMediaSegment: makeSegment('video', 100, 102, 1024),
+        audioMediaSegment: makeSegment('audio', 99.9, 102.1, 1024),
+        startupTime: 100,
+        videoDecodeStart: 100,
+        videoCompositionStart: 100,
+        audioStart: 99.9,
+        audioEnd: 102.1,
+        syncPoint: 100,
+        playableStart: 100,
+        playableEnd: 102,
+        hasAudio: true,
+        hasVideo: true,
+    }, operation));
+
+    assert.deepStrictEqual(h.log.slice(0, 3).map((entry) => entry.slice(0, 2)), [
+        ['resetParserState', 'audio'],
+        ['resetParserState', 'video'],
+        ['appendInit', 'video'],
+    ]);
+    h.updateEnd('video');
+    assert.deepStrictEqual(h.log[3].slice(0, 2), ['appendInit', 'audio']);
+}
+
 function testOverlappingStartupAppendsKeepPerTrackCompletionIdentity() {
     resetTimers();
     const h = makeHarness({config: {isMMTS: true}});
@@ -3350,6 +3382,7 @@ testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint();
 testMMTSDirectSeekCrossesAudioOnlyGapWithContinuousVideoPreroll();
 testNonMMTSDirectSeekKeepsRequestedTime();
 testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease();
+testSeekStartupGroupResetsBothSourceBufferParsers();
 testOverlappingStartupAppendsKeepPerTrackCompletionIdentity();
 testStartupGroupSeeksToFirstActualTrackIntersection();
 testSeekStartupGroupPrerollsWithoutIntermediateRapSeek();
