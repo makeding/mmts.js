@@ -24,7 +24,7 @@ declare class SeekingHandler {
     private _cancelControlledMediaSeek;
     private _pollAndApplyUnbufferedSeek;
     private _applyUnbufferedSeek;
-    private _isPositionBuffered;
+    isPositionBuffered(seconds: number): boolean;
     private _requestControlledSeek;
     private _clampLiveSeekTarget;
     private _getLiveSeekableRange;

@@ -222,12 +222,22 @@ function testDirectSeekDoesNotReassignIdenticalTarget() {
     assert.strictEqual(h.media.currentTimeAssignments, assignments + 1);
 }
 
+function testBufferedPositionCanBeQueriedByPlaybackCoordinator() {
+    const h = makeHarness(() => true);
+    h.media.buffered = makeRanges([[10, 20], [30, 40]]);
+    assert.strictEqual(h.handler.isPositionBuffered(15), true);
+    assert.strictEqual(h.handler.isPositionBuffered(30), true);
+    assert.strictEqual(h.handler.isPositionBuffered(20), false);
+    assert.strictEqual(h.handler.isPositionBuffered(25), false);
+}
+
 function main() {
     testMediaSeeksDispatchOnlyLastTarget();
     testApiSeekDispatchesImmediately();
     testDestroyCancelsPendingMediaSeek();
     testRejectedControlledSeekUsesUnbufferedFallback();
     testDirectSeekDoesNotReassignIdenticalTarget();
+    testBufferedPositionCanBeQueriedByPlaybackCoordinator();
     console.log('seeking-handler tests passed');
 }
 

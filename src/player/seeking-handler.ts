@@ -87,7 +87,7 @@ class SeekingHandler {
             return;
         }
 
-        const direct_seek: boolean = this._isPositionBuffered(seconds);
+        const direct_seek: boolean = this.isPositionBuffered(seconds);
         let direct_seek_to_video_begin: boolean = false;
 
         if (seconds < 1.0 && this._media_element.buffered.length > 0) {
@@ -182,7 +182,7 @@ class SeekingHandler {
         }
 
         // Handle in-buffer seeking (usually nothing to do)
-        if (this._isPositionBuffered(target)) {
+        if (this.isPositionBuffered(target)) {
             if (this._always_seek_keyframe) {
                 const idr = this._getNearestKeyframe(Math.floor(target * 1000));
                 if (idr != null) {
@@ -257,7 +257,7 @@ class SeekingHandler {
     }
 
     private _applyUnbufferedSeek(target: number): void {
-        if (!this._isPositionBuffered(target)) {
+        if (!this.isPositionBuffered(target)) {
             this._idr_sample_list.clear();
             this._on_unbuffered_seek(Math.round(target * 1000000) / 1000);  // In milliseconds
             // Update currentTime if using accurateSeek, or wait for recommend_seekpoint callback
@@ -267,7 +267,7 @@ class SeekingHandler {
         }
     }
 
-    private _isPositionBuffered(seconds: number): boolean {
+    public isPositionBuffered(seconds: number): boolean {
         const buffered = this._media_element.buffered;
 
         for (let i = 0; i < buffered.length; i++) {

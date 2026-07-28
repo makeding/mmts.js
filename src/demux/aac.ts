@@ -219,28 +219,28 @@ export class AACLOASParser {
                 }
                 let allStreamsSameTimeFraming = gb.readBool();
                 if (!allStreamsSameTimeFraming) {
-                    Log.e(this.TAG, 'allStreamsSameTimeFraming zero is Not Supported');
+                    Log.w(this.TAG, 'allStreamsSameTimeFraming=0 is not supported');
                     gb.destroy();
                     this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
                     continue;
                 }
                 let numSubFrames = gb.readBits(6);
                 if (numSubFrames !== 0) {
-                    Log.e(this.TAG, 'more than 2 numSubFrames Not Supported');
+                    Log.w(this.TAG, `numSubFrames=${numSubFrames} is not supported`);
                     gb.destroy();
                     this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
                     continue;
                 }
                 let numProgram = gb.readBits(4);
                 if (numProgram !== 0) {
-                    Log.e(this.TAG, 'more than 2 numProgram Not Supported');
+                    Log.w(this.TAG, `numProgram=${numProgram} is not supported`);
                     gb.destroy();
                     this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
                     continue;
                 }
                 let numLayer = gb.readBits(3);
                 if (numLayer !== 0) {
-                    Log.e(this.TAG, 'more than 2 numLayer Not Supported');
+                    Log.w(this.TAG, `numLayer=${numLayer} is not supported`);
                     gb.destroy();
                     this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
                     continue;
@@ -257,7 +257,7 @@ export class AACLOASParser {
                 if (frameLengthType === 0) {
                     gb.readByte();
                 } else {
-                    Log.e(this.TAG, `frameLengthType = ${frameLengthType}. Only frameLengthType = 0 Supported`);
+                    Log.w(this.TAG, `frameLengthType=${frameLengthType} is not supported`);
                     gb.destroy();
                     this.current_syncword_offset_ = this.findNextSyncwordOffset(offset + 1);
                     continue;

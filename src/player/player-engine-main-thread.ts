@@ -1024,6 +1024,12 @@ class PlayerEngineMainThread implements PlayerEngine {
             return this._createRejectedOperationResult('seek', 0, undefined, 'invalid-seek-target');
         }
         if (this._config.isMMTS && this._config.isLive !== true) {
+            if (this._seeking_handler && this._seeking_handler.isPositionBuffered(seconds)) {
+                this._seeking_handler.directSeek(seconds);
+                return this._createImmediateOperationResult(
+                    'seek', seconds * 1000, undefined, 'committed', 'buffered-seek'
+                );
+            }
             return this._requestLatestMMTSSeek(seconds, 'api');
         }
         if (this._media_element && this._seeking_handler) {
@@ -2917,6 +2923,9 @@ class PlayerEngineMainThread implements PlayerEngine {
 
     private _onControlledSeekRequest(target: number, source: string): boolean {
         if (!this._mse_buffer_state_machine || !this._config.isMMTS || this._config.isLive) {
+            return false;
+        }
+        if (source !== 'initial' && this._seeking_handler?.isPositionBuffered(target)) {
             return false;
         }
         this._requestLatestMMTSSeek(target, source);
