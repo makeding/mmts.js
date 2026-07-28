@@ -826,10 +826,9 @@ class TransmuxingController {
             typeof segment.filesize === 'number' &&
             segment.filesize > 0 &&
             isFinite(segment.filesize) &&
-            segmentInfo &&
-            typeof segmentInfo.duration === 'number' &&
-            segmentInfo.duration > 0 &&
-            isFinite(segmentInfo.duration);
+            segmentInfo;
+        const observedMMTSRate = canEstimateMMTSPosition ?
+            this._getObservedMMTSVodByteRate(segmentInfo) : null;
 
         if (!ignoreKeyframeIndex && segmentInfo && segmentInfo.isSeekable()) {
             const nearest = segmentInfo.getNearestKeyframe(milliseconds);
@@ -842,9 +841,9 @@ class TransmuxingController {
                 if (milliseconds <= lastIndexedTime) {
                     return nearest;
                 }
-                if (canEstimateMMTSPosition) {
+                if (observedMMTSRate !== null) {
                     const estimatedReadBytes = Math.ceil(
-                        (milliseconds - nearest.milliseconds) * segment.filesize / segmentInfo.duration
+                        (milliseconds - nearest.milliseconds) * observedMMTSRate
                     );
                     if (estimatedReadBytes <= this._getMMTSVodSeekInitialLookback()) {
                         return nearest;
@@ -857,8 +856,20 @@ class TransmuxingController {
             let estimatedPosition = estimatedPositionOverride;
             if (typeof estimatedPosition !== 'number' || !isFinite(estimatedPosition) ||
                 estimatedPosition < 0) {
-                estimatedPosition = Math.floor(milliseconds * segment.filesize / segmentInfo.duration);
+                estimatedPosition = this._estimateMMTSVodFilePosition(
+                    segmentInfo,
+                    segment,
+                    milliseconds,
+                    observedMMTSRate
+                );
             }
+            if (estimatedPosition === null) {
+                return null;
+            }
+            estimatedPosition = Math.max(
+                0,
+                Math.min(Math.floor(estimatedPosition), Math.floor(segment.filesize) - 1)
+            );
             let lookback = estimatedLookback;
             if (typeof lookback !== 'number' || !isFinite(lookback) || lookback < 0) {
                 lookback = this._getMMTSVodSeekInitialLookback();
@@ -873,6 +884,66 @@ class TransmuxingController {
             };
         }
 
+        return null;
+    }
+
+    _getObservedMMTSVodByteRate(segmentInfo) {
+        const index = segmentInfo && segmentInfo.keyframesIndex;
+        const times = index && index.times;
+        const positions = index && index.filepositions;
+        if (!Array.isArray(times) || !Array.isArray(positions) ||
+            times.length < 2 || positions.length < 2) {
+            return null;
+        }
+
+        const length = Math.min(times.length, positions.length);
+        let last = length - 1;
+        while (last >= 0 &&
+            (typeof times[last] !== 'number' || !isFinite(times[last]) ||
+             typeof positions[last] !== 'number' || !isFinite(positions[last]) ||
+             times[last] < 0 || positions[last] < 0)) {
+            last--;
+        }
+        if (last <= 0) {
+            return null;
+        }
+
+        let first = 0;
+        while (first < last &&
+            (typeof times[first] !== 'number' || !isFinite(times[first]) ||
+             typeof positions[first] !== 'number' || !isFinite(positions[first]) ||
+             times[first] < 0 || positions[first] < 0 ||
+             times[first] >= times[last] || positions[first] >= positions[last])) {
+            first++;
+        }
+        if (first >= last) {
+            return null;
+        }
+
+        const rate = (positions[last] - positions[first]) / (times[last] - times[first]);
+        return isFinite(rate) && rate > 0 ? rate : null;
+    }
+
+    _estimateMMTSVodFilePosition(segmentInfo, segment, milliseconds, observedRate) {
+        const index = segmentInfo && segmentInfo.keyframesIndex;
+        const times = index && index.times;
+        const positions = index && index.filepositions;
+        if (observedRate !== null && Array.isArray(times) && Array.isArray(positions)) {
+            const length = Math.min(times.length, positions.length);
+            for (let i = length - 1; i >= 0; i--) {
+                if (typeof times[i] === 'number' && isFinite(times[i]) &&
+                    typeof positions[i] === 'number' && isFinite(positions[i])) {
+                    return Math.floor(
+                        positions[i] + (milliseconds - times[i]) * observedRate
+                    );
+                }
+            }
+        }
+
+        const duration = segmentInfo && segmentInfo.duration;
+        if (typeof duration === 'number' && isFinite(duration) && duration > 0) {
+            return Math.floor(milliseconds * segment.filesize / duration);
+        }
         return null;
     }
 

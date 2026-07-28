@@ -1257,6 +1257,41 @@ function testVodSeekUsesObservedNearbyKeyframeSpanWithIncompleteDuration() {
     assert.strictEqual(seekPoint.fileposition, 37000000);
 }
 
+function testVodSeekEstimatesBeyondIncompleteDurationFromObservedByteRate() {
+    const h = makeHarness();
+    h.controller._demuxer = new h.MMTSDemuxer();
+    h.controller._config = {isMMTS: true, mmtsVodSeekLookbackBytes: 32 * 1024 * 1024};
+    const segment = {filesize: 3391627787};
+    const segmentInfo = makeSeekableSegmentInfo(
+        [166, 92526],
+        [650375, 217476185],
+        92542.683333333334
+    );
+
+    const seekPoint = h.controller._resolveSeekPoint(segmentInfo, segment, 300000);
+    assert.strictEqual(seekPoint.estimated, true);
+    assert.strictEqual(seekPoint.estimatedPosition, 704545458);
+    assert.strictEqual(seekPoint.fileposition, 670991026);
+    assert(seekPoint.fileposition < segment.filesize);
+}
+
+function testVodSeekEstimateNeverStartsPastEndOfFile() {
+    const h = makeHarness();
+    h.controller._demuxer = new h.MMTSDemuxer();
+    h.controller._config = {isMMTS: true, mmtsVodSeekLookbackBytes: 32 * 1024 * 1024};
+    const segment = {filesize: 3391627787};
+    const segmentInfo = makeSeekableSegmentInfo(
+        [166, 92526],
+        [650375, 217476185],
+        92542.683333333334
+    );
+
+    const seekPoint = h.controller._resolveSeekPoint(segmentInfo, segment, 2000000);
+    assert.strictEqual(seekPoint.estimatedPosition, segment.filesize - 1);
+    assert(seekPoint.fileposition >= 0);
+    assert(seekPoint.fileposition < segment.filesize);
+}
+
 function testLateSeekOutputsNeverAcquireNewOperationIdentity() {
     const {TransmuxingController, FakeIOController, MMTSDemuxer} = loadController();
     const controller = new TransmuxingController({
@@ -1903,6 +1938,8 @@ async function main() {
     testVodSeekUsesKnownCheckpointWithinIndexedCoverage();
     testVodSeekUsesNearbyKnownKeyframe();
     testVodSeekUsesObservedNearbyKeyframeSpanWithIncompleteDuration();
+    testVodSeekEstimatesBeyondIncompleteDurationFromObservedByteRate();
+    testVodSeekEstimateNeverStartsPastEndOfFile();
     testLateSeekOutputsNeverAcquireNewOperationIdentity();
     testSeekRebuildsStartupCollectorWithoutMixingOperations();
     testMMTSSegmentsCarryUpstreamGenerationAndRejectOldAttempt();
