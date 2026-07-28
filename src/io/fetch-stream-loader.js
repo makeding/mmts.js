@@ -54,6 +54,12 @@ class FetchStreamLoader extends BaseLoader {
         this._abortController = null;
         this._contentLength = null;
         this._receivedLength = 0;
+
+        this._paused = false;
+        this._reader = null;
+        this._readPending = false;
+        this._pendingReadResult = null;
+        this._throttlePending = false;
     }
 
     destroy() {
@@ -61,6 +67,10 @@ class FetchStreamLoader extends BaseLoader {
             this.abort();
         }
         super.destroy();
+    }
+
+    get supportsPause() {
+        return true;
     }
 
     open(dataSource, range) {
@@ -210,6 +220,14 @@ class FetchStreamLoader extends BaseLoader {
     abort() {
         this._requestAbort = true;
 
+        if (this._paused && this._reader) {
+            try {
+                this._reader.cancel();
+            } catch (e) {}
+            this._pendingReadResult = null;
+            this._status = LoaderStatus.kComplete;
+        }
+
         if (this._status !== LoaderStatus.kBuffering || !Browser.chrome) {
             // Chrome may throw Exception-like things here, avoid using if is buffering
             if (this._abortController) {
@@ -220,8 +238,50 @@ class FetchStreamLoader extends BaseLoader {
         }
     }
 
+    pause() {
+        if (this.isWorking()) {
+            this._paused = true;
+        }
+    }
+
+    resume() {
+        if (!this._paused || this._requestAbort) {
+            return;
+        }
+        this._paused = false;
+        if (this._pendingReadResult !== null) {
+            let result = this._pendingReadResult;
+            this._pendingReadResult = null;
+            this._processPumpResult(this._reader, result);
+        } else if (!this._throttlePending) {
+            this._pump(this._reader);
+        }
+    }
+
     _pump(reader) {  // ReadableStreamReader
-        return reader.read().then((result) => {
+        if (reader) {
+            this._reader = reader;
+        }
+        if (!this._reader || this._paused || this._requestAbort || this._readPending || this._throttlePending) {
+            return;
+        }
+
+        this._readPending = true;
+        return this._reader.read().then((result) => {
+            this._readPending = false;
+            if (this._paused) {
+                this._pendingReadResult = result;
+                return;
+            }
+            this._processPumpResult(this._reader, result);
+        }).catch((e) => {
+            this._readPending = false;
+            this._handlePumpError(e);
+        });
+    }
+
+    _processPumpResult(reader, result) {
+        try {
             if (result.done) {
                 // First check received length
                 if (this._contentLength !== null && this._receivedLength < this._contentLength) {
@@ -266,7 +326,9 @@ class FetchStreamLoader extends BaseLoader {
                     this._onDataArrival(chunk, byteStart, this._receivedLength);
                 }
 
+                this._throttlePending = true;
                 this._waitForThrottle(chunk.byteLength, () => {
+                    this._throttlePending = false;
                     if (this._requestAbort === true) {
                         this._status = LoaderStatus.kComplete;
                         reader.cancel();
@@ -275,39 +337,43 @@ class FetchStreamLoader extends BaseLoader {
                     this._pump(reader);
                 });
             }
-        }).catch((e) => {
-            if (this._abortController && this._abortController.signal.aborted) {
-                this._status = LoaderStatus.kComplete;
-                return;
-            }
+        } catch (e) {
+            this._handlePumpError(e);
+        }
+    }
 
-            if (e.code === 11 && Browser.msedge) {  // InvalidStateError on Microsoft Edge
-                // Workaround: Edge may throw InvalidStateError after ReadableStreamReader.cancel() call
-                // Ignore the unknown exception.
-                // Related issue: https://developer.microsoft.com/en-us/microsoft-edge/platform/issues/11265202/
-                return;
-            }
+    _handlePumpError(e) {
+        if (this._abortController && this._abortController.signal.aborted) {
+            this._status = LoaderStatus.kComplete;
+            return;
+        }
 
-            this._status = LoaderStatus.kError;
-            let type = 0;
-            let info = null;
+        if (e.code === 11 && Browser.msedge) {  // InvalidStateError on Microsoft Edge
+            // Workaround: Edge may throw InvalidStateError after ReadableStreamReader.cancel() call
+            // Ignore the unknown exception.
+            // Related issue: https://developer.microsoft.com/en-us/microsoft-edge/platform/issues/11265202/
+            return;
+        }
 
-            if ((e.code === 19 || e.message === 'network error') && // NETWORK_ERR
-                (this._contentLength === null ||
-                (this._contentLength !== null && this._receivedLength < this._contentLength))) {
-                type = LoaderErrors.EARLY_EOF;
-                info = {code: e.code, msg: 'Fetch stream meet Early-EOF'};
-            } else {
-                type = LoaderErrors.EXCEPTION;
-                info = {code: e.code, msg: e.message};
-            }
+        this._status = LoaderStatus.kError;
+        let type = 0;
+        let info = null;
 
-            if (this._onError) {
-                this._onError(type, info);
-            } else {
-                throw new RuntimeException(info.msg);
-            }
-        });
+        if ((e.code === 19 || e.message === 'network error') && // NETWORK_ERR
+            (this._contentLength === null ||
+            (this._contentLength !== null && this._receivedLength < this._contentLength))) {
+            type = LoaderErrors.EARLY_EOF;
+            info = {code: e.code, msg: 'Fetch stream meet Early-EOF'};
+        } else {
+            type = LoaderErrors.EXCEPTION;
+            info = {code: e.code, msg: e.message};
+        }
+
+        if (this._onError) {
+            this._onError(type, info);
+        } else {
+            throw new RuntimeException(info.msg);
+        }
     }
 
     _shouldRequireRangeResponse(headers, range) {

@@ -234,6 +234,53 @@ async function testFetchAcceptsValidOpenEndedRange() {
     ]);
 }
 
+async function testFetchPausesWithoutReopeningRequest() {
+    const url = 'https://example.test/video.mmts';
+    let fetchCount = 0;
+    fetchSelf.fetch = () => {
+        fetchCount++;
+        return Promise.resolve(makeResponse({
+            url,
+            status: 200,
+            headers: {'Content-Length': '4'},
+            chunks: [Uint8Array.from([0x11, 0x22]), Uint8Array.from([0x33, 0x44])],
+        }));
+    };
+    const seekHandler = {
+        getConfig(requestUrl) {
+            return {url: requestUrl, headers: {Range: 'bytes=0-'}};
+        },
+        removeURLParameters(requestUrl) {
+            return requestUrl;
+        }
+    };
+    const loader = new FetchStreamLoader(seekHandler, {});
+    const arrivals = [];
+    const result = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Fetch pause test timed out')), 1000);
+        const finish = (value) => {
+            clearTimeout(timeout);
+            resolve(value);
+        };
+        loader.onDataArrival = (chunk, byteStart) => {
+            arrivals.push({byteStart, bytes: Array.from(new Uint8Array(chunk))});
+            if (arrivals.length === 1) {
+                loader.pause();
+                setTimeout(() => loader.resume(), 0);
+            }
+        };
+        loader.onError = (type, info) => finish({kind: 'error', type, info});
+        loader.onComplete = (from, to) => finish({kind: 'complete', from, to});
+        loader.open({url}, {from: 0, to: -1});
+    });
+    assert.deepStrictEqual(result, {kind: 'complete', from: 0, to: 3});
+    assert.strictEqual(fetchCount, 1);
+    assert.deepStrictEqual(arrivals, [
+        {byteStart: 0, bytes: [0x11, 0x22]},
+        {byteStart: 2, bytes: [0x33, 0x44]},
+    ]);
+}
+
 class FakeSpeedSampler {
     constructor() {
         this.lastSecondKBps = 0;
@@ -286,6 +333,26 @@ class ControlledLoader {
 }
 
 ControlledLoader.instances = [];
+
+class PausableControlledLoader extends ControlledLoader {
+    constructor() {
+        super();
+        this.pauseCount = 0;
+        this.resumeCount = 0;
+    }
+
+    get supportsPause() {
+        return true;
+    }
+
+    pause() {
+        this.pauseCount++;
+    }
+
+    resume() {
+        this.resumeCount++;
+    }
+}
 
 const IOController = loadModule('src/io/io-controller.js', {
     '../utils/logger.js': {__esModule: true, default: {v() {}, w() {}}},
@@ -394,15 +461,51 @@ function testIOResumesFromPendingStashAfterDirectChunks() {
     io.destroy();
 }
 
+function testIOPausesLoaderInPlaceAndPreservesStash() {
+    const received = [];
+    const io = makeIOController({
+        customLoader: PausableControlledLoader,
+        enableStashBuffer: true,
+        stashInitialSize: 8,
+    });
+    io.onDataArrival = (chunk, byteStart) => {
+        assert.strictEqual(byteStart, received.length);
+        received.push(...new Uint8Array(chunk));
+        return chunk.byteLength;
+    };
+    io.open();
+    const loader = ControlledLoader.instances[0];
+    loader.emit([0, 1, 2, 3], 0);
+    assert.strictEqual(io._stashUsed, 4);
+
+    io.pause();
+    assert.strictEqual(loader.pauseCount, 1);
+    assert.strictEqual(loader.status, loaderModule.LoaderStatus.kBuffering);
+    assert.strictEqual(io._stashUsed, 4);
+
+    io.resume();
+    assert.strictEqual(loader.resumeCount, 1);
+    assert.strictEqual(ControlledLoader.instances.length, 1);
+    assert.strictEqual(io._stashUsed, 4);
+
+    loader.emit([4, 5, 6, 7, 8, 9, 10, 11], 4);
+    assert.deepStrictEqual(received, [0, 1, 2, 3]);
+    assert.strictEqual(io._stashUsed, 8);
+    assert.strictEqual(io._stashByteStart, 4);
+    io.destroy();
+}
+
 (async () => {
     await testFetchUsesReadableStreamViewBounds();
     await testFetchRejectsMismatchedContentRange();
     await testFetchRejectsMismatchedInitialContentRange();
     await testFetchAcceptsValidOpenEndedRange();
+    await testFetchPausesWithoutReopeningRequest();
     testIOResumesAfterLastConsumedByte();
     testIORefetchesUndispatchedStash();
     testIORefetchesPartiallyConsumedChunk();
     testIOResumesFromPendingStashAfterDirectChunks();
+    testIOPausesLoaderInPlaceAndPreservesStash();
     console.log('io range resume tests passed');
 })().catch((error) => {
     console.error(error);

@@ -83,6 +83,7 @@ class IOController {
 
         this._paused = false;
         this._resumeFrom = 0;
+        this._loaderPausedInPlace = false;
 
         this._onDataArrival = null;
         this._onSeeked = null;
@@ -294,11 +295,21 @@ class IOController {
         if (this._paused) {
             this._paused = false;
             this._resumeFrom = 0;
+            this._loaderPausedInPlace = false;
         }
     }
 
     pause() {
         if (this.isWorking()) {
+            if (this._loader.supportsPause === true &&
+                typeof this._loader.pause === 'function' &&
+                typeof this._loader.resume === 'function') {
+                this._loader.pause();
+                this._paused = true;
+                this._loaderPausedInPlace = true;
+                return;
+            }
+
             this._loader.abort();
 
             if (this._stashUsed !== 0) {
@@ -316,6 +327,11 @@ class IOController {
     resume() {
         if (this._paused) {
             this._paused = false;
+            if (this._loaderPausedInPlace) {
+                this._loaderPausedInPlace = false;
+                this._loader.resume();
+                return;
+            }
             let bytes = this._resumeFrom;
             this._resumeFrom = 0;
             this._internalSeek(bytes, false, false);

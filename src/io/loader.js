@@ -81,6 +81,10 @@ export class BaseLoader {
         return this._needStash;
     }
 
+    get supportsPause() {
+        return false;
+    }
+
     _getThrottleDelay(byteLength) {
         let throttleKBps = this._config ? this._config.loaderThrottleKBps : 0;
         if (typeof throttleKBps !== 'number' || !isFinite(throttleKBps) || throttleKBps <= 0) {
