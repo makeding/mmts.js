@@ -199,7 +199,7 @@ function testMMTSDefaultsPreserveAudioAndVideoGaps() {
     assert.strictEqual(liveConfig.mseAppendBatchDuration, 0.35);
 }
 
-function testSafariAndFirefoxDefaultToHvc1CompatibilityEntry() {
+function testOnlySafariDefaultsToHvc1CompatibilityEntry() {
     const safariConfigModule = loadConfig({firefox: false, safari: true});
     const safariConfig = safariConfigModule.createDefaultConfig();
     safariConfigModule.applyMediaDataSourceConfig(safariConfig, {type: 'mmts'}, undefined);
@@ -208,7 +208,7 @@ function testSafariAndFirefoxDefaultToHvc1CompatibilityEntry() {
     const firefoxConfigModule = loadConfig({firefox: true, safari: false});
     const firefoxConfig = firefoxConfigModule.createDefaultConfig();
     firefoxConfigModule.applyMediaDataSourceConfig(firefoxConfig, {type: 'mmts'}, undefined);
-    assert.strictEqual(firefoxConfig.mmtsForceHvc1SampleEntry, true);
+    assert.strictEqual(firefoxConfig.mmtsForceHvc1SampleEntry, false);
     assert.strictEqual(firefoxConfig.mseSeekPrerollKeepDuration, 20);
 
     const firefoxLiveConfig = firefoxConfigModule.createDefaultConfig();
@@ -320,7 +320,7 @@ testFivePointOneAACKeepsLCProfile();
 testMalformedLOASCandidateDoesNotEscapeParser();
 testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected();
 testMMTSDefaultsPreserveAudioAndVideoGaps();
-testSafariAndFirefoxDefaultToHvc1CompatibilityEntry();
+testOnlySafariDefaultsToHvc1CompatibilityEntry();
 testHEVCInitUsesHvc1SampleEntry();
 testHEVCInitUsesHev1SampleEntry();
 testMMTSAudioGapPreservationCanBeExplicitlyDisabled();

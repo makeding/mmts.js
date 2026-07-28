@@ -3160,7 +3160,7 @@ function testDemuxerKeepsHev1PpsUpdatesInBand() {
     assert.strictEqual(demuxer.video_metadata_.pps, chain.pps.nalu);
 }
 
-function testDemuxerConvertsForcedHev1AssetToHvc1SampleEntry() {
+function testDemuxerCanLabelHev1AssetAsHvc1WithoutStrippingInBandParameterSets() {
     const MMTSDemuxer = loadDemuxer();
     const demuxer = Object.create(MMTSDemuxer.prototype);
     demuxer.config_ = {mmtsForceHvc1SampleEntry: true};
@@ -3431,7 +3431,7 @@ testDemuxerDropsCachedReplayOverlapAfterDiscontinuity();
 testDemuxerReusesExactParameterSetVersion();
 testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
-testDemuxerConvertsForcedHev1AssetToHvc1SampleEntry();
+testDemuxerCanLabelHev1AssetAsHvc1WithoutStrippingInBandParameterSets();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe();
 testCompleteShortVideoMpuDoesNotForceRecovery();
