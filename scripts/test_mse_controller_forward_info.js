@@ -117,6 +117,27 @@ function testBufferedBytesShrinkAfterPlayedRangeRemoval() {
     assert.strictEqual(info.audioBufferedBytes, 200);
 }
 
+function testSafariPreservesRecordsWhenDetachedSourceBufferRejectsBufferedRead() {
+    const controller = makeController();
+    const records = controller._bufferedSegmentRecords.video.slice();
+    controller._mediaSource = {readyState: 'open'};
+    Object.defineProperty(controller._sourceBuffers.video, 'buffered', {
+        configurable: true,
+        get() {
+            const error = new Error('The object is in an invalid state.');
+            error.name = 'InvalidStateError';
+            throw error;
+        },
+    });
+    sandbox.Browser.safari = true;
+    try {
+        assert.doesNotThrow(() => controller.getForwardBufferInfo(0));
+        assert.deepStrictEqual(controller._bufferedSegmentRecords.video, records);
+    } finally {
+        sandbox.Browser.safari = false;
+    }
+}
+
 function makeSourceBuffer(changeType, operations) {
     const sourceBuffer = {
         updating: false,
@@ -271,6 +292,7 @@ testForwardDurationStartsAtRangeCoveringCurrentTime();
 testForwardDurationDoesNotJumpToFutureRange();
 testInflightRecordCountsBytesWithoutClaimingPlayableDuration();
 testBufferedBytesShrinkAfterPlayedRangeRemoval();
+testSafariPreservesRecordsWhenDetachedSourceBufferRejectsBufferedRead();
 testParserResetUsesChangeTypeWithoutRemovingAudioSourceBuffer();
 testParserResetAllowsChangeTypeToReopenEndedMediaSource();
 testParserResetWithoutChangeTypeFailsWithoutRemovingAudioSourceBuffer();

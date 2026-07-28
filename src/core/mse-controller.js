@@ -905,7 +905,24 @@ class MSEController {
                 continue;
             }
 
-            const buffered = sb.buffered;
+            let buffered;
+            if (Browser.safari || this._useManagedMediaSource) {
+                // Safari can keep a stale SourceBuffer wrapper briefly after
+                // a seek/rebuild detaches it.  Merely reading `.buffered`
+                // then throws InvalidStateError.  Treat that as a transient
+                // snapshot failure and preserve the byte records for the next
+                // update; Chromium keeps the original zero-overhead path.
+                if (!this._mediaSource || this._mediaSource.readyState === 'closed') {
+                    continue;
+                }
+                try {
+                    buffered = sb.buffered;
+                } catch (error) {
+                    continue;
+                }
+            } else {
+                buffered = sb.buffered;
+            }
             const clippedRecords = [];
             for (let readIndex = 0; readIndex < records.length; readIndex++) {
                 const record = records[readIndex];
