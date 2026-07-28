@@ -60,7 +60,7 @@ function createFakeClock() {
     };
 }
 
-function loadController() {
+function loadController(browser = {safari: false, firefox: false}) {
     const sourcePath = path.resolve(__dirname, '../src/core/transmuxing-controller.js');
     const source = fs.readFileSync(sourcePath, 'utf8');
     const compiled = ts.transpileModule(source, {
@@ -88,7 +88,7 @@ function loadController() {
     const clock = createFakeClock();
     const requireMap = {
         '../utils/logger.js': {__esModule: true, default: {e() {}, v() {}, w() {}}},
-        '../utils/browser.js': {__esModule: true, default: {safari: false}},
+        '../utils/browser.js': {__esModule: true, default: browser},
         './media-info.js': {__esModule: true, default: emptyClass},
         '../demux/flv-demuxer.js': {__esModule: true, default: emptyClass},
         '../demux/ts-demuxer': {__esModule: true, default: emptyClass},
@@ -353,8 +353,8 @@ function testPlaybackOutputStateCoordinatesTracksByOperation() {
     assert.strictEqual(state.shouldPublishSubtitle(seek), false);
 }
 
-function makeHarness() {
-    const {TransmuxingController, MMTSDemuxer} = loadController();
+function makeHarness(browser) {
+    const {TransmuxingController, MMTSDemuxer} = loadController(browser);
     const events = [];
     const controller = Object.create(TransmuxingController.prototype);
     controller._config = {isMMTS: true};
@@ -498,6 +498,42 @@ function testAudioStartupGroupMovesToLaterRapWindow() {
     assert.strictEqual(group.playableEnd, 2);
     assert.strictEqual(group.hasAudio, true);
     assert.strictEqual(group.hasVideo, true);
+}
+
+function testFirefoxStartupKeepsSafeCraPrerollUntilAudioOverlap() {
+    const h = makeHarness({safari: false, firefox: true});
+    const safeVideo = makeVideoSegment(0.166, 0.25);
+    safeVideo.data = new Uint8Array([1, 2]).buffer;
+    safeVideo.sampleCount = 1;
+    const continuation = {
+        type: 'video',
+        data: new Uint8Array([3, 4, 5]).buffer,
+        sampleCount: 2,
+        info: {beginDts: 250, endDts: 718, endPts: 718, syncPoints: []},
+    };
+    h.controller._setMMTSStartupGroupMediaInfo({hasVideo: true, hasAudio: true});
+    h.controller._collectMMTSStartupInitSegment('video', {type: 'video'});
+    h.controller._collectMMTSStartupInitSegment('audio', {type: 'audio'});
+    h.controller._collectMMTSStartupMediaSegment('video', safeVideo);
+    h.controller._collectMMTSStartupMediaSegment('video', continuation);
+    h.controller._collectMMTSStartupMediaSegment('audio', {
+        type: 'audio',
+        info: {beginDts: 626, endDts: 946},
+    });
+
+    assert.strictEqual(h.events.length, 1);
+    assert.strictEqual(h.events[0][0], 'startup_group');
+    assert.notStrictEqual(h.events[0][1].videoMediaSegment, safeVideo);
+    assert.deepStrictEqual(
+        Array.from(new Uint8Array(h.events[0][1].videoMediaSegment.data)),
+        [1, 2, 3, 4, 5]
+    );
+    assert.strictEqual(h.events[0][1].videoMediaSegment.sampleCount, 3);
+    assert.strictEqual(h.events[0][1].videoMediaSegment.info.beginDts, 126);
+    assert.strictEqual(h.events[0][1].videoMediaSegment.info.endDts, 718);
+    assert.strictEqual(h.events[0][1].syncPoint, 0.166);
+    assert.strictEqual(h.events[0][1].startupTime, 0.626);
+    assert.strictEqual(h.events[0][1].playableEnd, 0.718);
 }
 
 function testVideoOnlyStartupGroupDeclaresAudioUnavailable() {
@@ -1850,6 +1886,7 @@ async function main() {
     testPlaybackOutputStateCoordinatesTracksByOperation();
     testIOProducerOperationIsImmutableAndLateCallbacksAreInert();
     testAudioStartupGroupMovesToLaterRapWindow();
+    testFirefoxStartupKeepsSafeCraPrerollUntilAudioOverlap();
     testVideoOnlyStartupGroupDeclaresAudioUnavailable();
     testStartupGroupReplaysCollectedVideoContinuations();
     testStartupGroupReplaysCollectedAudioContinuations();

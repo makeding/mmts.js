@@ -252,6 +252,8 @@ class IOController {
             this._loaderClass = this._config.customLoader;
         } else if (this._isWebSocketURL) {
             this._loaderClass = WebSocketLoader;
+        } else if (this._config.preferRangeLoader === true && RangeLoader.isSupported()) {
+            this._loaderClass = RangeLoader;
         } else if (FetchStreamLoader.isSupported()) {
             this._loaderClass = FetchStreamLoader;
         } else if (MozChunkedLoader.isSupported()) {

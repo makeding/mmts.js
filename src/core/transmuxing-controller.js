@@ -1988,6 +1988,8 @@ class TransmuxingController {
 
         const hasAudio = state.mediaInfo.hasAudio === true;
         const vodAudioSwitch = this._isMMTSVodAudioSwitchStartupGroup(state);
+        const firefoxSafePreroll = Browser.firefox === true &&
+            this._isMMTSStartupRandomAccessSafeVideoSegment(state.videoMediaSegment);
         let audioMediaSegment = null;
         let videoPlayableEnd = window.playableEnd;
         if (hasAudio) {
@@ -2005,6 +2007,23 @@ class TransmuxingController {
                     window.playableStart,
                     videoPlayableEnd
                 );
+            } else if (firefoxSafePreroll) {
+                // Firefox's VideoToolbox path treats a seek to an ordinary CRA
+                // as a decoder reset.  Its following RASL pictures then fail
+                // with kVTVideoDecoderReferenceMissingErr.  Keep the first
+                // no-RASL-output CRA as decode preroll and extend its coverage
+                // until it intersects the first usable audio segment.
+                videoPlayableEnd = this._getMMTSStartupVideoCoverageEnd(state, window);
+                audioMediaSegment = state.audioMediaSegments.find((segment) => {
+                    if (!this._isMMTSStartupSegmentForOperation(segment, state.operation)) {
+                        return false;
+                    }
+                    const info = segment && segment.info;
+                    const start = info && isFinite(info.beginDts) ? info.beginDts / 1000 : NaN;
+                    const end = info && isFinite(info.endDts) ? info.endDts / 1000 : NaN;
+                    return isFinite(start) && isFinite(end) &&
+                        Math.min(videoPlayableEnd, end) > Math.max(window.playableStart, start);
+                });
             } else {
                 audioMediaSegment = state.audioMediaSegments.find((segment) => {
                     return this._isMMTSStartupSegmentForOperation(segment, state.operation) &&
@@ -2035,7 +2054,7 @@ class TransmuxingController {
         const audioInfo = audioMediaSegment && audioMediaSegment.info;
         const audioStart = audioInfo ? audioInfo.beginDts / 1000 : undefined;
         const audioEnd = audioInfo ? audioInfo.endDts / 1000 : undefined;
-        const playableStart = hasAudio && vodAudioSwitch ?
+        const playableStart = hasAudio && (vodAudioSwitch || firefoxSafePreroll) ?
             Math.max(window.playableStart, audioStart) : window.playableStart;
         const playableEnd = hasAudio ? Math.min(videoPlayableEnd, audioEnd) : window.playableEnd;
         if (!isFinite(playableStart) || !isFinite(playableEnd) || playableEnd <= playableStart) {
@@ -2046,15 +2065,18 @@ class TransmuxingController {
         this._clearMMTSStartupGroupWatchdog(state);
         const operation = clonePlaybackOperation(state.operation);
         const selectedVideoIndex = state.videoMediaSegments.indexOf(state.videoMediaSegment);
-        const videoContinuationSegments = selectedVideoIndex >= 0 ?
-            state.videoMediaSegments.slice(selectedVideoIndex + 1) : [];
+        const selectedVideoSegments = selectedVideoIndex >= 0 ?
+            state.videoMediaSegments.slice(selectedVideoIndex) : [state.videoMediaSegment];
+        const startupVideoMediaSegment = firefoxSafePreroll ?
+            this._mergeMMTSStartupVideoSegments(selectedVideoSegments) : state.videoMediaSegment;
+        const videoContinuationSegments = firefoxSafePreroll ? [] : selectedVideoSegments.slice(1);
         const selectedAudioIndex = state.audioMediaSegments.indexOf(audioMediaSegment);
         const audioContinuationSegments = selectedAudioIndex >= 0 ?
             state.audioMediaSegments.slice(selectedAudioIndex + 1) : [];
         this._emitter.emit(TransmuxingEvents.STARTUP_GROUP, {
             videoInitSegment: state.videoInitSegment,
             audioInitSegment: hasAudio ? state.audioInitSegment : null,
-            videoMediaSegment: state.videoMediaSegment,
+            videoMediaSegment: startupVideoMediaSegment,
             audioMediaSegment,
             startupTime: playableStart,
             videoDecodeStart: window.decodeStart,
@@ -2086,6 +2108,59 @@ class TransmuxingController {
         state.latestVideoMediaSegment = null;
         state.videoMediaSegments = [];
         state.audioMediaSegments = [];
+    }
+
+    _mergeMMTSStartupVideoSegments(segments) {
+        if (!Array.isArray(segments) || segments.length === 0) {
+            return null;
+        }
+        if (segments.length === 1) {
+            return segments[0];
+        }
+
+        const first = segments[0];
+        const last = segments[segments.length - 1];
+        const byteArrays = segments.map((segment) => {
+            const data = segment && segment.data;
+            if (Object.prototype.toString.call(data) === '[object ArrayBuffer]') {
+                return new Uint8Array(data);
+            }
+            if (ArrayBuffer.isView(data)) {
+                return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            }
+            return new Uint8Array(0);
+        });
+        const data = new Uint8Array(byteArrays.reduce(
+            (total, bytes) => total + bytes.byteLength,
+            0
+        ));
+        let offset = 0;
+        for (const bytes of byteArrays) {
+            data.set(bytes, offset);
+            offset += bytes.byteLength;
+        }
+
+        const info = Object.assign({}, first.info);
+        info.endDts = Math.max(...segments.map((segment) => segment.info.endDts));
+        info.endPts = Math.max(...segments.map((segment) =>
+            isFinite(segment.info.endPts) ? segment.info.endPts : segment.info.endDts
+        ));
+        info.lastSample = last.info.lastSample;
+        info.syncPoints = [];
+        for (const segment of segments) {
+            if (Array.isArray(segment.info.syncPoints)) {
+                info.syncPoints.push(...segment.info.syncPoints);
+            }
+        }
+
+        return Object.assign({}, first, {
+            data: data.buffer,
+            sampleCount: segments.reduce(
+                (total, segment) => total + (segment.sampleCount || 0),
+                0
+            ),
+            info,
+        });
     }
 
     _isMMTSStartupSegmentForOperation(segment, operation) {

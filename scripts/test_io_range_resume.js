@@ -334,6 +334,18 @@ class ControlledLoader {
 
 ControlledLoader.instances = [];
 
+class SupportedFetchLoader extends ControlledLoader {
+    static isSupported() {
+        return true;
+    }
+}
+
+class SupportedRangeLoader extends ControlledLoader {
+    static isSupported() {
+        return true;
+    }
+}
+
 class PausableControlledLoader extends ControlledLoader {
     constructor() {
         super();
@@ -362,6 +374,20 @@ const IOController = loadModule('src/io/io-controller.js', {
     './xhr-moz-chunked-loader.js': {__esModule: true, default: UnusedLoader},
     './xhr-msstream-loader.js': {__esModule: true, default: UnusedLoader},
     './xhr-range-loader.js': {__esModule: true, default: UnusedLoader},
+    './websocket-loader.js': {__esModule: true, default: UnusedLoader},
+    './range-seek-handler.js': {__esModule: true, default: FakeSeekHandler},
+    './param-seek-handler.js': {__esModule: true, default: FakeSeekHandler},
+    '../utils/exception.js': exceptionModule,
+}).default;
+
+const LoaderSelectionIOController = loadModule('src/io/io-controller.js', {
+    '../utils/logger.js': {__esModule: true, default: {v() {}, w() {}}},
+    './speed-sampler.js': {__esModule: true, default: FakeSpeedSampler},
+    './loader.js': loaderModule,
+    './fetch-stream-loader.js': {__esModule: true, default: SupportedFetchLoader},
+    './xhr-moz-chunked-loader.js': {__esModule: true, default: UnusedLoader},
+    './xhr-msstream-loader.js': {__esModule: true, default: UnusedLoader},
+    './xhr-range-loader.js': {__esModule: true, default: SupportedRangeLoader},
     './websocket-loader.js': {__esModule: true, default: UnusedLoader},
     './range-seek-handler.js': {__esModule: true, default: FakeSeekHandler},
     './param-seek-handler.js': {__esModule: true, default: FakeSeekHandler},
@@ -495,6 +521,27 @@ function testIOPausesLoaderInPlaceAndPreservesStash() {
     io.destroy();
 }
 
+function testIOPrefersBoundedRangeLoaderWhenConfigured() {
+    const io = new LoaderSelectionIOController({url: 'https://example.test/video.mmts'}, {
+        seekType: 'range',
+        preferRangeLoader: true,
+        enableStashBuffer: false,
+    }, null);
+    assert.strictEqual(io.loaderType, 'controlled-loader');
+    assert.strictEqual(io._loaderClass, SupportedRangeLoader);
+    io.destroy();
+}
+
+function testIOKeepsFetchPriorityWithoutRangePreference() {
+    const io = new LoaderSelectionIOController({url: 'https://example.test/video.mmts'}, {
+        seekType: 'range',
+        preferRangeLoader: false,
+        enableStashBuffer: false,
+    }, null);
+    assert.strictEqual(io._loaderClass, SupportedFetchLoader);
+    io.destroy();
+}
+
 (async () => {
     await testFetchUsesReadableStreamViewBounds();
     await testFetchRejectsMismatchedContentRange();
@@ -506,6 +553,8 @@ function testIOPausesLoaderInPlaceAndPreservesStash() {
     testIORefetchesPartiallyConsumedChunk();
     testIOResumesFromPendingStashAfterDirectChunks();
     testIOPausesLoaderInPlaceAndPreservesStash();
+    testIOPrefersBoundedRangeLoaderWhenConfigured();
+    testIOKeepsFetchPriorityWithoutRangePreference();
     console.log('io range resume tests passed');
 })().catch((error) => {
     console.error(error);

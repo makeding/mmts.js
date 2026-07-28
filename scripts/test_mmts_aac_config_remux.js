@@ -199,24 +199,24 @@ function testMMTSDefaultsPreserveAudioAndVideoGaps() {
     assert.strictEqual(liveConfig.mseAppendBatchDuration, 0.35);
 }
 
-function testSafariAndFirefoxDefaultToHvc1CompatibilityEntry() {
-    for (const browser of [
-        {firefox: false, safari: true},
-        {firefox: true, safari: false},
-    ]) {
-        const configModule = loadConfig(browser);
-        const config = configModule.createDefaultConfig();
-        configModule.applyMediaDataSourceConfig(config, {type: 'mmts'}, undefined);
-        assert.strictEqual(config.mmtsForceHvc1SampleEntry, true);
+function testOnlySafariDefaultsToHvc1CompatibilityEntry() {
+    const safariConfigModule = loadConfig({firefox: false, safari: true});
+    const safariConfig = safariConfigModule.createDefaultConfig();
+    safariConfigModule.applyMediaDataSourceConfig(safariConfig, {type: 'mmts'}, undefined);
+    assert.strictEqual(safariConfig.mmtsForceHvc1SampleEntry, true);
 
-        const overridden = configModule.createDefaultConfig();
-        configModule.applyMediaDataSourceConfig(
-            overridden,
-            {type: 'mmts'},
-            {mmtsForceHvc1SampleEntry: false}
-        );
-        assert.strictEqual(overridden.mmtsForceHvc1SampleEntry, false);
-    }
+    const firefoxConfigModule = loadConfig({firefox: true, safari: false});
+    const firefoxConfig = firefoxConfigModule.createDefaultConfig();
+    firefoxConfigModule.applyMediaDataSourceConfig(firefoxConfig, {type: 'mmts'}, undefined);
+    assert.strictEqual(firefoxConfig.mmtsForceHvc1SampleEntry, false);
+
+    const overridden = safariConfigModule.createDefaultConfig();
+    safariConfigModule.applyMediaDataSourceConfig(
+        overridden,
+        {type: 'mmts'},
+        {mmtsForceHvc1SampleEntry: false}
+    );
+    assert.strictEqual(overridden.mmtsForceHvc1SampleEntry, false);
 }
 
 function testHEVCInitUsesHvc1SampleEntry() {
@@ -302,7 +302,7 @@ testFivePointOneAACKeepsLCProfile();
 testMalformedLOASCandidateDoesNotEscapeParser();
 testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected();
 testMMTSDefaultsPreserveAudioAndVideoGaps();
-testSafariAndFirefoxDefaultToHvc1CompatibilityEntry();
+testOnlySafariDefaultsToHvc1CompatibilityEntry();
 testHEVCInitUsesHvc1SampleEntry();
 testHEVCInitUsesHev1SampleEntry();
 testMMTSAudioGapPreservationCanBeExplicitlyDisabled();

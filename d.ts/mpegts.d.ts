@@ -127,6 +127,12 @@ declare namespace Mpegts {
          */
         enableStashBuffer?: boolean;
         /**
+         * @desc Prefer bounded XMLHttpRequest range chunks over a streaming fetch response.
+         *       Enabled by default for Safari MMTS VOD to keep paused network buffering bounded.
+         * @defaultvalue false
+         */
+        preferRangeLoader?: boolean;
+        /**
          * @desc Indicates IO stash buffer initial size. Default is `384KB`. Indicate a suitable size can
          *          improve video load/seek time.
          */

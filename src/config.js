@@ -22,6 +22,7 @@ export const defaultConfig = {
     enableWorker: false,
     enableWorkerForMSE: false,
     enableStashBuffer: true,
+    preferRangeLoader: false,
     stashInitialSize: undefined,
     loaderThrottleKBps: 0,
 
@@ -66,9 +67,9 @@ export const defaultConfig = {
     fixAudioTimestampGap: true,
 
     mmtsVideoPacketId: undefined,
-    // Safari and Firefox expose HEVC MSE through the hvc1 codec identifier even
-    // when the MMTS asset is signalled as hev1. Media parameter sets remain
-    // in-band; this option changes only the ISO BMFF sample-entry identifier.
+    // Safari exposes HEVC MSE through the hvc1 codec identifier even when the
+    // MMTS asset is signalled as hev1. Firefox accepts hev1 and must retain it
+    // for streams whose parameter sets remain in-band.
     mmtsForceHvc1SampleEntry: false,
     // Prototype switch: advertise HLG samples as SDR to stop the browser from applying its HDR tone mapper.
     // The BT.2020-NCL matrix is intentionally preserved so decoded YUV components are not mixed with BT.709 coefficients.
@@ -112,8 +113,16 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
     }
 
     config.isMMTS = true;
+    if (!customConfig || customConfig.preferRangeLoader === undefined) {
+        // Safari may continue buffering a paused fetch-stream response in the
+        // WebContent process.  A large MMTS VOD can therefore retain most or
+        // all of the file even after transmuxing backpressure has suspended
+        // JavaScript reads.  Bounded XHR range requests make the network-side
+        // memory ceiling explicit and remain compatible with MMTS VOD seeks.
+        config.preferRangeLoader = Browser.safari && !config.isLive;
+    }
     if (!customConfig || customConfig.mmtsForceHvc1SampleEntry === undefined) {
-        config.mmtsForceHvc1SampleEntry = Browser.safari || Browser.firefox;
+        config.mmtsForceHvc1SampleEntry = Browser.safari;
     }
     if (!customConfig || customConfig.mmtsDeferHevcVideoInitUntilAudio === undefined) {
         config.mmtsDeferHevcVideoInitUntilAudio = !config.isLive && !Browser.firefox;
