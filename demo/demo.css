@@ -1,3 +1,11 @@
+@font-face {
+    font-family: "MMTS Broadcast Maru";
+    src: url("./fonts/KosugiMaru-Regular.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+}
+
 .mainContainer {
     display: block;
     width: 100%;
@@ -64,7 +72,8 @@
     pointer-events: none;
     overflow: hidden;
     z-index: 2;
-    font-family: "Hiragino Maru Gothic Pro", "HGMaruGothicMPRO", "Yu Gothic Medium", "Meiryo", sans-serif;
+    font-family: "Windows TV MaruGothic", "Rounded M+ 1m for ARIB", "MMTS Broadcast Maru", sans-serif;
+    font-weight: 400;
 }
 
 .ttml-subtitle-block {
@@ -73,12 +82,6 @@
     flex-direction: column;
     box-sizing: border-box;
     color: #fff;
-    text-shadow:
-        -2px -2px 0 #000,
-         2px -2px 0 #000,
-        -2px  2px 0 #000,
-         2px  2px 0 #000,
-         0    0   4px #000;
     white-space: pre-wrap;
 }
 

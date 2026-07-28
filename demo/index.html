@@ -1108,7 +1108,6 @@
             };
             element.onseeked = function() {
                 logDemo('seeked: currentTime=' + element.currentTime);
-                replayCachedTTMLSubtitles();
             };
         }
 
@@ -1217,7 +1216,12 @@
                 mediaElement: element,
                 overlayElement: overlay,
                 isLive: document.getElementById('isLive').checked,
-                maxCues: 100000
+                maxCues: 100000,
+                normalFont: '"Windows TV MaruGothic", "Rounded M+ 1m for ARIB", "MMTS Broadcast Maru", sans-serif',
+                forceStrokeColor: '#000000',
+                strokeWidthInPlane: 4,
+                backgroundPadding: '0 0.08em',
+                lineBackground: true
             });
         }
 
