@@ -1867,11 +1867,21 @@ class MSEBufferStateMachine {
                 videoForwardBytes: 0,
                 audioForwardDuration: 0,
                 videoForwardDuration: 0,
-            };
+        };
         const audioPendingBytes = this._getPendingForwardBytes('audio', currentTime);
         const videoPendingBytes = this._getPendingForwardBytes('video', currentTime);
-        const videoForwardDuration = base.videoForwardDuration || 0;
-        const audioForwardDuration = base.audioForwardDuration || 0;
+        // The producer can outrun SourceBuffer updateend by hundreds of
+        // seconds after a VOD range seek.  Pending bytes alone are not a
+        // useful horizon for low-bitrate tracks: the byte cap may represent
+        // minutes of media.  Extend each buffered track horizon through its
+        // inflight and queued media so the configured duration cap applies to
+        // the whole pipeline, not just data already committed to MSE.
+        const videoForwardDuration = this._getPipelineForwardDuration(
+            'video', currentTime, base.videoForwardDuration || 0
+        );
+        const audioForwardDuration = this._getPipelineForwardDuration(
+            'audio', currentTime, base.audioForwardDuration || 0
+        );
         const forwardDuration = this._getPlayableForwardDuration(currentTime, audioForwardDuration, videoForwardDuration);
         return {
             currentTime,
@@ -3381,13 +3391,24 @@ class MSEBufferStateMachine {
 
     private _resolveBufferedVideoRandomAccessPoint(targetTime: number): number | null {
         const tolerance = 0.01;
+        // A direct seek still needs audio and video at the requested position,
+        // but audio does not need to cover the video's decode preroll.  MMTS
+        // streams can leave a short audio-only SourceBuffer hole while video
+        // remains continuous.  Requiring the A/V intersection from the
+        // preceding RAP through targetTime rejects the exact jump that is
+        // needed to cross that hole.
+        if (!this._hasPlayableRangeAt(targetTime, 0.05)) {
+            return null;
+        }
         for (let i = this._video_random_access_points.length - 1; i >= 0; i--) {
             const point = this._video_random_access_points[i];
             const pointTime = point.pts / 1000;
             if (pointTime > targetTime + tolerance ||
-                !this._hasPlayableRangeAt(
+                !this._isRangeCovered(
+                    'video',
                     pointTime,
-                    Math.max(0.05, targetTime - pointTime + 0.05)
+                    targetTime + 0.05,
+                    0.08
                 )) {
                 continue;
             }
@@ -3985,6 +4006,31 @@ class MSEBufferStateMachine {
                 byteLength;
         }
         return Math.ceil(bytes);
+    }
+
+    private _getPipelineForwardDuration(type: MSEBufferTrackType,
+                                        currentTime: number,
+                                        bufferedForwardDuration: number): number {
+        const tolerance = 0.12;
+        let coveredEnd = currentTime + Math.max(0, bufferedForwardDuration || 0);
+        const segments = this._pending_media_segments[type].slice();
+        const inflight = this._inflight_operations[type];
+        if (inflight && inflight.kind === 'media' && inflight.segment) {
+            segments.push(inflight.segment);
+        }
+        segments.sort((a: any, b: any) =>
+            this._getSegmentTimelineBegin(a) - this._getSegmentTimelineBegin(b)
+        );
+        for (let i = 0; i < segments.length; i++) {
+            const begin = this._getSegmentTimelineBegin(segments[i]);
+            const end = this._getSegmentTimelineEnd(segments[i]);
+            if (!isFinite(begin) || !isFinite(end) || end <= currentTime ||
+                begin > coveredEnd + tolerance) {
+                continue;
+            }
+            coveredEnd = Math.max(coveredEnd, end);
+        }
+        return Math.max(0, coveredEnd - currentTime);
     }
 
     private _getSegmentBytes(segment: any): number {

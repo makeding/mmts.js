@@ -1081,8 +1081,8 @@
                 var error = element.error;
                 logDemo('video error: code=' + (error && error.code) + ', message=' + (error && error.message) +
                     ', currentTime=' + element.currentTime + ', buffered=' + formatBufferedRanges(element) +
-                    ', audio=' + formatSourceBufferRanges('audio') +
-                    ', video=' + formatSourceBufferRanges('video'));
+                    ', audio=' + formatPlayerSourceBufferRanges('audio') +
+                    ', video=' + formatPlayerSourceBufferRanges('video'));
             });
             element.onloadedmetadata = function() {
                 logDemo('loadedmetadata: duration=' + element.duration + ', video=' + element.videoWidth + 'x' + element.videoHeight);

@@ -2069,6 +2069,38 @@ function testPendingQueuesTriggerBackpressureBeforeMSEAppend() {
     );
 }
 
+function testPendingTimelineDurationTriggersBackpressureAfterSeek() {
+    const h = makeHarness({
+        config: {
+            isMMTS: true,
+            mseBufferForwardTargetDuration: 90,
+            mseBufferVideoSoftLimitBytes: 112 * MiB,
+            mseBufferAudioSoftLimitBytes: 12 * MiB,
+        }
+    });
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.sourceBuffers.video.updating = true;
+    h.sourceBuffers.audio.updating = true;
+    h.sm.onMediaState(440, 4, 'seeked');
+
+    // A fast cached range response can queue 95 seconds while using far less
+    // than the byte limits.  Duration backpressure must see that queued
+    // timeline instead of waiting for SourceBuffer updateend to catch up.
+    h.sm.onMediaSegment('video', makeSegment('video', 439.8, 535, 24 * MiB));
+    h.sm.onMediaSegment('audio', makeSegment('audio', 439.8, 535, 2 * MiB));
+
+    const info = h.sm.getForwardBufferInfo(440);
+    assert.strictEqual(info.videoForwardDuration, 95);
+    assert.strictEqual(info.audioForwardDuration, 95);
+    assert.strictEqual(info.forwardDuration, 95);
+    assert.strictEqual(
+        h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
+        true
+    );
+}
+
 function testAudioBytesTriggerBackpressureAndRecovery() {
     const h = makeHarness({
         config: {
@@ -2224,6 +2256,31 @@ function testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint() {
 
     assert.strictEqual(h.sm.onDirectSeek(10.1), false);
     assert.strictEqual(h.log.some((entry) => entry[0] === 'seekMedia'), false);
+}
+
+function testMMTSDirectSeekCrossesAudioOnlyGapWithContinuousVideoPreroll() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 165.098, end: 211.862});
+    h.ranges.audio.push(
+        {start: 165.009, end: 165.329},
+        {start: 167.697, end: 212.411}
+    );
+    const video = makeSegment('video', 165.098, 211.862, 1024);
+    video.info.syncPoints = [
+        {dts: 167100, pts: 167200},
+    ];
+    h.sm.onMediaSegment('video', video);
+
+    assert.strictEqual(h.sm.onDirectSeek(167.697), true);
+    assert.strictEqual(
+        h.log.some((entry) =>
+            entry[0] === 'seekMedia' && entry[1] === 167.697 && entry[2] === 'DIRECT_SEEK'
+        ),
+        true
+    );
 }
 
 function testNonMMTSDirectSeekKeepsRequestedTime() {
@@ -3228,11 +3285,13 @@ testPlayableForwardDurationRequiresAudioVideoIntersection();
 testPendingVideoBytesDoNotPauseBeforeAudioArrives();
 testBackpressureRequiresBothTrackDataButNotPlayableIntersection();
 testPendingQueuesTriggerBackpressureBeforeMSEAppend();
+testPendingTimelineDurationTriggersBackpressureAfterSeek();
 testAudioBytesTriggerBackpressureAndRecovery();
 testForwardDurationCanTriggerBackpressureAndRecover();
 testMMTSVodWaitingAtByteCapPrefetchesUntilPlaybackProgresses();
 testMMTSDirectSeekKeepsRequestedTimeWithBufferedVideoRandomAccessPreroll();
 testMMTSDirectSeekWaitsWithoutBufferedVideoRandomAccessPoint();
+testMMTSDirectSeekCrossesAudioOnlyGapWithContinuousVideoPreroll();
 testNonMMTSDirectSeekKeepsRequestedTime();
 testStartupGroupAppendsCompleteAudioVideoBatchBeforeRelease();
 testOverlappingStartupAppendsKeepPerTrackCompletionIdentity();

@@ -337,6 +337,7 @@ declare class MSEBufferStateMachine {
     private _isMediaSegmentTimestampValid;
     private _enterRecoveringForInvalidTimestamp;
     private _getPendingForwardBytes;
+    private _getPipelineForwardDuration;
     private _getSegmentBytes;
     private _makeSegmentMimeType;
     private _getSegmentTimelineBegin;
