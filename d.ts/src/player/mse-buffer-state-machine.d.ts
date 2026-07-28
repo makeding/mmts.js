@@ -149,6 +149,7 @@ declare class MSEBufferStateMachine {
     private _pending_transmuxer_seek_milliseconds;
     private _pending_transmuxer_seek_reason;
     private _timeline_seek_target_time;
+    private _awaiting_media_seek_completion;
     private _track_switch_needs_data;
     private _live_audio_track_switch_collection_hold;
     private _pending_audio_rebuild_plan;

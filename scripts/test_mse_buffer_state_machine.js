@@ -1800,6 +1800,28 @@ function testBackpressurePausesSeekWithoutOverridingSeekState() {
     assert.strictEqual(h.sm._main_state, 'SEEKING');
 }
 
+function testSeekStateWaitsForMediaElementSeekedEvent() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 9, end: 12});
+    h.ranges.audio.push({start: 9, end: 12});
+    h.sm._main_state = 'SEEKING';
+
+    assert.strictEqual(
+        h.sm._requestMediaSeekWhenPlayable(10, 'RECOMMEND_SEEKPOINT', 0.05),
+        true
+    );
+    h.sm.tick('seek_requested');
+    assert.strictEqual(h.sm._main_state, 'SEEKING');
+    assert.strictEqual(h.sm._awaiting_media_seek_completion, true);
+
+    h.sm.onMediaState(10, 4, 'seeked');
+    assert.strictEqual(h.sm._awaiting_media_seek_completion, false);
+    assert.strictEqual(h.sm._main_state, 'STEADY');
+}
+
 function testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
@@ -3389,6 +3411,7 @@ testAudioTrackSwitchRebuildFailureIsFatalWithoutSingleBufferFallback();
 testAudioTrackSwitchRebuildFailureDefersToTransactionOwner();
 testInvalidAudioRebuildPlanDefersToTransactionOwner();
 testBackpressurePausesSeekWithoutOverridingSeekState();
+testSeekStateWaitsForMediaElementSeekedEvent();
 testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek();
 testVideoTrackSwitchRequestsAndCommitsFromEndedMediaSource();
 testVideoTrackSwitchRejectsInvalidRemuxedWindow();

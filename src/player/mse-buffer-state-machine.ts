@@ -3016,7 +3016,26 @@ class MSEBufferStateMachine {
         if (!this._output.getBufferedRanges) {
             return;
         }
-        const removeEndLimit = this._current_time - keepDuration;
+        let removeEndLimit = this._current_time - keepDuration;
+        if (type === 'video' && this._video_random_access_points.length > 0) {
+            // Removing the verified decoder root makes Firefox evict every
+            // dependent HEVC sample up to the next sync point.  Align cleanup
+            // to the latest retained random-access point at/before currentTime
+            // so the interval end remains a decodable root (remove() excludes
+            // the sample exactly at its end time).
+            let decoderRoot = null;
+            for (let i = this._video_random_access_points.length - 1; i >= 0; i--) {
+                const point = this._video_random_access_points[i];
+                const pointTime = point.pts / 1000;
+                if (isFinite(pointTime) && pointTime <= this._current_time + 0.08) {
+                    decoderRoot = pointTime;
+                    break;
+                }
+            }
+            if (decoderRoot !== null) {
+                removeEndLimit = Math.min(removeEndLimit, decoderRoot);
+            }
+        }
         if (!isFinite(removeEndLimit) || removeEndLimit <= 0) {
             return;
         }
