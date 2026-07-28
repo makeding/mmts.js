@@ -186,6 +186,13 @@ declare namespace Mpegts {
         mmtsVideoPacketId?: number;
 
         /**
+         * @desc Advertise MMTS HEVC with an hvc1 ISO BMFF sample entry while retaining
+         *       in-band parameter sets from an hev1 broadcast asset.
+         * @defaultvalue true on Safari and Firefox; false on Chromium
+         */
+        mmtsForceHvc1SampleEntry?: boolean;
+
+        /**
          * @desc Prototype switch that advertises MMTS HEVC as SDR BT.709 primaries/transfer while preserving
          *       the source matrix coefficients. This tests whether browser HDR tone mapping can be bypassed.
          * @defaultvalue false

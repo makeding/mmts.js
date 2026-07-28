@@ -83,9 +83,9 @@ function loadAACParser() {
     });
 }
 
-function loadConfig() {
+function loadConfig(browser = {firefox: false, safari: false}) {
     return loadModule('src/config.js', {
-        './utils/browser.js': {__esModule: true, default: {firefox: false}},
+        './utils/browser.js': {__esModule: true, default: browser},
     });
 }
 
@@ -188,6 +188,7 @@ function testMMTSDefaultsPreserveAudioAndVideoGaps() {
     assert.strictEqual(vodConfig.mmtsClampVideoTimestampGap, false);
     assert.strictEqual(vodConfig.lazyLoadRecoverBytes, 96 * 1024 * 1024);
     assert.strictEqual(vodConfig.mseAppendBatchDuration, 0.5);
+    assert.strictEqual(vodConfig.mmtsForceHvc1SampleEntry, false);
 
     const liveConfig = configModule.createDefaultConfig();
     configModule.applyMediaDataSourceConfig(liveConfig, {type: 'mmts', isLive: true}, undefined);
@@ -196,6 +197,26 @@ function testMMTSDefaultsPreserveAudioAndVideoGaps() {
     assert.strictEqual(liveConfig.mmtsClampVideoTimestampGap, false);
     assert.strictEqual(liveConfig.lazyLoadRecoverBytes, 32 * 1024 * 1024);
     assert.strictEqual(liveConfig.mseAppendBatchDuration, 0.35);
+}
+
+function testSafariAndFirefoxDefaultToHvc1CompatibilityEntry() {
+    for (const browser of [
+        {firefox: false, safari: true},
+        {firefox: true, safari: false},
+    ]) {
+        const configModule = loadConfig(browser);
+        const config = configModule.createDefaultConfig();
+        configModule.applyMediaDataSourceConfig(config, {type: 'mmts'}, undefined);
+        assert.strictEqual(config.mmtsForceHvc1SampleEntry, true);
+
+        const overridden = configModule.createDefaultConfig();
+        configModule.applyMediaDataSourceConfig(
+            overridden,
+            {type: 'mmts'},
+            {mmtsForceHvc1SampleEntry: false}
+        );
+        assert.strictEqual(overridden.mmtsForceHvc1SampleEntry, false);
+    }
 }
 
 function testHEVCInitUsesHvc1SampleEntry() {
@@ -281,6 +302,7 @@ testFivePointOneAACKeepsLCProfile();
 testMalformedLOASCandidateDoesNotEscapeParser();
 testExtendedAribChannelConfigurationsAreIdentifiedButNotSelected();
 testMMTSDefaultsPreserveAudioAndVideoGaps();
+testSafariAndFirefoxDefaultToHvc1CompatibilityEntry();
 testHEVCInitUsesHvc1SampleEntry();
 testHEVCInitUsesHev1SampleEntry();
 testMMTSAudioGapPreservationCanBeExplicitlyDisabled();

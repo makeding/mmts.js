@@ -3097,6 +3097,7 @@ function testDemuxerKeepsHev1PpsUpdatesInBand() {
     };
     demuxer.video_init_segment_dispatched_ = true;
     demuxer.video_sample_entry_type_ = 'hev1';
+    demuxer.video_parameter_sets_in_band_ = true;
     demuxer.active_video_parameter_set_signature_ = 'v0.1:s0.2:p0.3';
     demuxer.video_metadata_ = {
         vps: chain.vps.nalu,
@@ -3115,6 +3116,17 @@ function testDemuxerKeepsHev1PpsUpdatesInBand() {
     assert.strictEqual(mediaCount, 0);
     assert.strictEqual(demuxer.active_video_parameter_set_signature_, chain.signature);
     assert.strictEqual(demuxer.video_metadata_.pps, chain.pps.nalu);
+}
+
+function testDemuxerCanLabelHev1AssetAsHvc1WithoutStrippingInBandParameterSets() {
+    const MMTSDemuxer = loadDemuxer();
+    const demuxer = Object.create(MMTSDemuxer.prototype);
+    demuxer.config_ = {mmtsForceHvc1SampleEntry: true};
+
+    demuxer.configureVideoSampleEntry({assetType: 'hev1'});
+
+    assert.strictEqual(demuxer.video_sample_entry_type_, 'hvc1');
+    assert.strictEqual(demuxer.video_parameter_sets_in_band_, true);
 }
 
 function testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition() {
@@ -3376,6 +3388,7 @@ testDemuxerDropsCachedReplayOverlapAfterDiscontinuity();
 testDemuxerReusesExactParameterSetVersion();
 testDemuxerDefersInitialParameterSetActivation();
 testDemuxerKeepsHev1PpsUpdatesInBand();
+testDemuxerCanLabelHev1AssetAsHvc1WithoutStrippingInBandParameterSets();
 testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe();
 testCompleteShortVideoMpuDoesNotForceRecovery();

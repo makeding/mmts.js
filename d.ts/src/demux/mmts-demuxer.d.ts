@@ -98,6 +98,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private audio_init_segment_pending_;
     private video_init_segment_dispatched_;
     private video_sample_entry_type_;
+    private video_parameter_sets_in_band_;
     private audio_last_sample_pts_;
     private aac_last_incomplete_data_;
     private loas_previous_frame_;
@@ -140,6 +141,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private parseMpu;
     private processCompleteMfuUnit;
     private processVideoMpuMetadata;
+    private configureVideoSampleEntry;
     private findHvcCBox;
     private parseAndUpdateVideoParameterSet;
     private updateVideoParameterSet;

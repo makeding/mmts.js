@@ -337,6 +337,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private audio_init_segment_pending_: boolean = false;
     private video_init_segment_dispatched_: boolean = false;
     private video_sample_entry_type_: 'hvc1' | 'hev1' = 'hvc1';
+    private video_parameter_sets_in_band_: boolean = false;
     private audio_last_sample_pts_: number | undefined;
     private aac_last_incomplete_data_: Uint8Array = null;
     private loas_previous_frame_: LOASAACFrame | null = null;
@@ -721,7 +722,7 @@ class MMTSDemuxer extends BaseDemuxer {
         if (asset.packetId !== this.primary_video_packet_id_) {
             return;
         }
-        this.video_sample_entry_type_ = asset.assetType === 'hev1' ? 'hev1' : 'hvc1';
+        this.configureVideoSampleEntry(asset);
 
         const unitLength = MPU.readLengthPrefixedUnitLength(unit);
         if (unitLength === undefined || unitLength !== unit.byteLength - 4) {
@@ -842,6 +843,7 @@ class MMTSDemuxer extends BaseDemuxer {
             return;
         }
         this.video_sample_entry_type_ = 'hvc1';
+        this.video_parameter_sets_in_band_ = false;
         this.maybeSelectPrimaryVideoAsset(asset, false);
         if (asset.packetId !== this.primary_video_packet_id_) {
             return;
@@ -885,6 +887,12 @@ class MMTSDemuxer extends BaseDemuxer {
             }
         }
         this.tryActivateLatestCompleteParameterSet();
+    }
+
+    private configureVideoSampleEntry(asset: MMTAsset): void {
+        this.video_parameter_sets_in_band_ = asset.assetType === 'hev1';
+        this.video_sample_entry_type_ = this.video_parameter_sets_in_band_ &&
+            this.config_.mmtsForceHvc1SampleEntry !== true ? 'hev1' : 'hvc1';
     }
 
     private findHvcCBox(data: Uint8Array): Uint8Array | null {
@@ -1054,7 +1062,7 @@ class MMTSDemuxer extends BaseDemuxer {
             ...chain.pps.details
         };
         if (this.video_init_segment_dispatched_ &&
-            this.video_sample_entry_type_ === 'hev1' &&
+            this.video_parameter_sets_in_band_ &&
             !this.hasCriticalVideoMetadataChange(details)) {
             this.video_metadata_ = {
                 vps: chain.vps.nalu,
@@ -1842,7 +1850,7 @@ class MMTSDemuxer extends BaseDemuxer {
         const auIndex = accessUnit.auIndex;
         const filePosition = accessUnit.filePosition;
         const normalizedAccessUnit = normalizeH265AccessUnitForSampleEntry(
-            this.video_sample_entry_type_,
+            this.video_parameter_sets_in_band_ ? 'hev1' : this.video_sample_entry_type_,
             accessUnit.units,
             accessUnit.length
         );
@@ -3445,6 +3453,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.video_track_ = {type: 'video', id: 1, sequenceNumber: this.video_track_.sequenceNumber, samples: [], length: 0};
         this.video_init_segment_dispatched_ = false;
         this.video_sample_entry_type_ = 'hvc1';
+        this.video_parameter_sets_in_band_ = false;
         this.video_sample_index_ = 0;
         this.video_started_ = false;
         this.last_video_dts_ = -1;
@@ -4139,7 +4148,7 @@ class MMTSDemuxer extends BaseDemuxer {
             sps,
             pps,
             details,
-            this.video_sample_entry_type_ === 'hvc1'
+            this.video_sample_entry_type_ === 'hvc1' && !this.video_parameter_sets_in_band_
         ).getData();
 
         this.onTrackMetadata && this.onTrackMetadata('video', meta);
