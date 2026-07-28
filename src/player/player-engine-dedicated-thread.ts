@@ -1009,7 +1009,9 @@ class PlayerEngineDedicatedThread implements PlayerEngine {
                 const packet = message_packet as WorkerMessagePacketControlledSeek;
                 if (this._media_element) {
                     this._seeking_handler?.directSeek(packet.target_time);
-                    if (packet.reason === 'AUDIO_TRACK_SWITCH_REBUILD') {
+                    if (packet.reason === 'AUDIO_TRACK_SWITCH_REBUILD' ||
+                        (packet.reason === 'RECOMMEND_SEEKPOINT' &&
+                            this._config.mseRebuildMediaSourceOnSeek === true)) {
                         const resumePlayback = this._resume_after_audio_track_switch_rebuild === true;
                         this._resume_after_audio_track_switch_rebuild = null;
                         if (resumePlayback) {

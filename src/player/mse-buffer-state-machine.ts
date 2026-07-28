@@ -199,6 +199,12 @@ export type MSETrackSwitchFailure = {
     error: any,
 };
 
+type MSESeekRebuildPlan = {
+    kind: 'seek',
+    targetTime: number,
+    resumePlayback: boolean,
+};
+
 type MSETrackSwitchTransactionContext = {
     kind: 'audio-switch' | 'video-switch',
     operation: PlaybackOperation,
@@ -213,7 +219,7 @@ export type MSEBufferStateMachineOutput = {
     appendMedia: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult,
     removeRange: (type: MSEBufferTrackType, start: number, end: number) => MSEBufferOperationResult,
     resetParserState: (type: MSEBufferTrackType, mimeType: string) => MSEBufferOperationResult,
-    rebuildMediaSource: (plan: MSEAudioTrackSwitchRebuildPlan) => boolean,
+    rebuildMediaSource: (plan: MSEAudioTrackSwitchRebuildPlan | MSESeekRebuildPlan) => boolean,
     pauseTransmuxer: (reason: string) => void,
     resumeTransmuxer: (reason: string) => void,
     flushPending: (type?: MSEBufferTrackType) => void,
@@ -293,6 +299,7 @@ class MSEBufferStateMachine {
     private _pending_transmuxer_seek_milliseconds: number | null = null;
     private _pending_transmuxer_seek_reason: string | null = null;
     private _timeline_seek_target_time: number | null = null;
+    private _awaiting_media_seek_completion: boolean = false;
     private _track_switch_needs_data: boolean = false;
     private _live_audio_track_switch_collection_hold: boolean = false;
     private _pending_audio_rebuild_plan: MSEAudioTrackSwitchRebuildPlan | null = null;
@@ -524,6 +531,11 @@ class MSEBufferStateMachine {
         }
         if (typeof readyState === 'number' && isFinite(readyState)) {
             this._ready_state = readyState;
+        }
+        if (eventType === 'seeking') {
+            this._awaiting_media_seek_completion = true;
+        } else if (eventType === 'seeked') {
+            this._awaiting_media_seek_completion = false;
         }
         this._updateBackpressureStallPrefetch(eventType || 'media_state');
         this._updateBackpressure();
@@ -806,20 +818,35 @@ class MSEBufferStateMachine {
         this._video_random_access_points.splice(0, this._video_random_access_points.length);
         this._pending_remove_ranges.video.splice(0, this._pending_remove_ranges.video.length);
         this._pending_remove_ranges.audio.splice(0, this._pending_remove_ranges.audio.length);
-        this._pending_full_track_flush.video = true;
-        this._pending_full_track_flush.audio = true;
+        const rebuildMediaSource = this._config.mseRebuildMediaSourceOnSeek === true &&
+            !!this._output.rebuildMediaSource &&
+            this._output.rebuildMediaSource({
+                kind: 'seek',
+                targetTime,
+                resumePlayback: true,
+            }) === true;
+        this._pending_full_track_flush.video = !rebuildMediaSource;
+        this._pending_full_track_flush.audio = !rebuildMediaSource;
         this._pending_track_flush_from.video = null;
         this._pending_track_flush_from.audio = null;
-        const mediaSourceState = this._getMediaSourceState();
-        const videoSourceBuffer = this._getSourceBufferState('video', mediaSourceState);
-        const audioSourceBuffer = this._getSourceBufferState('audio', mediaSourceState);
-        this._track_state.video = videoSourceBuffer && videoSourceBuffer.exists ? 'READY' : 'NO_SOURCEBUFFER';
-        this._track_state.audio = audioSourceBuffer && audioSourceBuffer.exists ? 'READY' : 'NO_SOURCEBUFFER';
+        if (rebuildMediaSource) {
+            this._track_state.video = 'NO_SOURCEBUFFER';
+            this._track_state.audio = 'NO_SOURCEBUFFER';
+        } else {
+            const mediaSourceState = this._getMediaSourceState();
+            const videoSourceBuffer = this._getSourceBufferState('video', mediaSourceState);
+            const audioSourceBuffer = this._getSourceBufferState('audio', mediaSourceState);
+            this._track_state.video = videoSourceBuffer && videoSourceBuffer.exists ?
+                'READY' : 'NO_SOURCEBUFFER';
+            this._track_state.audio = audioSourceBuffer && audioSourceBuffer.exists ?
+                'READY' : 'NO_SOURCEBUFFER';
+        }
         this._pending_media_seek_target = null;
         this._pending_media_seek_reason = null;
         this._pending_media_seek_min_forward = 0;
         this._pending_transmuxer_seek_milliseconds = null;
         this._pending_transmuxer_seek_reason = null;
+        this._awaiting_media_seek_completion = false;
         this._pending_eos = false;
         this._track_switch_needs_data = false;
         this._live_audio_track_switch_collection_hold = false;
@@ -2044,85 +2071,81 @@ class MSEBufferStateMachine {
     }
 
     private _runPendingParserReset(): boolean {
-        const audioInit = this._pending_init_segments.audio[0];
-        const videoInit = this._pending_init_segments.video[0];
-        const audioNeedsReset = this._track_state.audio === 'RESETTING_PARSER' ||
-            !!(audioInit && audioInit.resetParserState === true);
-        const videoNeedsReset = this._track_state.video === 'RESETTING_PARSER' ||
-            !!(videoInit && videoInit.resetParserState === true);
-        const type = audioNeedsReset ? 'audio' : (videoNeedsReset ? 'video' : null);
-        if (!type) {
-            return false;
-        }
-        const segment = this._pending_init_segments[type][0];
-        if (!segment) {
-            return false;
-        }
-        const sourceBuffer = this._getSourceBufferState(type);
-        if (!sourceBuffer || !sourceBuffer.exists) {
-            this._track_state[type] = 'NEED_INIT';
-            return false;
-        }
-        if (!this._canOperateOnType(type)) {
-            return true;
-        }
-        const mimeType = this._makeSegmentMimeType(segment);
-        if (!mimeType) {
-            const error = {
-                code: -1,
-                msg: `Missing ${type} init segment mimeType for parser reset`,
-                segmentInfo: segment ? segment.info : null,
-            };
-            if (this._failStartupGroupForSegment(segment, 'parser-reset', error)) {
+        const types: MSEBufferTrackType[] = ['audio', 'video'];
+        for (let i = 0; i < types.length; i++) {
+            const type = types[i];
+            const segment = this._pending_init_segments[type][0];
+            const needsReset = this._track_state[type] === 'RESETTING_PARSER' ||
+                !!(segment && segment.resetParserState === true);
+            if (!needsReset) {
+                continue;
+            }
+            if (!segment) {
+                continue;
+            }
+            const sourceBuffer = this._getSourceBufferState(type);
+            if (!sourceBuffer || !sourceBuffer.exists) {
+                this._track_state[type] = 'NEED_INIT';
+                continue;
+            }
+            if (!this._canOperateOnType(type)) {
                 return true;
             }
-            const context = this._getTrackSwitchContextForSegment(segment);
-            if (context) {
-                this._failTrackSwitch(context, 'reset-parser-state', error);
-            } else {
-                this.onFatal(error);
-            }
-            return true;
-        }
-        let result: MSEBufferOperationResult;
-        try {
-            result = this._output.resetParserState(type, mimeType);
-        } catch (error) {
-            if (this._failStartupGroupForSegment(segment, 'parser-reset', error)) {
+            const mimeType = this._makeSegmentMimeType(segment);
+            if (!mimeType) {
+                const error = {
+                    code: -1,
+                    msg: `Missing ${type} init segment mimeType for parser reset`,
+                    segmentInfo: segment ? segment.info : null,
+                };
+                if (this._failStartupGroupForSegment(segment, 'parser-reset', error)) {
+                    return true;
+                }
+                const context = this._getTrackSwitchContextForSegment(segment);
+                if (context) {
+                    this._failTrackSwitch(context, 'reset-parser-state', error);
+                } else {
+                    this.onFatal(error);
+                }
                 return true;
             }
-            const context = this._getTrackSwitchContextForSegment(segment);
-            if (context) {
-                this._failTrackSwitch(context, 'reset-parser-state', error);
-            } else {
-                this.onFatal(error);
-            }
-            return true;
-        }
-        if (result && result.ok) {
-            delete segment.resetParserState;
-            delete segment.rebuildSourceBuffer;
-            delete segment.mimeType;
-            this._track_state[type] = 'NEED_INIT';
-            // Parser reset is synchronous.  Reset the other track as part of
-            // the same state-machine turn before either initialization
-            // segment is allowed to append.
-            return this._runPendingParserReset();
-        }
-        if (result && (result.error || result.fatal)) {
-            const error = result.error || result;
-            if (this._failStartupGroupForSegment(segment, 'parser-reset', error)) {
+            let result: MSEBufferOperationResult;
+            try {
+                result = this._output.resetParserState(type, mimeType);
+            } catch (error) {
+                if (this._failStartupGroupForSegment(segment, 'parser-reset', error)) {
+                    return true;
+                }
+                const context = this._getTrackSwitchContextForSegment(segment);
+                if (context) {
+                    this._failTrackSwitch(context, 'reset-parser-state', error);
+                } else {
+                    this.onFatal(error);
+                }
                 return true;
             }
-            const context = this._getTrackSwitchContextForSegment(segment);
-            if (context) {
-                this._failTrackSwitch(context, 'reset-parser-state', error);
-            } else {
-                this.onFatal(error);
+            if (result && result.ok) {
+                delete segment.resetParserState;
+                delete segment.rebuildSourceBuffer;
+                delete segment.mimeType;
+                this._track_state[type] = 'NEED_INIT';
+                continue;
+            }
+            if (result && (result.error || result.fatal)) {
+                const error = result.error || result;
+                if (this._failStartupGroupForSegment(segment, 'parser-reset', error)) {
+                    return true;
+                }
+                const context = this._getTrackSwitchContextForSegment(segment);
+                if (context) {
+                    this._failTrackSwitch(context, 'reset-parser-state', error);
+                } else {
+                    this.onFatal(error);
+                }
             }
             return true;
         }
-        return true;
+        return false;
     }
 
     private _appendMedia(type: MSEBufferTrackType): boolean {
@@ -3131,11 +3154,17 @@ class MSEBufferStateMachine {
             return;
         }
         const info = this.getForwardBufferInfo(this._current_time);
-        const videoSoft = this._getByteLimit('mseBufferVideoSoftLimitBytes', 120 * 1024 * 1024);
-        const audioSoft = this._getByteLimit('mseBufferAudioSoftLimitBytes', 12 * 1024 * 1024);
+        const seeking = this._main_state === 'SEEKING';
+        const videoSoft = seeking ?
+            Math.min(this._getByteLimit('mseBufferVideoSoftLimitBytes', 120 * 1024 * 1024), 32 * 1024 * 1024) :
+            this._getByteLimit('mseBufferVideoSoftLimitBytes', 120 * 1024 * 1024);
+        const audioSoft = seeking ?
+            Math.min(this._getByteLimit('mseBufferAudioSoftLimitBytes', 12 * 1024 * 1024), 4 * 1024 * 1024) :
+            this._getByteLimit('mseBufferAudioSoftLimitBytes', 12 * 1024 * 1024);
         const recoverVideoBytes = this._getRecoverVideoBytes(videoSoft);
         const recoverAudioBytes = this._getRecoverAudioBytes(audioSoft);
-        const forwardTargetDuration = this._getForwardTargetDuration();
+        const forwardTargetDuration = seeking ?
+            Math.min(this._getForwardTargetDuration(), 8) : this._getForwardTargetDuration();
         const recoverForwardDuration = this._getRecoverForwardDuration(forwardTargetDuration);
         const videoBytes = info.videoForwardBytes || 0;
         const audioBytes = info.audioForwardBytes || 0;
@@ -3158,7 +3187,9 @@ class MSEBufferStateMachine {
         if (videoBytes >= videoSoft ||
             audioBytes >= audioSoft ||
             playableDuration >= forwardTargetDuration) {
-            this._main_state = this._main_state === 'FATAL' ? 'FATAL' : 'BACKPRESSURE';
+            if (this._main_state !== 'FATAL' && this._main_state !== 'SEEKING') {
+                this._main_state = 'BACKPRESSURE';
+            }
             this._scheduleNormalCleanup();
             this._pauseTransmuxer('BACKPRESSURE');
         } else if (this._transmuxer_paused &&
@@ -3249,7 +3280,8 @@ class MSEBufferStateMachine {
         }
         return this._main_state === 'PRIMING' ||
             this._main_state === 'STEADY' ||
-            this._main_state === 'BACKPRESSURE';
+            this._main_state === 'BACKPRESSURE' ||
+            this._main_state === 'SEEKING';
     }
 
     private _isBackpressureReady(info: MSEBufferForwardInfo): boolean {
@@ -3486,6 +3518,7 @@ class MSEBufferStateMachine {
             this._pending_media_seek_min_forward = 0;
             this._timeline_seek_target_time = null;
             if (this._output.seekMedia) {
+                this._awaiting_media_seek_completion = true;
                 this._output.seekMedia(playableTarget, reason);
             }
             const operation = this._playback_operation;
@@ -3622,6 +3655,9 @@ class MSEBufferStateMachine {
                 this._allSourceBuffersIdle();
         }
         if (this._main_state !== 'SEEKING') {
+            return false;
+        }
+        if (this._awaiting_media_seek_completion) {
             return false;
         }
         if (this._pending_media_seek_target != null) {

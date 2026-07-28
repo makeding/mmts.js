@@ -56,6 +56,8 @@ export const defaultConfig = {
     mseBufferRecoverForwardDuration: undefined,
     mseAppendBatchDuration: 0,
     mseAppendTrackLeadLimit: undefined,
+    mseSeekPrerollKeepDuration: undefined,
+    mseRebuildMediaSourceOnSeek: false,
     deferLoadAfterSourceOpen: true,
 
     // autoCleanupSourceBuffer: default as false, leave unspecified
@@ -121,6 +123,14 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
         // memory ceiling explicit and remain compatible with MMTS VOD seeks.
         config.preferRangeLoader = Browser.safari && !config.isLive;
     }
+    if (!customConfig || customConfig.mseRebuildMediaSourceOnSeek === undefined) {
+        // WebKit can keep the previous coded-frame group after a full
+        // SourceBuffer flush.  Appending an earlier MMTS timeline then reports
+        // successful updateend events without exposing any buffered range.
+        // Replacing MediaSource also releases Safari's retained decoder
+        // surfaces between repeated 4K seeks.
+        config.mseRebuildMediaSourceOnSeek = Browser.safari && !config.isLive;
+    }
     if (!customConfig || customConfig.mmtsForceHvc1SampleEntry === undefined) {
         config.mmtsForceHvc1SampleEntry = Browser.safari;
     }
@@ -171,6 +181,14 @@ export function applyMediaDataSourceConfig(config, mediaDataSource, customConfig
     }
     if (!customConfig || customConfig.mseAppendBatchDuration === undefined) {
         config.mseAppendBatchDuration = config.isLive ? 0.35 : 0.5;
+    }
+    if ((!customConfig || customConfig.mseSeekPrerollKeepDuration === undefined) &&
+        Browser.firefox && !config.isLive) {
+        // Firefox/VideoToolbox must keep the complete decode chain from the
+        // verified no-RASL-output CRA.  One adaptive byte-position refinement
+        // gets VOD seeks close to the target; this bounded window retains the
+        // remaining reference frames without exceeding the 112 MiB VOD budget.
+        config.mseSeekPrerollKeepDuration = 20;
     }
     if (!customConfig || customConfig.autoCleanupSourceBuffer === undefined) {
         config.autoCleanupSourceBuffer = true;

@@ -321,6 +321,8 @@ class PlayerEngineMainThread implements PlayerEngine {
         mediaElement.addEventListener('progress', this.e.onMediaStateChange);
         mediaElement.addEventListener('canplay', this.e.onMediaStateChange);
         mediaElement.addEventListener('loadeddata', this.e.onMediaStateChange);
+        mediaElement.addEventListener('seeking', this.e.onMediaStateChange);
+        mediaElement.addEventListener('seeked', this.e.onMediaStateChange);
         mediaElement.addEventListener('error', this.e.onMediaError);
 
         this._mse_controller = this._createMSEController();
@@ -384,6 +386,10 @@ class PlayerEngineMainThread implements PlayerEngine {
             },
             seekMedia: (targetTime: number, reason: string) => {
                 this._seeking_handler?.directSeek(targetTime);
+                if (reason === 'RECOMMEND_SEEKPOINT' &&
+                    this._config.mseRebuildMediaSourceOnSeek === true) {
+                    this._resumePlaybackAfterMMTSAudioTrackSwitchRebuild();
+                }
             },
             onAudioTrackSwitchRebuildComplete: (operation: PlaybackOperation) => {
                 if (this._pending_mmts_vod_audio_track_switch) {
@@ -519,7 +525,7 @@ class PlayerEngineMainThread implements PlayerEngine {
             }
             return true;
         } catch (error) {
-            Log.e(this.TAG, `Failed to rebuild MediaSource for MMTS audio switch: ${error.message}`);
+            Log.e(this.TAG, `Failed to rebuild MediaSource for MMTS operation: ${error.message}`);
             return false;
         }
     }
@@ -551,6 +557,8 @@ class PlayerEngineMainThread implements PlayerEngine {
             this._media_element.removeEventListener('progress', this.e.onMediaStateChange);
             this._media_element.removeEventListener('canplay', this.e.onMediaStateChange);
             this._media_element.removeEventListener('loadeddata', this.e.onMediaStateChange);
+            this._media_element.removeEventListener('seeking', this.e.onMediaStateChange);
+            this._media_element.removeEventListener('seeked', this.e.onMediaStateChange);
             this._media_element.removeEventListener('error', this.e.onMediaError);
 
             // Detach media source from media element

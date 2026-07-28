@@ -386,6 +386,11 @@ declare namespace Mpegts {
          */
         mseAppendTrackLeadLimit?: number;
         /**
+         * @desc Replace MediaSource for each unbuffered MMTS VOD seek. This avoids WebKit retaining the previous coded-frame timeline on backward seeks.
+         * @defaultvalue false; true for Safari MMTS VOD
+         */
+        mseRebuildMediaSourceOnSeek?: boolean;
+        /**
          * @desc Do load after MediaSource `sourceopen` event triggered. On Chrome, tabs which
          *          be opened in background may not trigger `sourceopen` event until switched to that tab.
          * @defaultvalue true

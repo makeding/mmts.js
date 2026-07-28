@@ -887,6 +887,29 @@ function testSeekFlushesBeforeNewTimelineAppend() {
     assert(appendAfterSeek > removeBeforeSeek);
 }
 
+function testConfiguredSeekRebuildsMediaSourceInsteadOfFlushingOldRanges() {
+    const h = makeHarness({
+        config: {isMMTS: true, mseRebuildMediaSourceOnSeek: true},
+    });
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 600, end: 690});
+    h.ranges.audio.push({start: 600, end: 690});
+
+    h.sm.onUserSeek(100);
+
+    const rebuild = h.log.find((entry) => entry[0] === 'rebuildMediaSource');
+    assert(rebuild);
+    assert.strictEqual(rebuild[1].kind, 'seek');
+    assert.strictEqual(rebuild[1].targetTime, 100);
+    assert.strictEqual(rebuild[1].resumePlayback, true);
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'removeRange'), false);
+    assert.strictEqual(h.sm._pending_full_track_flush.video, false);
+    assert.strictEqual(h.sm._pending_full_track_flush.audio, false);
+    assert.strictEqual(h.sm._track_state.video, 'NO_SOURCEBUFFER');
+    assert.strictEqual(h.sm._track_state.audio, 'NO_SOURCEBUFFER');
+}
+
 function testSeekDropsOldTimelineSegmentsBeforeTargetWindow() {
     const h = makeHarness({config: {isMMTS: true, mseSeekPrerollKeepDuration: 4}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
@@ -1753,7 +1776,7 @@ function testInvalidAudioRebuildPlanDefersToTransactionOwner() {
     assert.strictEqual(h.log.some((entry) => entry[0] === 'fatal'), false);
 }
 
-function testBackpressureDoesNotOverrideSeekState() {
+function testBackpressurePausesSeekWithoutOverridingSeekState() {
     const h = makeHarness({config: {isMMTS: true}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
     h.sourceBuffers.video.exists = true;
@@ -1767,10 +1790,14 @@ function testBackpressureDoesNotOverrideSeekState() {
         audioForwardDuration: 30,
     });
     h.sm.onSeek(30);
+    h.sm._transmuxer_paused = false;
+    h.sm._transmuxer_pause_reason = null;
+    h.sm.tick('seek_preroll_buffered');
     assert.strictEqual(
         h.log.some((entry) => entry[0] === 'pauseTransmuxer' && entry[1] === 'BACKPRESSURE'),
-        false
+        true
     );
+    assert.strictEqual(h.sm._main_state, 'SEEKING');
 }
 
 function testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek() {
@@ -3333,6 +3360,7 @@ testAudioQuotaCanEvictPlayedVideoData();
 testInitQuotaDoesNotRequeueAsMedia();
 testMissingAudioSourceBufferWaitsForVideoInitUpdateEnd();
 testSeekFlushesBeforeNewTimelineAppend();
+testConfiguredSeekRebuildsMediaSourceInsteadOfFlushingOldRanges();
 testSeekDropsOldTimelineSegmentsBeforeTargetWindow();
 testRecommendedSeekPointKeepsEarlierPrerollSegments();
 testInvalidTimestampFailsExplicitly();
@@ -3360,7 +3388,7 @@ testAudioTrackSwitchRebuildWaitsWithoutPlayableIntersection();
 testAudioTrackSwitchRebuildFailureIsFatalWithoutSingleBufferFallback();
 testAudioTrackSwitchRebuildFailureDefersToTransactionOwner();
 testInvalidAudioRebuildPlanDefersToTransactionOwner();
-testBackpressureDoesNotOverrideSeekState();
+testBackpressurePausesSeekWithoutOverridingSeekState();
 testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek();
 testVideoTrackSwitchRequestsAndCommitsFromEndedMediaSource();
 testVideoTrackSwitchRejectsInvalidRemuxedWindow();

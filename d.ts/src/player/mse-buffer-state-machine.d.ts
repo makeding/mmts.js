@@ -86,13 +86,18 @@ export type MSETrackSwitchFailure = {
     phase: MSETrackSwitchFailurePhase;
     error: any;
 };
+type MSESeekRebuildPlan = {
+    kind: 'seek';
+    targetTime: number;
+    resumePlayback: boolean;
+};
 export type MSEBufferStateMachineOutput = {
     ensureSourceBuffer?: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult;
     appendInit: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult;
     appendMedia: (type: MSEBufferTrackType, segment: any) => MSEBufferOperationResult;
     removeRange: (type: MSEBufferTrackType, start: number, end: number) => MSEBufferOperationResult;
     resetParserState: (type: MSEBufferTrackType, mimeType: string) => MSEBufferOperationResult;
-    rebuildMediaSource: (plan: MSEAudioTrackSwitchRebuildPlan) => boolean;
+    rebuildMediaSource: (plan: MSEAudioTrackSwitchRebuildPlan | MSESeekRebuildPlan) => boolean;
     pauseTransmuxer: (reason: string) => void;
     resumeTransmuxer: (reason: string) => void;
     flushPending: (type?: MSEBufferTrackType) => void;

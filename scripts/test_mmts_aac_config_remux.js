@@ -209,6 +209,24 @@ function testOnlySafariDefaultsToHvc1CompatibilityEntry() {
     const firefoxConfig = firefoxConfigModule.createDefaultConfig();
     firefoxConfigModule.applyMediaDataSourceConfig(firefoxConfig, {type: 'mmts'}, undefined);
     assert.strictEqual(firefoxConfig.mmtsForceHvc1SampleEntry, false);
+    assert.strictEqual(firefoxConfig.mseSeekPrerollKeepDuration, 20);
+
+    const firefoxLiveConfig = firefoxConfigModule.createDefaultConfig();
+    firefoxConfigModule.applyMediaDataSourceConfig(
+        firefoxLiveConfig,
+        {type: 'mmts', isLive: true},
+        undefined
+    );
+    assert.strictEqual(firefoxLiveConfig.mseSeekPrerollKeepDuration, undefined);
+
+    const firefoxOverride = firefoxConfigModule.createDefaultConfig();
+    firefoxOverride.mseSeekPrerollKeepDuration = 8;
+    firefoxConfigModule.applyMediaDataSourceConfig(
+        firefoxOverride,
+        {type: 'mmts'},
+        {mseSeekPrerollKeepDuration: 8}
+    );
+    assert.strictEqual(firefoxOverride.mseSeekPrerollKeepDuration, 8);
 
     const overridden = safariConfigModule.createDefaultConfig();
     safariConfigModule.applyMediaDataSourceConfig(
