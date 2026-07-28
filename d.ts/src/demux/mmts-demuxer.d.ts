@@ -241,7 +241,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private logForcedVideoWait;
     private getForcedMMTSVideoPacketId;
     private scorePendingVideoAsset;
-    private scoreVideoAsset;
+    private compareVideoAssetPriority;
     private resetVideoBootstrapState;
     private updateTrackInfo;
     private updateAudioTrackInfoFromFrame;

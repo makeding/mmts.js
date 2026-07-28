@@ -1106,6 +1106,19 @@
                     ', audio=' + formatPlayerSourceBufferRanges('audio') +
                     ', video=' + formatPlayerSourceBufferRanges('video'));
             };
+            element.onseeking = function() {
+                // Subtitle payloads are arrival-timed and belong to the old
+                // playback window once a VOD seek starts.  Keep downloaded
+                // fonts/resources, but do not let repeated seeks accumulate
+                // old cues and make the debug cache look like current output.
+                clearActiveTTMLSubtitleCues();
+                ttmlSubtitleDataCache = [];
+                ttmlSubtitleReplayActive = false;
+                ttmlSubtitleEventCount = 0;
+                ttmlSubtitleLastStatus = null;
+                renderTTMLSubtitleStatus();
+                logDemo('seeking: currentTime=' + element.currentTime + ', reset TTML payload window');
+            };
             element.onseeked = function() {
                 logDemo('seeked: currentTime=' + element.currentTime);
             };
@@ -1128,15 +1141,25 @@
         }
 
         function formatPlayerSourceBufferRanges(type) {
-            var sourceBuffers = player &&
+            var mseController = player &&
                 player._player_engine &&
-                player._player_engine._mse_controller &&
-                player._player_engine._mse_controller._sourceBuffers;
+                player._player_engine._mse_controller;
+            if (mseController && typeof mseController.getBufferedRanges === 'function') {
+                var ranges = mseController.getBufferedRanges(type);
+                return '[' + ranges.slice(0, 6).map(function(range) {
+                    return range.start.toFixed(3) + '-' + range.end.toFixed(3);
+                }).join(',') + (ranges.length > 6 ? ',...+' + (ranges.length - 6) : '') + ']';
+            }
+            var sourceBuffers = mseController && mseController._sourceBuffers;
             var sourceBuffer = sourceBuffers && sourceBuffers[type];
             if (!sourceBuffer) {
                 return 'n/a';
             }
-            return formatTimeRanges(sourceBuffer.buffered);
+            try {
+                return formatTimeRanges(sourceBuffer.buffered);
+            } catch (error) {
+                return 'unavailable';
+            }
         }
 
         function logStatisticsInfo(element, info) {

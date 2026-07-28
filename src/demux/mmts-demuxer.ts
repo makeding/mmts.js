@@ -3266,7 +3266,8 @@ class MMTSDemuxer extends BaseDemuxer {
         }
 
         if (this.primary_video_packet_id_ >= 0) {
-            if (this.scoreVideoAsset(asset) <= this.scoreVideoAsset(this.program_.getAsset(this.primary_video_packet_id_))) {
+            const currentAsset = this.program_.getAsset(this.primary_video_packet_id_);
+            if (this.compareVideoAssetPriority(asset, currentAsset) >= 0) {
                 return;
             }
             this.resetVideoBootstrapState();
@@ -3390,16 +3391,38 @@ class MMTSDemuxer extends BaseDemuxer {
         return score;
     }
 
-    private scoreVideoAsset(asset: MMTAsset | undefined): number {
-        if (asset === undefined) {
+    private compareVideoAssetPriority(candidate: MMTAsset,
+                                      current: MMTAsset | undefined): number {
+        if (current === undefined) {
             return -1;
         }
 
-        const selectionScore = asset.assetSelectionLevel !== undefined ?
-            (255 - asset.assetSelectionLevel) * 100000000 : 0;
-        return selectionScore +
-            (asset.videoResolution !== undefined ? asset.videoResolution * 10000 : 0) +
-            this.scorePendingVideoAsset(asset.packetId);
+        // asset_selection_level only defines an ordering inside one declared
+        // asset group.  Some broadcasts omit it on the normal 4K service but
+        // set level=1 on the 1080p heavy-rain fallback.  Treating the mere
+        // presence of the field as a global score makes that fallback win.
+        if (candidate.assetGroupId !== undefined &&
+            current.assetGroupId !== undefined &&
+            candidate.assetGroupId === current.assetGroupId &&
+            candidate.assetSelectionLevel !== undefined &&
+            current.assetSelectionLevel !== undefined &&
+            candidate.assetSelectionLevel !== current.assetSelectionLevel) {
+            return candidate.assetSelectionLevel - current.assetSelectionLevel;
+        }
+
+        const resolutionOrder = (current.videoResolution || 0) -
+            (candidate.videoResolution || 0);
+        if (resolutionOrder !== 0) {
+            return resolutionOrder;
+        }
+
+        const activityOrder = this.scorePendingVideoAsset(current.packetId) -
+            this.scorePendingVideoAsset(candidate.packetId);
+        if (activityOrder !== 0) {
+            return activityOrder;
+        }
+
+        return candidate.packetId - current.packetId;
     }
 
     private resetVideoBootstrapState(preserveTimeline: boolean = false): void {

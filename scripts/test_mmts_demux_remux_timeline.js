@@ -100,6 +100,39 @@ function testProbeRejectsStructuredAudioSelectionFailure() {
     assert.strictEqual(probe.selectionResult, result);
 }
 
+function testVideoAssetSelectionLevelIsOnlyComparedWithinSameGroup() {
+    const MMTSDemuxer = loadDemuxer();
+    const demuxer = Object.create(MMTSDemuxer.prototype);
+    const activity = {};
+    demuxer.scorePendingVideoAsset = (packetId) => activity[packetId] || 0;
+
+    const primary4K = {
+        packetId: 0xf300,
+        mediaType: 'video',
+        videoResolution: 6,
+    };
+    const rainFallback1080 = {
+        packetId: 0xf301,
+        mediaType: 'video',
+        videoResolution: 5,
+        assetGroupId: 0,
+        assetSelectionLevel: 1,
+    };
+    assert.ok(demuxer.compareVideoAssetPriority(rainFallback1080, primary4K) > 0);
+    assert.ok(demuxer.compareVideoAssetPriority(primary4K, rainFallback1080) < 0);
+
+    const declaredPrimary1080 = Object.assign({}, rainFallback1080, {
+        packetId: 0xf302,
+        assetSelectionLevel: 0,
+    });
+    assert.ok(demuxer.compareVideoAssetPriority(rainFallback1080, declaredPrimary1080) > 0);
+    assert.ok(demuxer.compareVideoAssetPriority(declaredPrimary1080, rainFallback1080) < 0);
+
+    const equalResolution = Object.assign({}, primary4K, {packetId: 0xf303});
+    activity[equalResolution.packetId] = 100;
+    assert.ok(demuxer.compareVideoAssetPriority(equalResolution, primary4K) < 0);
+}
+
 function loadDemuxer(options = {}) {
     class BaseDemuxer {}
     class MMTSAudioTimeline {
@@ -386,6 +419,9 @@ function testRemuxerUsesExactMMTSVideoClockForMp4Only() {
 function loadControllerWithDemuxer(MMTSDemuxer, browser = {safari: false}) {
     const emptyClass = class {};
     const playbackOperation = loadModule('src/core/playback-operation.ts', {});
+    const playbackOutputState = loadModule('src/core/mmts-playback-output-state.ts', {
+        './playback-operation': Object.assign({__esModule: true}, playbackOperation),
+    });
     const startupGroupLifecycle = loadModule('src/core/mmts-startup-group-lifecycle.ts', {
         './playback-operation': Object.assign({__esModule: true}, playbackOperation),
     });
@@ -410,6 +446,10 @@ function loadControllerWithDemuxer(MMTSDemuxer, browser = {safari: false}) {
         },
         '../io/loader.js': {LoaderStatus: {}, LoaderErrors: {}},
         './playback-operation': Object.assign({__esModule: true}, playbackOperation),
+        './mmts-playback-output-state': Object.assign(
+            {__esModule: true},
+            playbackOutputState
+        ),
         './mmts-startup-group-lifecycle': Object.assign(
             {__esModule: true},
             startupGroupLifecycle
@@ -3288,6 +3328,7 @@ function testRemuxerAttachesParserResetInitToRecoveryRap() {
 }
 
 testProbeRejectsStructuredAudioSelectionFailure();
+testVideoAssetSelectionLevelIsOnlyComparedWithinSameGroup();
 testDemuxerAcceptsNormalDescriptorTimeline();
 testDemuxerMapsSwitchedVideoToExistingRawTimeline();
 testDemuxerValidatesSwitchedVideoMpuOnSharedRawTimeline();
