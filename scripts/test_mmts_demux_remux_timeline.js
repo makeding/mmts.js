@@ -3234,6 +3234,7 @@ function testCompleteShortVideoMpuDoesNotForceRecovery() {
     demuxer.video_reference_recovery_parameter_set_generation_limit_ = 0;
     demuxer.video_reference_recovery_watch_remaining_ = 0;
     demuxer.video_reference_recovery_watch_delay_ = 0;
+    demuxer.committed_video_parameter_set_generation_ = 10;
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 7),
@@ -3286,13 +3287,24 @@ function testCompleteShortVideoMpuDoesNotForceRecovery() {
     assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), false);
     assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), false);
     assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(9), false);
-    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), true);
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(10), false);
+    assert.strictEqual(demuxer.shouldQuarantineRecoveryParameterSetChange(11), true);
+
+    demuxer.video_parameter_set_recovery_pending_ = true;
+    demuxer.video_reference_recovery_pending_ = true;
+    assert.strictEqual(
+        demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT, 11),
+        true
+    );
+    assert.strictEqual(resetCount, 3);
+    assert.strictEqual(demuxer.video_reference_recovery_watch_remaining_, 0);
+    assert.strictEqual(demuxer.video_reference_recovery_watch_delay_, 0);
 
     assert.strictEqual(
         demuxer.prepareVideoReferenceRecovery(32, TEST_H265_NALU_TYPE.CRA_NUT),
         false
     );
-    assert.strictEqual(resetCount, 2);
+    assert.strictEqual(resetCount, 3);
 }
 
 function testPacketSequenceGapArmsVideoReferenceRecovery() {
@@ -3341,25 +3353,45 @@ function testNovelParameterSetAtCraIsQuarantinedOnlyAfterVideoStarts() {
     demuxer.video_init_segment_dispatched_ = true;
     demuxer.video_started_ = true;
     demuxer.committed_video_parameter_set_generation_ = 8;
+    demuxer.video_random_access_parameter_set_signatures_ = new Set(['base']);
 
     assert.strictEqual(
         demuxer.shouldQuarantineNovelRandomAccessParameterSet(
             TEST_H265_NALU_TYPE.CRA_NUT,
-            9
+            9,
+            'base'
         ),
         true
     );
     assert.strictEqual(
         demuxer.shouldQuarantineNovelRandomAccessParameterSet(
             TEST_H265_NALU_TYPE.CRA_NUT,
-            8
+            8,
+            'base'
+        ),
+        false
+    );
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.CRA_NUT,
+            8,
+            'previously-seen-only-outside-random-access'
+        ),
+        true
+    );
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.CRA_NUT,
+            8,
+            'previously-seen-only-outside-random-access'
         ),
         false
     );
     assert.strictEqual(
         demuxer.shouldQuarantineNovelRandomAccessParameterSet(
             TEST_H265_NALU_TYPE.TRAIL_R,
-            9
+            9,
+            'non-random-access'
         ),
         false
     );
@@ -3368,7 +3400,18 @@ function testNovelParameterSetAtCraIsQuarantinedOnlyAfterVideoStarts() {
     assert.strictEqual(
         demuxer.shouldQuarantineNovelRandomAccessParameterSet(
             TEST_H265_NALU_TYPE.CRA_NUT,
-            9
+            9,
+            'startup'
+        ),
+        false
+    );
+    demuxer.video_started_ = true;
+    demuxer.committed_video_parameter_set_generation_ = 9;
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.CRA_NUT,
+            9,
+            'startup'
         ),
         false
     );

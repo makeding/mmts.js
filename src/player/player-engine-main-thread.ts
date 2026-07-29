@@ -386,8 +386,10 @@ class PlayerEngineMainThread implements PlayerEngine {
             },
             seekMedia: (targetTime: number, reason: string) => {
                 this._seeking_handler?.directSeek(targetTime);
-                if (reason === 'RECOMMEND_SEEKPOINT' &&
-                    this._config.mseRebuildMediaSourceOnSeek === true) {
+                if (reason === 'RECOMMEND_SEEKPOINT') {
+                    // The resume intent is captured only when a MediaSource was
+                    // actually rebuilt. This also covers the one-shot rebuild
+                    // forced by track-switch failure recovery.
                     this._resumePlaybackAfterMMTSAudioTrackSwitchRebuild();
                 }
             },
@@ -2990,7 +2992,13 @@ class PlayerEngineMainThread implements PlayerEngine {
             this._pending_seek_time = targetSeconds;
             return promise;
         }
-        const delay = source === 'media' ? 0 : this._getMMTSSeekDebounceInterval();
+        // A failed track switch may leave VideoToolbox decoding with a stale
+        // parameter-set/DPB chain. Start its recovery on the next task instead
+        // of leaving the old decoder active for the normal seek debounce.
+        const trackSwitchRecovery = source === 'audio-switch-recovery' ||
+            source === 'video-switch-recovery';
+        const delay = source === 'media' || trackSwitchRecovery ?
+            0 : this._getMMTSSeekDebounceInterval();
         this._schedulePendingMMTSSeek(delay);
         return promise;
     }
@@ -3113,7 +3121,12 @@ class PlayerEngineMainThread implements PlayerEngine {
                 this._completeScheduledOperation(operation, 'failed', 'activation-rejected');
                 return;
             }
-            this._mse_buffer_state_machine?.onUserSeek(payload.targetSeconds);
+            const forceMediaSourceRebuild = payload.source === 'audio-switch-recovery' ||
+                payload.source === 'video-switch-recovery';
+            this._mse_buffer_state_machine?.onUserSeek(
+                payload.targetSeconds,
+                forceMediaSourceRebuild
+            );
             return;
         }
 

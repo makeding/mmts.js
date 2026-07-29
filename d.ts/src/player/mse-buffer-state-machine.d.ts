@@ -130,6 +130,8 @@ declare class MSEBufferStateMachine {
     private _pending_remove_ranges;
     private _pending_full_track_flush;
     private _pending_track_flush_from;
+    private _pending_video_parameter_set_recovery_time;
+    private _video_parameter_set_recovery_flush_started;
     private _current_time;
     private _ready_state;
     private _source_opened;
@@ -183,7 +185,7 @@ declare class MSEBufferStateMachine {
     onSeek(targetTime: number): void;
     onDirectSeek(targetTime: number): boolean;
     onRecommendedSeekPoint(targetTime: number): void;
-    onUserSeek(targetTime: number): void;
+    onUserSeek(targetTime: number, forceMediaSourceRebuild?: boolean): void;
     onMMTSVodAudioTrackRebuild(targetTime: number, operation?: PlaybackOperation, transactionId?: number): boolean;
     cancelAudioTrackSwitch(operation: PlaybackOperation): boolean;
     cancelMMTSVodAudioTrackRebuild(): void;
@@ -218,6 +220,7 @@ declare class MSEBufferStateMachine {
     private _doesStartupVideoCoverPlayableWindow;
     private _markStartupGroupMediaAppended;
     private _markVideoTrackSwitchMediaAppended;
+    private _markVideoParameterSetRecoveryAppended;
     private _markAudioTrackSwitchMediaAppended;
     private _finishVideoTrackSwitchTailTrimIfReady;
     private _resolveStartupSeekTime;
@@ -239,6 +242,8 @@ declare class MSEBufferStateMachine {
     private _mergeMediaBatch;
     private _getSegmentData;
     private _runPendingRemove;
+    private _startVideoParameterSetRecoveryFlushIfDue;
+    private _clearPendingVideoParameterSetRecovery;
     private _runPendingTransmuxerSeek;
     private _queueAudioTrackSwitchRebuild;
     private _runPendingAudioTrackSwitchRebuild;

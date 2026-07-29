@@ -22,6 +22,7 @@ function parseArgs(argv) {
         dist: undefined,
         videoPacketId: undefined,
         workerMSE: false,
+        startAtSeconds: undefined,
     };
 
     for (let i = 2; i < argv.length; i++) {
@@ -54,6 +55,8 @@ function parseArgs(argv) {
             args.videoPacketId = Number(argv[++i]);
         } else if (arg === '--worker-mse') {
             args.workerMSE = true;
+        } else if (arg === '--start-at') {
+            args.startAtSeconds = Number(argv[++i]);
         } else {
             throw new Error(`unknown argument: ${arg}`);
         }
@@ -74,6 +77,10 @@ function parseArgs(argv) {
     if (!Array.isArray(args.targets) || args.targets.some((value) =>
         !Number.isFinite(value) || value < 0)) {
         throw new Error('--targets must contain non-negative finite seconds');
+    }
+    if (args.startAtSeconds !== undefined &&
+        (!Number.isFinite(args.startAtSeconds) || args.startAtSeconds < 0)) {
+        throw new Error('--start-at must be a non-negative finite second');
     }
     args.file = path.resolve(args.file);
     if (!fs.existsSync(args.file) || !fs.statSync(args.file).isFile()) {
@@ -348,14 +355,27 @@ function createHarnessHtml(type, videoPacketId, fileSize, workerMSE) {
         try {
             const operation = kind === 'audio' ?
                 player.selectAudioTrack(target.packetId) : player.selectVideoTrack(target.packetId);
+            let endedListener;
+            const endedPromise = new Promise((resolve) => {
+                endedListener = () => {
+                    const atActualEnd = Number.isFinite(video.duration) && video.duration > 0 &&
+                        video.currentTime >= video.duration - 0.05;
+                    if (atActualEnd) resolve({type: 'ended'});
+                    else record('transient-ended-ignored', {
+                        duration: video.duration,
+                        readyState: video.readyState,
+                    });
+                };
+                video.addEventListener('ended', endedListener);
+            });
             const outcome = await Promise.race([
                 Promise.resolve(operation).then((result) => ({type: 'result', result})),
-                new Promise((resolve) => video.addEventListener('ended',
-                    () => resolve({type: 'ended'}), {once: true})),
+                endedPromise,
                 // A failed VOD switch can consume one 45s data timeout and a
                 // second recovery timeout before settling back to the old track.
                 new Promise((_, reject) => setTimeout(() => reject(new Error('track switch timeout')), 100000)),
             ]);
+            video.removeEventListener('ended', endedListener);
             if (outcome.type === 'ended') {
                 const item = {kind, packetId: target.packetId, skipped: true, reason: 'playback-ended'};
                 state.switchResults.push(item);
@@ -506,6 +526,7 @@ class CDPClient {
         this.socket.addEventListener('message', (event) => this.onMessage(event.data));
         this.socket.addEventListener('close', () => {
             for (const pending of this.pending.values()) {
+                clearTimeout(pending.timeout);
                 pending.reject(new Error('Chrome DevTools connection closed'));
             }
             this.pending.clear();
@@ -518,6 +539,7 @@ class CDPClient {
             const pending = this.pending.get(message.id);
             if (!pending) return;
             this.pending.delete(message.id);
+            clearTimeout(pending.timeout);
             if (message.error) pending.reject(new Error(message.error.message));
             else pending.resolve(message.result || {});
             return;
@@ -532,10 +554,16 @@ class CDPClient {
         this.listeners.set(method, listeners);
     }
 
-    async send(method, params = {}) {
+    async send(method, params = {}, timeoutMs = 15000) {
         await this.ready;
         const id = this.nextId++;
-        const promise = new Promise((resolve, reject) => this.pending.set(id, {resolve, reject}));
+        const promise = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                if (!this.pending.delete(id)) return;
+                reject(new Error(`Chrome DevTools command timed out: ${method}`));
+            }, timeoutMs);
+            this.pending.set(id, {resolve, reject, timeout});
+        });
         this.socket.send(JSON.stringify({id, method, params}));
         return promise;
     }
@@ -545,12 +573,12 @@ class CDPClient {
     }
 }
 
-async function evaluate(client, expression) {
+async function evaluate(client, expression, timeoutMs = 15000) {
     const result = await client.send('Runtime.evaluate', {
         expression,
         awaitPromise: true,
         returnByValue: true,
-    });
+    }, timeoutMs);
     if (result.exceptionDetails) {
         throw new Error(result.exceptionDetails.text || 'page evaluation failed');
     }
@@ -559,6 +587,11 @@ async function evaluate(client, expression) {
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isPlaybackAtEnd(snapshot) {
+    return !!snapshot && snapshot.ended === true && Number.isFinite(snapshot.duration) &&
+        snapshot.duration > 0 && snapshot.currentTime >= snapshot.duration - 0.05;
 }
 
 function makeRandom(seed) {
@@ -646,6 +679,10 @@ async function runTest(client, args) {
         throw Object.assign(new Error(message), {snapshot, consoleLines});
     }
 
+    if (args.startAtSeconds !== undefined) {
+        await evaluate(client, `window.__mmtsSeek(${JSON.stringify(args.startAtSeconds)})`);
+    }
+
     const started = Date.now();
     let nextSeekAt = started + args.seekIntervalSeconds * 1000;
     let targetIndex = 0;
@@ -657,7 +694,7 @@ async function runTest(client, args) {
         if (snapshot.failure || snapshot.mediaError) {
             throw Object.assign(new Error(`media failure at ${snapshot.currentTime}s`), {snapshot, consoleLines});
         }
-        if (snapshot.ended) return {snapshot, consoleLines};
+        if (isPlaybackAtEnd(snapshot)) return {snapshot, consoleLines};
         if (snapshot.lastProgressAgo > args.stallTimeoutSeconds) {
             throw Object.assign(new Error(`playback stalled for ${snapshot.lastProgressAgo.toFixed(1)}s`), {
                 snapshot,
@@ -688,26 +725,23 @@ async function runTest(client, args) {
                 const kind = action === 'tracks' ?
                     (actionIndex++ % 2 === 0 ? 'audio' : 'video') : action;
                 actionResult = await evaluate(client,
-                    `window.__mmtsSwitchTrack(${JSON.stringify(kind)})`);
+                    `window.__mmtsSwitchTrack(${JSON.stringify(kind)})`, 110000);
             }
             snapshot = await evaluate(client, 'window.__mmtsSnapshot()');
             if (snapshot.failure || snapshot.mediaError) {
                 throw Object.assign(new Error(`media failure after ${action} action at ` +
                     `${snapshot.currentTime}s`), {snapshot, consoleLines});
             }
-            if (snapshot.ended) return {snapshot, consoleLines};
-            if (actionResult && actionResult.skipped === true &&
-                actionResult.reason === 'playback-ended') {
-                return {snapshot, consoleLines};
-            }
+            if (isPlaybackAtEnd(snapshot)) return {snapshot, consoleLines};
             const failedTrackSwitch = actionResult && (
                 typeof actionResult.error === 'string' ||
                 (actionResult.result && actionResult.result.status === 'failed')
             );
             if (failedTrackSwitch) {
-                const recoveryDeadline = Date.now() + 5000;
-                while (snapshot.lastProgressAgo > 2 && !snapshot.failure &&
-                    !snapshot.mediaError && !snapshot.ended && Date.now() < recoveryDeadline) {
+                const readyDeadline = Date.now() + 20000;
+                while ((snapshot.seeking || snapshot.readyState < 2 || snapshot.paused) &&
+                    !snapshot.failure && !snapshot.mediaError &&
+                    !isPlaybackAtEnd(snapshot) && Date.now() < readyDeadline) {
                     await sleep(250);
                     snapshot = await evaluate(client, 'window.__mmtsSnapshot()');
                 }
@@ -715,7 +749,35 @@ async function runTest(client, args) {
                     throw Object.assign(new Error(`media failure during ${action} recovery at ` +
                         `${snapshot.currentTime}s`), {snapshot, consoleLines});
                 }
-                if (snapshot.ended) return {snapshot, consoleLines};
+                if (isPlaybackAtEnd(snapshot)) return {snapshot, consoleLines};
+                if (snapshot.seeking || snapshot.readyState < 2 || snapshot.paused) {
+                    throw Object.assign(new Error(`playback did not become ready after ${action} ` +
+                        `recovery at ${snapshot.currentTime}s`), {snapshot, consoleLines});
+                }
+                const recoveryStartTime = Number(snapshot.currentTime);
+                const recoveryStartFrames = snapshot.quality &&
+                    Number(snapshot.quality.totalVideoFrames) || 0;
+                const progressDeadline = Date.now() + 15000;
+                while (snapshot.currentTime < recoveryStartTime + 1 &&
+                    (!snapshot.quality ||
+                        snapshot.quality.totalVideoFrames < recoveryStartFrames + 10) &&
+                    !snapshot.failure && !snapshot.mediaError &&
+                    !isPlaybackAtEnd(snapshot) && Date.now() < progressDeadline) {
+                    await sleep(250);
+                    snapshot = await evaluate(client, 'window.__mmtsSnapshot()');
+                }
+                if (snapshot.failure || snapshot.mediaError) {
+                    throw Object.assign(new Error(`media failure during ${action} recovery at ` +
+                        `${snapshot.currentTime}s`), {snapshot, consoleLines});
+                }
+                if (isPlaybackAtEnd(snapshot)) return {snapshot, consoleLines};
+                const recoveredFrames = snapshot.quality &&
+                    Number(snapshot.quality.totalVideoFrames) || 0;
+                if (snapshot.currentTime < recoveryStartTime + 1 &&
+                    recoveredFrames < recoveryStartFrames + 10) {
+                    throw Object.assign(new Error(`playback did not resume after ${action} ` +
+                        `recovery at ${snapshot.currentTime}s`), {snapshot, consoleLines});
+                }
             }
             if (snapshot.lastProgressAgo > args.stallTimeoutSeconds) {
                 throw Object.assign(new Error(`playback stalled after ${action} action for ` +
@@ -794,13 +856,23 @@ async function main() {
         process.exitCode = 1;
     } finally {
         if (client) client.close();
-        await new Promise((resolve) => server.close(resolve));
         chromeProcess.kill('SIGTERM');
         await Promise.race([
             new Promise((resolve) => chromeProcess.once('exit', resolve)),
             sleep(3000),
         ]);
-        if (chromeProcess.exitCode === null) chromeProcess.kill('SIGKILL');
+        if (chromeProcess.exitCode === null) {
+            chromeProcess.kill('SIGKILL');
+            await Promise.race([
+                new Promise((resolve) => chromeProcess.once('exit', resolve)),
+                sleep(3000),
+            ]);
+        }
+        // Chrome can keep the media Range connection open after the test has
+        // finished. Stop it before awaiting server.close(), otherwise a sample
+        // matrix can hang forever between two otherwise successful cases.
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
         fs.rmSync(userDataDir, {recursive: true, force: true});
     }
 }

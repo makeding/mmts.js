@@ -923,6 +923,44 @@ function testConfiguredSeekRebuildsMediaSourceInsteadOfFlushingOldRanges() {
     assert.strictEqual(h.sm._track_state.audio, 'NO_SOURCEBUFFER');
 }
 
+function testTrackSwitchRecoverySeekForcesMediaSourceRebuild() {
+    const h = makeHarness({config: {isMMTS: true, mseRebuildMediaSourceOnSeek: false}});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 300, end: 390});
+    h.ranges.audio.push({start: 300, end: 390});
+
+    h.sm.onUserSeek(322.5, true);
+
+    const rebuild = h.log.find((entry) => entry[0] === 'rebuildMediaSource');
+    assert(rebuild);
+    assert.strictEqual(rebuild[1].kind, 'seek');
+    assert.strictEqual(rebuild[1].targetTime, 322.5);
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'removeRange'), false);
+    assert.strictEqual(h.sm._pending_full_track_flush.video, false);
+    assert.strictEqual(h.sm._pending_full_track_flush.audio, false);
+}
+
+function testRecordedMMTSHEVCSeekRebuildsMediaSource() {
+    const h = makeHarness({config: {
+        isMMTS: true,
+        isLive: false,
+        mseRebuildMediaSourceOnSeek: false,
+    }});
+    h.sm.onMediaInfo({hasAudio: true, hasVideo: true, videoCodec: 'hev1.2.4.L183.B0'});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 30, end: 80});
+    h.ranges.audio.push({start: 30, end: 80});
+
+    h.sm.onUserSeek(39.45);
+
+    const rebuild = h.log.find((entry) => entry[0] === 'rebuildMediaSource');
+    assert(rebuild);
+    assert.strictEqual(rebuild[1].targetTime, 39.45);
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'removeRange'), false);
+}
+
 function testSeekDropsOldTimelineSegmentsBeforeTargetWindow() {
     const h = makeHarness({config: {isMMTS: true, mseSeekPrerollKeepDuration: 4}});
     h.sm.onMediaInfo({hasAudio: true, hasVideo: true});
@@ -1873,9 +1911,12 @@ function testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek() {
         videoMediaSegment,
     });
     assert.strictEqual(accepted, true);
-    assert.strictEqual(h.log.some((entry) => entry[0] === 'removeRange'), false);
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'removeRange' && entry[1] === 'video' && entry[2] === 0 && entry[3] === 20
+    ), true);
     assert.strictEqual(h.log.some((entry) => entry[0] === 'removeRange' && entry[1] === 'audio'), false);
     assert.strictEqual(h.log.some((entry) => entry[0] === 'seekMedia'), false);
+    h.updateEnd('video');
     const videoResetIndex = h.log.findIndex((entry) =>
         entry[0] === 'resetParserState' && entry[1] === 'video'
     );
@@ -1884,7 +1925,6 @@ function testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek() {
     );
     assert(videoResetIndex >= 0 && videoInitIndex > videoResetIndex);
 
-    h.updateEnd('video');
     h.updateEnd('video');
     h.updateEnd('video');
 
@@ -1904,11 +1944,11 @@ function testVideoTrackSwitchConsumesRemuxedVideoWindowWithoutTimelineSeek() {
     const videoTailRemoveIndex = h.log.findIndex((entry) =>
         entry[0] === 'removeRange' && entry[1] === 'video' && entry[2] === 13 && entry[3] === 20
     );
-    assert(videoTailRemoveIndex > videoMediaIndex);
+    assert.strictEqual(videoTailRemoveIndex, -1);
     const videoCompleteIndex = h.log.findIndex((entry) =>
         entry[0] === 'videoTrackSwitchComplete' && entry[1].transactionId === 2
     );
-    assert(videoCompleteIndex > videoTailRemoveIndex);
+    assert(videoCompleteIndex > videoMediaIndex);
     assert.strictEqual(h.log.some((entry) =>
         entry[0] === 'videoTrackSwitchComplete' && entry[1].transactionId === 2
     ), true);
@@ -3225,6 +3265,57 @@ function testMMTSPlaybackOperationFencesStaleAndMissingInput() {
     assert.strictEqual(fresh.playbackOperation.timelineGeneration, 10);
 }
 
+function testVideoParameterSetRecoveryWaitsForPlaybackBoundary() {
+    const h = makeHarness({config: {isMMTS: true}});
+    h.sourceBuffers.video.exists = true;
+    h.sourceBuffers.audio.exists = true;
+    h.ranges.video.push({start: 0, end: 20});
+    h.ranges.audio.push({start: 0, end: 20});
+    h.sm.onMediaState(5, 4, 'timeupdate');
+
+    const init = makeInit('video', 'hev1.2.4.L183.B0');
+    init.resetParserState = true;
+    init.mmtsVideoParameterSetRecovery = true;
+    h.sm.onInitSegment('video', init);
+
+    const media = makeSegment('video', 12.1, 13, 1024);
+    media.mmtsVideoParameterSetRecovery = true;
+    h.sm.onMediaSegment('video', media);
+
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'removeRange'), false);
+    assert.strictEqual(h.log.some((entry) => entry[0] === 'resetParserState'), false);
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'pauseTransmuxer' && entry[1] === 'VIDEO_PARAMETER_SET_RECOVERY'
+    ), true);
+
+    h.sm.onMediaState(11.2, 4, 'timeupdate');
+    assert.deepStrictEqual(
+        h.log.find((entry) => entry[0] === 'removeRange'),
+        ['removeRange', 'video', 0, 20]
+    );
+
+    h.ranges.video.splice(0, h.ranges.video.length);
+    h.updateEnd('video');
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'resetParserState' && entry[1] === 'video'
+    ), true);
+    h.updateEnd('video');
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'appendMedia' && entry[1] === 'video' && entry[2] === 12.1
+    ), true);
+
+    h.ranges.video.push({start: 12.1, end: 13});
+    h.updateEnd('video');
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'seekMedia' && entry[1] === 12.1 &&
+        entry[2] === 'VIDEO_PARAMETER_SET_RECOVERY'
+    ), true);
+    assert.strictEqual(h.log.some((entry) =>
+        entry[0] === 'resumeTransmuxer' && entry[1] === 'VIDEO_PARAMETER_SET_RECOVERY'
+    ), true);
+    assert.strictEqual(h.sm._pending_video_parameter_set_recovery_time, null);
+}
+
 function testAudioTrackSwitchFailurePhasesAreReportedOnce() {
     function run(phase, transactionId) {
         const failures = [];
@@ -3427,6 +3518,8 @@ testInitQuotaDoesNotRequeueAsMedia();
 testMissingAudioSourceBufferWaitsForVideoInitUpdateEnd();
 testSeekFlushesBeforeNewTimelineAppend();
 testConfiguredSeekRebuildsMediaSourceInsteadOfFlushingOldRanges();
+testTrackSwitchRecoverySeekForcesMediaSourceRebuild();
+testRecordedMMTSHEVCSeekRebuildsMediaSource();
 testSeekDropsOldTimelineSegmentsBeforeTargetWindow();
 testRecommendedSeekPointKeepsEarlierPrerollSegments();
 testInvalidTimestampFailsExplicitly();
@@ -3501,6 +3594,7 @@ testMMTSSourceIdentityAllowsFilePositionReorderWithoutRawDtsRollback();
 testMMTSSourceIdentityAllowsSameMpuSampleReorderWithoutSourceRollback();
 testNonMMTSSourceIdentityDoesNotBlockAppend();
 testMMTSPlaybackOperationFencesStaleAndMissingInput();
+testVideoParameterSetRecoveryWaitsForPlaybackBoundary();
 testAudioTrackSwitchFailurePhasesAreReportedOnce();
 testVideoTrackSwitchRejectsMissingInitWrongAttemptAndStaleTransactionAtomically();
 

@@ -368,6 +368,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private next_video_parameter_set_generation_: number = 1;
     private active_video_parameter_set_signature_: string | undefined;
     private committed_video_parameter_set_generation_: number = 0;
+    private video_random_access_parameter_set_signatures_: Set<string> = new Set();
     private hevc_poc_recovery_: HEVCPocRecovery = new HEVCPocRecovery();
     private rejected_video_mpus_: {[key: string]: boolean} = {};
     private nominal_video_mpu_access_unit_count_: number = 0;
@@ -1496,7 +1497,8 @@ class MMTSDemuxer extends BaseDemuxer {
         );
         const novelParameterSetAtRandomAccess = this.shouldQuarantineNovelRandomAccessParameterSet(
             parsedAccessUnits[0].input.nalUnitType,
-            firstParameterSetGeneration
+            firstParameterSetGeneration,
+            parsedAccessUnits[0].chain.signature
         );
         // Some 8K broadcasts redefine PPS id 0 at a CRA without any MMTP
         // packet loss. VideoToolbox may retain the old PPS/DPB association and
@@ -1506,7 +1508,7 @@ class MMTSDemuxer extends BaseDemuxer {
         const quarantineParameterSetChange =
             novelParameterSetAtRandomAccess ||
             this.shouldQuarantineRecoveryParameterSetChange(parameterSetGeneration);
-        if (novelParameterSetAtRandomAccess) {
+        if (quarantineParameterSetChange) {
             this.video_parameter_set_recovery_pending_ = true;
         }
         const referenceRecovery = this.prepareVideoReferenceRecovery(
@@ -1619,13 +1621,18 @@ class MMTSDemuxer extends BaseDemuxer {
         if (recoverReferences) {
             // A parameter-set splice or packet loss may invalidate pictures
             // referenced by the following CRA. Recover only at that boundary.
+            const watchForLateParameterSetChange =
+                !this.video_parameter_set_recovery_pending_;
             this.hevc_poc_recovery_.reset(true);
             this.video_reference_recovery_parameter_set_generation_limit_ = Math.max(
                 this.video_reference_recovery_parameter_set_generation_limit_,
-                parameterSetGeneration
+                parameterSetGeneration,
+                this.committed_video_parameter_set_generation_ || 0
             );
-            this.video_reference_recovery_watch_remaining_ = 16;
-            this.video_reference_recovery_watch_delay_ = 3;
+            this.video_reference_recovery_watch_remaining_ =
+                watchForLateParameterSetChange ? 16 : 0;
+            this.video_reference_recovery_watch_delay_ =
+                watchForLateParameterSetChange ? 3 : 0;
             this.video_reference_recovery_pending_ = false;
         }
 
@@ -1648,11 +1655,22 @@ class MMTSDemuxer extends BaseDemuxer {
     }
 
     private shouldQuarantineNovelRandomAccessParameterSet(firstNalUnitType: number,
-                                                           firstParameterSetGeneration: number): boolean {
+                                                           firstParameterSetGeneration: number,
+                                                           firstParameterSetSignature?: string): boolean {
+        const startsWithRandomAccess = isH265IrapNalu(firstNalUnitType);
+        const novelRandomAccessSignature = startsWithRandomAccess &&
+            typeof firstParameterSetSignature === 'string' &&
+            firstParameterSetSignature.length > 0 &&
+            !this.video_random_access_parameter_set_signatures_.has(firstParameterSetSignature);
+        if (startsWithRandomAccess && typeof firstParameterSetSignature === 'string' &&
+            firstParameterSetSignature.length > 0) {
+            this.video_random_access_parameter_set_signatures_.add(firstParameterSetSignature);
+        }
         return this.video_init_segment_dispatched_ &&
             this.video_started_ &&
-            isH265IrapNalu(firstNalUnitType) &&
-            firstParameterSetGeneration > this.committed_video_parameter_set_generation_;
+            startsWithRandomAccess &&
+            (firstParameterSetGeneration > this.committed_video_parameter_set_generation_ ||
+             novelRandomAccessSignature);
     }
 
     private shouldDropQuarantinedVideoMpuPicture(quarantineParameterSetChange: boolean): boolean {
@@ -3517,6 +3535,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.next_video_parameter_set_generation_ = 1;
         this.active_video_parameter_set_signature_ = undefined;
         this.committed_video_parameter_set_generation_ = 0;
+        this.video_random_access_parameter_set_signatures_ = new Set();
         this.hevc_poc_recovery_.reset(true);
         this.rejected_video_mpus_ = {};
         this.nominal_video_mpu_access_unit_count_ = 0;

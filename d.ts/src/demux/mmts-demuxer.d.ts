@@ -121,6 +121,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private next_video_parameter_set_generation_;
     private active_video_parameter_set_signature_;
     private committed_video_parameter_set_generation_;
+    private video_random_access_parameter_set_signatures_;
     private hevc_poc_recovery_;
     private rejected_video_mpus_;
     private nominal_video_mpu_access_unit_count_;

@@ -211,6 +211,7 @@ type MSETrackSwitchTransactionContext = {
     transactionId: number,
     stage: 'requested' | 'rebuild-pending' | 'rebuilding' | 'commit-pending' |
         'appending-media' | 'trimming-tail',
+    videoBufferReplaced?: boolean,
 };
 
 export type MSEBufferStateMachineOutput = {
@@ -277,6 +278,8 @@ class MSEBufferStateMachine {
         video: null,
         audio: null,
     };
+    private _pending_video_parameter_set_recovery_time: number | null = null;
+    private _video_parameter_set_recovery_flush_started: boolean = false;
     private _current_time: number = 0;
     private _ready_state: number = 0;
     private _source_opened: boolean = false;
@@ -427,10 +430,21 @@ class MSEBufferStateMachine {
             this._recordVideoRandomAccessPoints(segment);
             if (segment && segment.mmtsVideoParameterSetRecovery === true) {
                 // changeType() alone can leave VideoToolbox attached to the
-                // previous HEVC DPB. Remove the coded video frames before the
-                // recovery init+CRA is appended so the reset has no stale
-                // reference chain to retain.
-                this._pending_full_track_flush.video = true;
+                // previous HEVC DPB. Hold the recovery init+CRA until playback
+                // reaches its boundary: the transmuxer may discover it many
+                // seconds ahead, where immediately removing the complete old
+                // video range would strand the current playback position.
+                const firstSample = segment.info && segment.info.firstSample;
+                const recoveryTime = firstSample && this._isFiniteNumber(firstSample.pts) ?
+                    firstSample.pts / 1000 : this._getSegmentTimelineBegin(segment);
+                if (isFinite(recoveryTime)) {
+                    this._pending_video_parameter_set_recovery_time = recoveryTime;
+                    this._video_parameter_set_recovery_flush_started = false;
+                    this._pauseTransmuxer('VIDEO_PARAMETER_SET_RECOVERY');
+                } else {
+                    this._video_parameter_set_recovery_flush_started = true;
+                    this._pending_full_track_flush.video = true;
+                }
             }
         }
         if (!this._isMMTS()) {
@@ -507,6 +521,7 @@ class MSEBufferStateMachine {
         this._markStartupGroupMediaAppended(completedSegment);
         this._markAudioTrackSwitchMediaAppended(completedSegment);
         this._markVideoTrackSwitchMediaAppended(completedSegment);
+        this._markVideoParameterSetRecoveryAppended(completedSegment);
         this.tick('update_end');
     }
 
@@ -594,11 +609,11 @@ class MSEBufferStateMachine {
         this.tick('recommend_seekpoint');
     }
 
-    public onUserSeek(targetTime: number): void {
+    public onUserSeek(targetTime: number, forceMediaSourceRebuild: boolean = false): void {
         if (typeof targetTime !== 'number' || !isFinite(targetTime) || targetTime < 0) {
             return;
         }
-        this._beginTimelineSeek(targetTime, 'USER_SEEK', true);
+        this._beginTimelineSeek(targetTime, 'USER_SEEK', true, forceMediaSourceRebuild);
     }
 
     public onMMTSVodAudioTrackRebuild(targetTime: number,
@@ -809,7 +824,8 @@ class MSEBufferStateMachine {
 
     private _beginTimelineSeek(targetTime: number,
                                reason: string,
-                               seekTransmuxer: boolean): void {
+                               seekTransmuxer: boolean,
+                               forceMediaSourceRebuild: boolean = false): void {
         if (!this._isMMTS()) {
             this._seek_generation++;
         }
@@ -825,7 +841,12 @@ class MSEBufferStateMachine {
         this._video_random_access_points.splice(0, this._video_random_access_points.length);
         this._pending_remove_ranges.video.splice(0, this._pending_remove_ranges.video.length);
         this._pending_remove_ranges.audio.splice(0, this._pending_remove_ranges.audio.length);
-        const rebuildMediaSource = this._config.mseRebuildMediaSourceOnSeek === true &&
+        const videoCodec = this._media_info && typeof this._media_info.videoCodec === 'string' ?
+            this._media_info.videoCodec : '';
+        const recordedMMTSHEVC = this._isMMTS() && this._config.isLive !== true &&
+            /^(?:hev1|hvc1|hevc)(?:\.|$)/i.test(videoCodec);
+        const rebuildMediaSource = (forceMediaSourceRebuild || recordedMMTSHEVC ||
+            this._config.mseRebuildMediaSourceOnSeek === true) &&
             !!this._output.rebuildMediaSource &&
             this._output.rebuildMediaSource({
                 kind: 'seek',
@@ -836,6 +857,7 @@ class MSEBufferStateMachine {
         this._pending_full_track_flush.audio = !rebuildMediaSource;
         this._pending_track_flush_from.video = null;
         this._pending_track_flush_from.audio = null;
+        this._clearPendingVideoParameterSetRecovery();
         if (rebuildMediaSource) {
             this._track_state.video = 'NO_SOURCEBUFFER';
             this._track_state.audio = 'NO_SOURCEBUFFER';
@@ -1048,6 +1070,15 @@ class MSEBufferStateMachine {
         this._live_audio_track_switch_collection_hold = false;
         this._pending_init_segments.video.splice(0, this._pending_init_segments.video.length, queuedInit);
         this._pending_media_segments.video.splice(0, this._pending_media_segments.video.length, queuedMedia);
+        // Reusing the old HEVC coded frames across a track's VPS/SPS/PPS
+        // boundary can leave VideoToolbox attached to the previous DPB and
+        // fail with kVTVideoDecoderReferenceMissingErr. Remove the complete
+        // old video range before resetParserState + the new init/CRA. Audio is
+        // retained so the switch remains an in-place video-only operation.
+        this._pending_remove_ranges.video.splice(0, this._pending_remove_ranges.video.length);
+        this._pending_full_track_flush.video = true;
+        this._pending_track_flush_from.video = null;
+        context.videoBufferReplaced = true;
         this._resetMMTSSourceIdentity('video');
         this._pauseTransmuxer('TRACK_SWITCHING_COMMIT');
         this._track_switch_needs_data = false;
@@ -1467,6 +1498,7 @@ class MSEBufferStateMachine {
             this._resetMMTSSourceIdentity(type);
             if (type === 'video') {
                 this._video_random_access_points.splice(0, this._video_random_access_points.length);
+                this._clearPendingVideoParameterSetRecovery();
             }
             if (this._pending_media_segments.video.length === 0 && this._pending_media_segments.audio.length === 0) {
                 this._timeline_seek_target_time = null;
@@ -1487,6 +1519,7 @@ class MSEBufferStateMachine {
         this._pending_full_track_flush.audio = false;
         this._pending_track_flush_from.video = null;
         this._pending_track_flush_from.audio = null;
+        this._clearPendingVideoParameterSetRecovery();
         this._pending_media_seek_target = null;
         this._pending_media_seek_reason = null;
         this._pending_media_seek_min_forward = 0;
@@ -1667,11 +1700,27 @@ class MSEBufferStateMachine {
             return;
         }
         const appendedEnd = this._getSegmentTimelineEnd(segment);
-        if (isFinite(appendedEnd)) {
+        if (isFinite(appendedEnd) && context.videoBufferReplaced !== true) {
             // Keep playback continuous through the target window, then discard the stale old-track tail.
             this._pending_track_flush_from.video = appendedEnd;
         }
         context.stage = 'trimming-tail';
+    }
+
+    private _markVideoParameterSetRecoveryAppended(segment: any): void {
+        if (!segment || segment.type !== 'video' ||
+            segment.mmtsVideoParameterSetRecovery !== true ||
+            this._pending_video_parameter_set_recovery_time === null) {
+            return;
+        }
+        const recoveryTime = this._pending_video_parameter_set_recovery_time;
+        this._clearPendingVideoParameterSetRecovery();
+        this._requestMediaSeekWhenPlayable(
+            recoveryTime,
+            'VIDEO_PARAMETER_SET_RECOVERY',
+            0.05
+        );
+        this._resumeTransmuxer('VIDEO_PARAMETER_SET_RECOVERY');
     }
 
     private _markAudioTrackSwitchMediaAppended(segment: any): void {
@@ -2090,6 +2139,10 @@ class MSEBufferStateMachine {
             if (!segment) {
                 continue;
             }
+            if (type === 'video' && segment.mmtsVideoParameterSetRecovery === true &&
+                !this._video_parameter_set_recovery_flush_started) {
+                return true;
+            }
             const sourceBuffer = this._getSourceBufferState(type);
             if (!sourceBuffer || !sourceBuffer.exists) {
                 this._track_state[type] = 'NEED_INIT';
@@ -2388,6 +2441,7 @@ class MSEBufferStateMachine {
     }
 
     private _runPendingRemove(): boolean {
+        this._startVideoParameterSetRecoveryFlushIfDue();
         if (this._hasPendingTrackFlush()) {
             if (!this._allSourceBuffersIdle()) {
                 return true;
@@ -2417,6 +2471,25 @@ class MSEBufferStateMachine {
             return true;
         }
         return true;
+    }
+
+    private _startVideoParameterSetRecoveryFlushIfDue(): void {
+        const recoveryTime = this._pending_video_parameter_set_recovery_time;
+        if (recoveryTime === null || this._video_parameter_set_recovery_flush_started ||
+            this._current_time < recoveryTime - 1) {
+            return;
+        }
+        // At the boundary, replace the complete video coded-frame set before
+        // resetParserState + init + CRA. The following updateend seeks across
+        // the quarantined GOP to the first newly playable composition time.
+        this._video_parameter_set_recovery_flush_started = true;
+        this._pending_full_track_flush.video = true;
+        this._pending_track_flush_from.video = null;
+    }
+
+    private _clearPendingVideoParameterSetRecovery(): void {
+        this._pending_video_parameter_set_recovery_time = null;
+        this._video_parameter_set_recovery_flush_started = false;
     }
 
     private _runPendingTransmuxerSeek(): boolean {
@@ -3533,7 +3606,8 @@ class MSEBufferStateMachine {
     private _requestMediaSeekWhenPlayable(targetTime: number, reason: string, minForwardDuration: number): boolean {
         const seekAtNextPlayableIntersection = reason === 'STARTUP_GROUP' ||
             reason === 'RECOMMEND_SEEKPOINT' ||
-            reason === 'AUDIO_TRACK_SWITCH_REBUILD';
+            reason === 'AUDIO_TRACK_SWITCH_REBUILD' ||
+            reason === 'VIDEO_PARAMETER_SET_RECOVERY';
         const playableTarget = seekAtNextPlayableIntersection ?
             this._findPlayableSeekTimeAtOrAfter(targetTime, minForwardDuration) :
             (this._hasPlayableRangeAt(targetTime, minForwardDuration) ? targetTime : null);

@@ -11,6 +11,7 @@ function parseArgs(argv) {
         durationSeconds: 30,
         actionIntervalSeconds: 6,
         mode: 'cocktail',
+        seed: undefined,
         files: [],
         artifactDir: path.join(os.tmpdir(),
             `mmts-browser-samples-${new Date().toISOString().replace(/[:.]/g, '-')}`),
@@ -22,6 +23,7 @@ function parseArgs(argv) {
         else if (arg === '--duration') args.durationSeconds = Number(argv[++i]);
         else if (arg === '--action-interval') args.actionIntervalSeconds = Number(argv[++i]);
         else if (arg === '--mode') args.mode = argv[++i];
+        else if (arg === '--seed') args.seed = Number(argv[++i]);
         else if (arg === '--artifact-dir') args.artifactDir = argv[++i];
         else throw new Error(`unknown argument: ${arg}`);
     }
@@ -40,6 +42,9 @@ function parseArgs(argv) {
     if (!Number.isFinite(args.durationSeconds) || args.durationSeconds <= 0 ||
         !Number.isFinite(args.actionIntervalSeconds) || args.actionIntervalSeconds <= 0) {
         throw new Error('duration and action interval must be positive finite seconds');
+    }
+    if (args.seed !== undefined && !Number.isFinite(args.seed)) {
+        throw new Error('seed must be finite');
     }
     if (!['linear', 'seek', 'tracks', 'cocktail'].includes(args.mode)) {
         throw new Error('mode must be linear, seek, tracks, or cocktail');
@@ -69,14 +74,16 @@ function main() {
         const sampleArtifactDir = path.join(args.artifactDir,
             `${String(i + 1).padStart(2, '0')}-${name.replace(/[^a-z0-9._-]+/gi, '_')}`);
         console.log(`\n[${i + 1}/${samples.length}] ${name} (${fs.statSync(file).size} bytes)`);
-        const run = childProcess.spawnSync(process.execPath, [
+        const stressArgs = [
             stressScript,
             '--file', file,
             '--mode', args.mode,
             '--duration', String(args.durationSeconds),
             '--seek-interval', String(args.actionIntervalSeconds),
             '--artifact-dir', sampleArtifactDir,
-        ], {stdio: 'inherit'});
+        ];
+        if (args.seed !== undefined) stressArgs.push('--seed', String(args.seed));
+        const run = childProcess.spawnSync(process.execPath, stressArgs, {stdio: 'inherit'});
         results.push({file, ok: run.status === 0, status: run.status, signal: run.signal});
     }
 
