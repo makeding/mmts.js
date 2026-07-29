@@ -248,6 +248,9 @@ class MP4Remuxer {
             // boundary.  A separately queued init can overtake older media in
             // the MSE state machine and reset the parser too early.
             initSegment.mmtsVideoReferenceRecovery = true;
+            if (metadata.mmtsVideoParameterSetRecovery === true) {
+                initSegment.mmtsVideoParameterSetRecovery = true;
+            }
             this._pendingMMTSVideoReferenceRecoveryInit = initSegment;
             return;
         }
@@ -1104,6 +1107,9 @@ class MP4Remuxer {
             segment.container = recoveryInit.container;
             segment.codec = recoveryInit.codec;
             segment.mmtsVideoReferenceRecovery = true;
+            if (recoveryInit.mmtsVideoParameterSetRecovery === true) {
+                segment.mmtsVideoParameterSetRecovery = true;
+            }
             this._pendingMMTSVideoReferenceRecoveryInit = null;
         }
         if (mp4Samples[0].isKeyframe) {

@@ -425,6 +425,13 @@ class MSEBufferStateMachine {
         this._recordMMTSSourceIdentity(type, segment);
         if (type === 'video') {
             this._recordVideoRandomAccessPoints(segment);
+            if (segment && segment.mmtsVideoParameterSetRecovery === true) {
+                // changeType() alone can leave VideoToolbox attached to the
+                // previous HEVC DPB. Remove the coded video frames before the
+                // recovery init+CRA is appended so the reset has no stale
+                // reference chain to retain.
+                this._pending_full_track_flush.video = true;
+            }
         }
         if (!this._isMMTS()) {
             segment.mseBufferGeneration = this._seek_generation;

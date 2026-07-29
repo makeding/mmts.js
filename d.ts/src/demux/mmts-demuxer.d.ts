@@ -120,6 +120,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private video_parameter_set_chains_by_nalu_;
     private next_video_parameter_set_generation_;
     private active_video_parameter_set_signature_;
+    private committed_video_parameter_set_generation_;
     private hevc_poc_recovery_;
     private rejected_video_mpus_;
     private nominal_video_mpu_access_unit_count_;
@@ -127,6 +128,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private video_reference_recovery_parameter_set_generation_limit_;
     private video_reference_recovery_watch_remaining_;
     private video_reference_recovery_watch_delay_;
+    private video_parameter_set_recovery_pending_;
     constructor(probeData: any, config: any);
     destroy(): void;
     static probe(buffer: ArrayBuffer): import("./tlv").TLVProbeResult;
@@ -162,6 +164,7 @@ declare class MMTSDemuxer extends BaseDemuxer {
     private flushPendingVideoAccessUnits;
     private prepareVideoReferenceRecovery;
     private shouldQuarantineRecoveryParameterSetChange;
+    private shouldQuarantineNovelRandomAccessParameterSet;
     private shouldDropQuarantinedVideoMpuPicture;
     private parseHEVCVideoAccessUnit;
     private validateVideoMpuTimestamps;

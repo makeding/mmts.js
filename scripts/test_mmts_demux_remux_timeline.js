@@ -3331,6 +3331,49 @@ function testPacketSequenceGapArmsVideoReferenceRecovery() {
     assert.strictEqual(demuxer.pending_video_discontinuity_.reason, 'packet-sequence-gap');
 }
 
+function testNovelParameterSetAtCraIsQuarantinedOnlyAfterVideoStarts() {
+    const MMTSDemuxer = loadDemuxer({
+        isH265IrapNalu(type) {
+            return type >= 16 && type <= 23;
+        }
+    });
+    const demuxer = Object.create(MMTSDemuxer.prototype);
+    demuxer.video_init_segment_dispatched_ = true;
+    demuxer.video_started_ = true;
+    demuxer.committed_video_parameter_set_generation_ = 8;
+
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.CRA_NUT,
+            9
+        ),
+        true
+    );
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.CRA_NUT,
+            8
+        ),
+        false
+    );
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.TRAIL_R,
+            9
+        ),
+        false
+    );
+
+    demuxer.video_started_ = false;
+    assert.strictEqual(
+        demuxer.shouldQuarantineNovelRandomAccessParameterSet(
+            TEST_H265_NALU_TYPE.CRA_NUT,
+            9
+        ),
+        false
+    );
+}
+
 function testRemuxerAttachesParserResetInitToRecoveryRap() {
     const MP4Remuxer = loadRemuxer();
     const remuxer = new MP4Remuxer({
@@ -3351,6 +3394,7 @@ function testRemuxerAttachesParserResetInitToRecoveryRap() {
         codec: 'hev1.2.4.L183.B0',
         refSampleDuration: 17,
         mmtsVideoReferenceRecovery: true,
+        mmtsVideoParameterSetRecovery: true,
     });
     assert.strictEqual(initSegments.length, 0);
     assert.ok(remuxer._pendingMMTSVideoReferenceRecoveryInit);
@@ -3377,6 +3421,7 @@ function testRemuxerAttachesParserResetInitToRecoveryRap() {
     assert.strictEqual(mediaSegments[0].container, 'video/mp4');
     assert.strictEqual(mediaSegments[0].codec, 'hev1.2.4.L183.B0');
     assert.strictEqual(mediaSegments[0].mmtsVideoReferenceRecovery, true);
+    assert.strictEqual(mediaSegments[0].mmtsVideoParameterSetRecovery, true);
     assert.strictEqual(mediaSegments[0].mmtsRandomAccessSafe, true);
     assert.strictEqual(new Uint8Array(mediaSegments[0].data)[0], 0);
     assert.strictEqual(remuxer._pendingMMTSVideoReferenceRecoveryInit, null);
@@ -3437,6 +3482,7 @@ testVodIndexStoresSignalingRestartSeparatelyFromRandomAccessPosition();
 testContinuousCraUsesIsoSyncWithoutBecomingSeekSafe();
 testCompleteShortVideoMpuDoesNotForceRecovery();
 testPacketSequenceGapArmsVideoReferenceRecovery();
+testNovelParameterSetAtCraIsQuarantinedOnlyAfterVideoStarts();
 testRemuxerAttachesParserResetInitToRecoveryRap();
 
 console.log('mmts demux/remux timeline tests passed');

@@ -367,6 +367,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private video_parameter_set_chains_by_nalu_: WeakMap<H265NaluHVC1, HEVCParameterSetChain> = new WeakMap();
     private next_video_parameter_set_generation_: number = 1;
     private active_video_parameter_set_signature_: string | undefined;
+    private committed_video_parameter_set_generation_: number = 0;
     private hevc_poc_recovery_: HEVCPocRecovery = new HEVCPocRecovery();
     private rejected_video_mpus_: {[key: string]: boolean} = {};
     private nominal_video_mpu_access_unit_count_: number = 0;
@@ -374,6 +375,7 @@ class MMTSDemuxer extends BaseDemuxer {
     private video_reference_recovery_parameter_set_generation_limit_: number = 0;
     private video_reference_recovery_watch_remaining_: number = 0;
     private video_reference_recovery_watch_delay_: number = 0;
+    private video_parameter_set_recovery_pending_: boolean = false;
 
     public constructor(probeData: any, config: any) {
         super();
@@ -1487,8 +1489,26 @@ class MMTSDemuxer extends BaseDemuxer {
             return Math.max(generation, parsed.chain.vps.generation,
                 parsed.chain.sps.generation, parsed.chain.pps.generation);
         }, 0);
+        const firstParameterSetGeneration = Math.max(
+            parsedAccessUnits[0].chain.vps.generation,
+            parsedAccessUnits[0].chain.sps.generation,
+            parsedAccessUnits[0].chain.pps.generation
+        );
+        const novelParameterSetAtRandomAccess = this.shouldQuarantineNovelRandomAccessParameterSet(
+            parsedAccessUnits[0].input.nalUnitType,
+            firstParameterSetGeneration
+        );
+        // Some 8K broadcasts redefine PPS id 0 at a CRA without any MMTP
+        // packet loss. VideoToolbox may retain the old PPS/DPB association and
+        // fail with kVTVideoDecoderReferenceMissingErr. Quarantine that novel
+        // GOP and let the next known CRA perform the existing parser reset.
+        // Recurring temporal-layer PPS variants fail the generation check.
         const quarantineParameterSetChange =
+            novelParameterSetAtRandomAccess ||
             this.shouldQuarantineRecoveryParameterSetChange(parameterSetGeneration);
+        if (novelParameterSetAtRandomAccess) {
+            this.video_parameter_set_recovery_pending_ = true;
+        }
         const referenceRecovery = this.prepareVideoReferenceRecovery(
             accessUnits.length,
             parsedAccessUnits[0].input.nalUnitType,
@@ -1547,7 +1567,11 @@ class MMTSDemuxer extends BaseDemuxer {
             // Merely marking it as sync does not clear VideoToolbox's DPB.
             this.dispatchVideoMediaSegment(true);
             this.onVideoDiscontinuity && this.onVideoDiscontinuity();
-            this.dispatchVideoInitSegment(true);
+            if (this.active_video_parameter_set_signature_ !== parsedAccessUnits[0].chain.signature) {
+                this.activateVideoParameterSetChain(parsedAccessUnits[0].chain);
+            }
+            this.dispatchVideoInitSegment(true, this.video_parameter_set_recovery_pending_);
+            this.video_parameter_set_recovery_pending_ = false;
         }
         for (let i = 0; i < accessUnits.length; i++) {
             const chain = parsedAccessUnits[i].chain;
@@ -1571,6 +1595,10 @@ class MMTSDemuxer extends BaseDemuxer {
             };
             this.appendTimedVideoAccessUnit(timedAccessUnit);
         }
+        this.committed_video_parameter_set_generation_ = Math.max(
+            this.committed_video_parameter_set_generation_,
+            parameterSetGeneration
+        );
     }
 
     private prepareVideoReferenceRecovery(accessUnitCount: number,
@@ -1617,6 +1645,14 @@ class MMTSDemuxer extends BaseDemuxer {
         }
         return parameterSetGeneration >
             this.video_reference_recovery_parameter_set_generation_limit_;
+    }
+
+    private shouldQuarantineNovelRandomAccessParameterSet(firstNalUnitType: number,
+                                                           firstParameterSetGeneration: number): boolean {
+        return this.video_init_segment_dispatched_ &&
+            this.video_started_ &&
+            isH265IrapNalu(firstNalUnitType) &&
+            firstParameterSetGeneration > this.committed_video_parameter_set_generation_;
     }
 
     private shouldDropQuarantinedVideoMpuPicture(quarantineParameterSetChange: boolean): boolean {
@@ -3480,6 +3516,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.video_parameter_set_chains_by_nalu_ = new WeakMap();
         this.next_video_parameter_set_generation_ = 1;
         this.active_video_parameter_set_signature_ = undefined;
+        this.committed_video_parameter_set_generation_ = 0;
         this.hevc_poc_recovery_.reset(true);
         this.rejected_video_mpus_ = {};
         this.nominal_video_mpu_access_unit_count_ = 0;
@@ -3487,6 +3524,7 @@ class MMTSDemuxer extends BaseDemuxer {
         this.video_reference_recovery_parameter_set_generation_limit_ = 0;
         this.video_reference_recovery_watch_remaining_ = 0;
         this.video_reference_recovery_watch_delay_ = 0;
+        this.video_parameter_set_recovery_pending_ = false;
         this.video_waiting_random_access_ = true;
         this.video_recovery_gap_pending_ = false;
         this.seed_audio_after_video_bootstrap_ = false;
@@ -4086,7 +4124,8 @@ class MMTSDemuxer extends BaseDemuxer {
         };
     }
 
-    private dispatchVideoInitSegment(referenceRecovery: boolean = false): void {
+    private dispatchVideoInitSegment(referenceRecovery: boolean = false,
+                                     parameterSetRecovery: boolean = false): void {
         // The HEVC parameter sets can arrive before the matching B60 timestamp
         // descriptor.  Wait for its exact clock instead of publishing a 1 kHz
         // init segment that permanently quantizes 60000/1001 presentation.
@@ -4135,6 +4174,9 @@ class MMTSDemuxer extends BaseDemuxer {
         meta.codec = details.codec_mimetype.replace(/^hvc1/, this.video_sample_entry_type_);
         if (referenceRecovery) {
             meta.mmtsVideoReferenceRecovery = true;
+        }
+        if (parameterSetRecovery) {
+            meta.mmtsVideoParameterSetRecovery = true;
         }
         if (this.pending_video_track_switch_ !== null) {
             meta.mmtsVideoTrackSwitch = Object.assign({}, this.pending_video_track_switch_);
